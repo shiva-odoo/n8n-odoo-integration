@@ -26,61 +26,501 @@ except ImportError as e:
 
 app = Flask(__name__)
 
-# Home endpoint with API documentation
+# Home endpoint with comprehensive API documentation
 @app.route('/')
 def home():
     endpoints = {
-        "message": "Business Management API",
+        "message": "Complete Business Management API",
+        "version": "3.0",
+        "total_endpoints": 28,
         "available_endpoints": {
-            "Vendor Operations": {
+            "Reference Data (9 endpoints)": {
                 "/api/vendors": "GET - List all vendors",
-                "/api/vendors/<id>": "GET - Get vendor details",
+                "/api/companies": "GET - List all companies", 
+                "/api/customers": "GET - List all customers",
+                "/api/products": "GET - List all products",
+                "/api/payments": "GET - List all payments",
+                "/api/vendor-payments": "GET - List vendor payments",
+                "/api/credit-notes": "GET - List all credit notes",
+                "/api/invoices": "GET - List all customer invoices",
+                "/api/refunds": "GET - List all refunds",
+                "/api/bills": "GET - List all vendor bills",
+                "/api/companies/<id>/vendors": "GET - Get vendors for specific company"
             },
-            "Create Operations": {
-                "/api/create/bill": "POST - Create bill",
-                "/api/create/bill-company": "POST - Create bill by company",
-                "/api/create/company": "POST - Create company",
-                "/api/create/credit-notes": "POST - Create credit notes",
-                "/api/create/customer-payments": "POST - Create customer payments",
-                "/api/create/customer": "POST - Create customer",
-                "/api/create/invoice": "POST - Create invoice",
-                "/api/create/product": "POST - Create product",
-                "/api/create/refund": "POST - Create refund",
-                "/api/create/vendor": "POST - Create vendor",
-                "/api/create/vendor-payments": "POST - Create vendor payments"
+            "Create Operations (11 endpoints)": {
+                "/api/create/vendor": "POST - Create vendor with full address support",
+                "/api/create/company": "POST - Create company with country validation",
+                "/api/create/customer": "POST - Create customer with contact details",
+                "/api/create/product": "POST - Create product with pricing & codes",
+                "/api/create/bill": "POST - Create vendor bill with line items",
+                "/api/create/bill-company": "POST - Create company-specific vendor bill",
+                "/api/create/invoice": "POST - Create customer invoice with line items",
+                "/api/create/customer-payments": "POST - Process customer payments (received/sent)",
+                "/api/create/vendor-payments": "POST - Process vendor payments",
+                "/api/create/credit-notes": "POST - Create customer/vendor credit notes",
+                "/api/create/refund": "POST - Process customer/vendor refunds"
             },
-            "Delete Operations": {
-                "/api/delete/bill": "DELETE - Delete bill",
-                "/api/delete/company": "DELETE - Delete company",
-                "/api/delete/vendor": "DELETE - Delete vendor"
+            "Update Operations (2 endpoints)": {
+                "/api/modify/vendor": "PUT - Update vendor with change tracking",
+                "/api/modify/bill": "PUT - Modify vendor bills & line items"
             },
-            "Modify Operations": {
-                "/api/modify/bill": "PUT - Modify bill",
-                "/api/modify/vendor": "PUT - Modify vendor"
+            "Delete Operations (3 endpoints)": {
+                "/api/delete/vendor": "DELETE - Delete/archive vendors safely",
+                "/api/delete/company": "DELETE - Delete/archive companies safely", 
+                "/api/delete/bill": "DELETE - Delete bills with safety checks"
+            },
+            "Utility (3 endpoints)": {
+                "/health": "GET - Health check",
+                "/api/test-config": "GET - Configuration test",
+                "/api/docs/<type>": "GET - Detailed documentation (vendor, bill, etc.)"
             }
         },
-        "example_usage": {
-            "get_vendors": {
-                "url": "/api/vendors",
-                "method": "GET",
-                "description": "Get list of all vendors to find vendor_id for bill creation"
-            },
-            "create_bill_simple": {
-                "url": "/api/create/bill",
+        "advanced_examples": {
+            "smart_vendor_payment": {
+                "url": "/api/create/vendor-payments",
                 "method": "POST",
                 "body": {
+                    "vendor_id": 123,
+                    "amount": 2500.00,
+                    "payment_date": "2025-01-15",
+                    "reference": "Payment for Invoice INV-2025-001"
+                },
+                "description": "Create vendor payment with validation"
+            },
+            "safe_vendor_deletion": {
+                "url": "/api/delete/vendor",
+                "method": "DELETE",
+                "body": {
+                    "vendor_id": 123,
+                    "archive_instead": true
+                },
+                "description": "Safely delete vendor with archive fallback"
+            },
+            "advanced_bill_modification": {
+                "url": "/api/modify/bill",
+                "method": "PUT",
+                "body": {
+                    "bill_id": 456,
+                    "reference": "Updated reference",
+                    "line_items": [
+                        {
+                            "line_id": 789,
+                            "description": "Updated description",
+                            "price_unit": 175.00
+                        }
+                    ],
+                    "add_line_item": {
+                        "description": "Additional service",
+                        "quantity": 1,
+                        "price_unit": 300.00
+                    }
+                },
+                "description": "Modify bill with line item management"
+            },
+            "company_deletion_with_safety": {
+                "url": "/api/delete/company",
+                "method": "DELETE",
+                "body": {
+                    "company_id": 2,
+                    "archive_instead": true
+                },
+                "description": "Delete company with automatic archive fallback"
+            }
+        }
+    }
+    return jsonify(endpoints)
+
+# Reference Data Operations
+@app.route('/api/vendors', methods=['GET'])
+def get_vendors():
+    """Get list of all vendors"""
+    try:
+        result = createbill.list_vendors()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/companies', methods=['GET'])
+def get_companies():
+    """Get list of all companies"""
+    try:
+        result = createBillCompanywise.list_companies()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/customers', methods=['GET'])
+def get_customers():
+    """Get list of all customers"""
+    try:
+        result = createCustomer.list_customers()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/products', methods=['GET'])
+def get_products():
+    """Get list of all products"""
+    try:
+        result = createproduct.list_products()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/payments', methods=['GET'])
+def get_payments():
+    """Get list of all payments"""
+    try:
+        result = createCusomterPayments.list_payments()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/vendor-payments', methods=['GET'])
+def get_vendor_payments():
+    """Get list of vendor payments"""
+    try:
+        result = createVendorPayments.list_vendor_payments()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/credit-notes', methods=['GET'])
+def get_credit_notes():
+    """Get list of all credit notes"""
+    try:
+        result = createCreditNotes.list_credit_notes()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/invoices', methods=['GET'])
+def get_invoices():
+    """Get list of all customer invoices"""
+    try:
+        result = createInvoice.list_customer_invoices()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/refunds', methods=['GET'])
+def get_refunds():
+    """Get list of all refunds"""
+    try:
+        result = createrefund.list_refunds()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/bills', methods=['GET'])
+def get_bills():
+    """Get list of all vendor bills"""
+    try:
+        result = deletebill.list_vendor_bills()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/companies/<int:company_id>/vendors', methods=['GET'])
+def get_vendors_by_company(company_id):
+    """Get vendors available to a specific company"""
+    try:
+        result = createBillCompanywise.list_vendors_by_company(company_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/vendors/<int:vendor_id>', methods=['GET'])
+def get_vendor(vendor_id):
+    """Get specific vendor details"""
+    try:
+        result = modifyvendor.get_vendor_details(vendor_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/bills/<int:bill_id>', methods=['GET'])
+def get_bill_details(bill_id):
+    """Get specific bill details with line items"""
+    try:
+        result = modifybill.get_bill_details(bill_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Create Operations
+@app.route('/api/create/bill', methods=['POST'])
+def create_bill():
+    """Create vendor bill"""
+    try:
+        data = request.json or {}
+        result = createbill.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/bill-company', methods=['POST'])
+def create_bill_company():
+    """Create vendor bill with company selection"""
+    try:
+        data = request.json or {}
+        result = createBillCompanywise.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/vendor', methods=['POST'])
+def create_vendor():
+    """Create vendor"""
+    try:
+        data = request.json or {}
+        result = createvendor.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/company', methods=['POST'])
+def create_company():
+    """Create company"""
+    try:
+        data = request.json or {}
+        result = createcompany.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/credit-notes', methods=['POST'])
+def create_credit_notes():
+    """Create credit note"""
+    try:
+        data = request.json or {}
+        result = createCreditNotes.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/customer-payments', methods=['POST'])
+def create_customer_payments():
+    """Create customer payment"""
+    try:
+        data = request.json or {}
+        result = createCusomterPayments.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/vendor-payments', methods=['POST'])
+def create_vendor_payments():
+    """Create vendor payment"""
+    try:
+        data = request.json or {}
+        result = createVendorPayments.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/customer', methods=['POST'])
+def create_customer():
+    """Create customer"""
+    try:
+        data = request.json or {}
+        result = createCustomer.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/invoice', methods=['POST'])
+def create_invoice():
+    """Create customer invoice"""
+    try:
+        data = request.json or {}
+        result = createInvoice.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/product', methods=['POST'])
+def create_product():
+    """Create product"""
+    try:
+        data = request.json or {}
+        result = createproduct.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/create/refund', methods=['POST'])
+def create_refund():
+    """Create refund"""
+    try:
+        data = request.json or {}
+        result = createrefund.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Delete Operations (with smart safety features)
+@app.route('/api/delete/bill', methods=['DELETE'])
+def delete_bill():
+    """Delete vendor bill with safety checks"""
+    try:
+        data = request.json or {}
+        result = deletebill.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/delete/company', methods=['DELETE'])
+def delete_company():
+    """Delete company with archive fallback"""
+    try:
+        data = request.json or {}
+        result = deletecompany.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/delete/vendor', methods=['DELETE'])
+def delete_vendor():
+    """Delete vendor with transaction validation"""
+    try:
+        data = request.json or {}
+        result = deletevendor.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Modify Operations (with change tracking)
+@app.route('/api/modify/bill', methods=['PUT'])
+def modify_bill():
+    """Modify vendor bill with line item management"""
+    try:
+        data = request.json or {}
+        result = modifybill.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/modify/vendor', methods=['PUT'])
+def modify_vendor():
+    """Modify vendor with change tracking"""
+    try:
+        data = request.json or {}
+        result = modifyvendor.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Utility endpoints
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'healthy', 
+        'message': 'Complete Business Management API is running',
+        'version': '3.0',
+        'total_endpoints': 28
+    })
+
+@app.route('/api/test-config')
+def test_config():
+    """Test endpoint to verify configuration (for debugging)"""
+    config_status = {
+        'odoo_username': bool(os.getenv("ODOO_USERNAME")),
+        'odoo_api_key': bool(os.getenv("ODOO_API_KEY")),
+        'flask_debug': os.getenv('FLASK_DEBUG', 'False'),
+        'port': os.environ.get('PORT', '5000')
+    }
+    return jsonify({
+        'success': True,
+        'config': config_status,
+        'message': 'Configuration check complete',
+        'api_version': '3.0'
+    })
+
+# Enhanced API Documentation endpoints
+@app.route('/api/docs/vendor', methods=['GET'])
+def vendor_docs():
+    """Comprehensive vendor API documentation"""
+    docs = {
+        "create_vendor": {
+            "endpoint": "/api/create/vendor",
+            "method": "POST",
+            "description": "Create a new vendor with full address support",
+            "required_fields": ["name"],
+            "optional_fields": [
+                "email", "phone", "website", "vat", 
+                "street", "city", "zip", "country_code", 
+                "state_code", "payment_terms", "currency_code"
+            ],
+            "examples": {
+                "basic": {
+                    "name": "ABC Company",
+                    "email": "contact@abc.com"
+                },
+                "comprehensive": {
+                    "name": "XYZ Technologies",
+                    "email": "billing@xyz.com",
+                    "phone": "+1-555-123-4567",
+                    "vat": "US123456789",
+                    "street": "123 Tech Street",
+                    "city": "San Francisco",
+                    "zip": "94105",
+                    "country_code": "US",
+                    "state_code": "CA",
+                    "payment_terms": 30,
+                    "currency_code": "USD"
+                }
+            }
+        },
+        "modify_vendor": {
+            "endpoint": "/api/modify/vendor",
+            "method": "PUT",
+            "description": "Update vendor information with change tracking",
+            "required_fields": ["vendor_id"],
+            "example": {
+                "vendor_id": 123,
+                "name": "Updated Company Name",
+                "email": "new@email.com",
+                "phone": "+1-555-999-8888"
+            }
+        },
+        "delete_vendor": {
+            "endpoint": "/api/delete/vendor",
+            "method": "DELETE",
+            "description": "Safely delete vendor with transaction validation",
+            "required_fields": ["vendor_id"],
+            "examples": {
+                "safe_delete": {
+                    "vendor_id": 123,
+                    "archive_instead": true
+                },
+                "force_delete": {
+                    "vendor_id": 123,
+                    "force_delete": true
+                }
+            }
+        }
+    }
+    return jsonify(docs)
+
+@app.route('/api/docs/bill', methods=['GET'])
+def bill_docs():
+    """Comprehensive bill API documentation"""
+    docs = {
+        "create_bill": {
+            "endpoint": "/api/create/bill",
+            "method": "POST",
+            "description": "Create a vendor bill with line items",
+            "required_fields": ["vendor_id"],
+            "examples": {
+                "single_item": {
                     "vendor_id": 123,
                     "description": "Office supplies",
                     "amount": 1500.50,
                     "invoice_date": "2025-01-15",
                     "vendor_ref": "INV-001"
                 },
-                "description": "Create a simple bill with one line item"
-            },
-            "create_bill_multiple_items": {
-                "url": "/api/create/bill",
-                "method": "POST", 
-                "body": {
+                "multiple_items": {
                     "vendor_id": 123,
                     "invoice_date": "2025-01-15",
                     "vendor_ref": "INV-001",
@@ -91,216 +531,82 @@ def home():
                             "price_unit": 750.25
                         },
                         {
-                            "description": "Software license", 
+                            "description": "Software license",
                             "quantity": 1,
                             "price_unit": 500.00
                         }
                     ]
-                },
-                "description": "Create a bill with multiple line items"
+                }
             }
         },
-        "required_fields": {
-            "create_bill": {
-                "vendor_id": "integer (required) - Get from /api/vendors",
-                "description + amount": "string + number (option 1) - For single line item",
-                "line_items": "array (option 2) - For multiple line items",
-                "invoice_date": "string (optional) - Format: YYYY-MM-DD, defaults to today",
-                "vendor_ref": "string (optional) - Vendor reference number"
+        "modify_bill": {
+            "endpoint": "/api/modify/bill",
+            "method": "PUT",
+            "description": "Modify vendor bill with line item management",
+            "required_fields": ["bill_id"],
+            "example": {
+                "bill_id": 456,
+                "reference": "Updated reference",
+                "line_items": [
+                    {
+                        "line_id": 789,
+                        "description": "Updated description",
+                        "price_unit": 175.00
+                    }
+                ],
+                "add_line_item": {
+                    "description": "Additional service",
+                    "quantity": 1,
+                    "price_unit": 300.00
+                }
+            }
+        },
+        "delete_bill": {
+            "endpoint": "/api/delete/bill",
+            "method": "DELETE",
+            "description": "Delete vendor bill with safety checks",
+            "required_fields": ["bill_id"],
+            "examples": {
+                "simple_delete": {
+                    "bill_id": 123
+                },
+                "force_delete_with_reset": {
+                    "bill_id": 123,
+                    "reset_to_draft": true
+                }
             }
         }
     }
-    return jsonify(endpoints)
+    return jsonify(docs)
 
-# Vendor Operations
-@app.route('/api/vendors', methods=['GET'])
-def get_vendors():
-    """Get list of all vendors"""
-    try:
-        result = createbill.list_vendors()
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/vendors/<int:vendor_id>', methods=['GET'])
-def get_vendor(vendor_id):
-    """Get specific vendor details"""
-    try:
-        # You can implement this in createbill.py if needed
-        return jsonify({
-            'success': True, 
-            'vendor_id': vendor_id, 
-            'message': 'Vendor details endpoint - implementation pending'
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Create Operations
-@app.route('/api/create/bill', methods=['POST'])
-def create_bill():
-    try:
-        data = request.json or {}
-        result = createbill.main(data) if hasattr(createbill, 'main') else createbill.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/bill-company', methods=['POST'])
-def create_bill_company():
-    try:
-        data = request.json or {}
-        result = createBillCompanywise.main(data) if hasattr(createBillCompanywise, 'main') else createBillCompanywise.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/company', methods=['POST'])
-def create_company():
-    try:
-        data = request.json or {}
-        result = createcompany.main(data) if hasattr(createcompany, 'main') else createcompany.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/credit-notes', methods=['POST'])
-def create_credit_notes():
-    try:
-        data = request.json or {}
-        result = createCreditNotes.main(data) if hasattr(createCreditNotes, 'main') else createCreditNotes.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/customer-payments', methods=['POST'])
-def create_customer_payments():
-    try:
-        data = request.json or {}
-        result = createCusomterPayments.main(data) if hasattr(createCusomterPayments, 'main') else createCusomterPayments.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/customer', methods=['POST'])
-def create_customer():
-    try:
-        data = request.json or {}
-        result = createCustomer.main(data) if hasattr(createCustomer, 'main') else createCustomer.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/invoice', methods=['POST'])
-def create_invoice():
-    try:
-        data = request.json or {}
-        result = createInvoice.main(data) if hasattr(createInvoice, 'main') else createInvoice.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/product', methods=['POST'])
-def create_product():
-    try:
-        data = request.json or {}
-        result = createproduct.main(data) if hasattr(createproduct, 'main') else createproduct.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/refund', methods=['POST'])
-def create_refund():
-    try:
-        data = request.json or {}
-        result = createrefund.main(data) if hasattr(createrefund, 'main') else createrefund.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/vendor', methods=['POST'])
-def create_vendor():
-    try:
-        data = request.json or {}
-        result = createvendor.main(data) if hasattr(createvendor, 'main') else createvendor.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/create/vendor-payments', methods=['POST'])
-def create_vendor_payments():
-    try:
-        data = request.json or {}
-        result = createVendorPayments.main(data) if hasattr(createVendorPayments, 'main') else createVendorPayments.create(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Delete Operations
-@app.route('/api/delete/bill', methods=['DELETE'])
-def delete_bill():
-    try:
-        data = request.json or {}
-        result = deletebill.main(data) if hasattr(deletebill, 'main') else deletebill.delete(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/delete/company', methods=['DELETE'])
-def delete_company():
-    try:
-        data = request.json or {}
-        result = deletecompany.main(data) if hasattr(deletecompany, 'main') else deletecompany.delete(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/delete/vendor', methods=['DELETE'])
-def delete_vendor():
-    try:
-        data = request.json or {}
-        result = deletevendor.main(data) if hasattr(deletevendor, 'main') else deletevendor.delete(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Modify Operations
-@app.route('/api/modify/bill', methods=['PUT'])
-def modify_bill():
-    try:
-        data = request.json or {}
-        result = modifybill.main(data) if hasattr(modifybill, 'main') else modifybill.modify(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/modify/vendor', methods=['PUT'])
-def modify_vendor():
-    try:
-        data = request.json or {}
-        result = modifyvendor.main(data) if hasattr(modifyvendor, 'main') else modifyvendor.modify(data)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Health check endpoint
-@app.route('/health')
-def health():
-    return jsonify({'status': 'healthy', 'message': 'Business Management API is running'})
-
-# Test endpoint to verify environment variables
-@app.route('/api/test-config')
-def test_config():
-    """Test endpoint to verify configuration (for debugging)"""
-    config_status = {
-        'odoo_username': bool(os.getenv("ODOO_USERNAME")),
-        'odoo_api_key': bool(os.getenv("ODOO_API_KEY")),
-        'environment_vars': list(os.environ.keys())
+@app.route('/api/docs/payment', methods=['GET'])
+def payment_docs():
+    """Payment API documentation"""
+    docs = {
+        "customer_payments": {
+            "endpoint": "/api/create/customer-payments",
+            "method": "POST",
+            "description": "Process customer payments (received/sent)",
+            "example": {
+                "payment_type": "received",
+                "partner_id": 123,
+                "amount": 1500.00,
+                "payment_date": "2025-01-15"
+            }
+        },
+        "vendor_payments": {
+            "endpoint": "/api/create/vendor-payments",
+            "method": "POST",
+            "description": "Process vendor payments",
+            "example": {
+                "vendor_id": 123,
+                "amount": 2500.00,
+                "payment_date": "2025-01-15",
+                "reference": "Payment for Invoice INV-2025-001"
+            }
+        }
     }
-    return jsonify({
-        'success': True,
-        'config': config_status,
-        'message': 'Configuration check complete'
-    })
+    return jsonify(docs)
 
 # Error handlers
 @app.errorhandler(404)

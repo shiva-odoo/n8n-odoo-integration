@@ -5,8 +5,197 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def connect_odoo():
-    """Connect to Odoo"""
+def main(data):
+    """
+    Create vendor payment from HTTP request data
+    
+    Expected data format:
+    {
+        "vendor_id": 123,                       # required
+        "amount": 500.75,                       # required
+        "payment_date": "2025-01-15",          # optional, defaults to today
+        "reference": "Payment reference"        # optional
+    }
+    """
+    
+    # Validate required fields
+    if not data.get('vendor_id'):
+        return {
+            'success': False,
+            'error': 'vendor_id is required'
+        }
+    
+    if not data.get('amount'):
+        return {
+            'success': False,
+            'error': 'amount is required'
+        }
+    
+    try:
+        amount = float(data['amount'])
+        if amount <= 0:
+            return {
+                'success': False,
+                'error': 'amount must be positive'
+            }
+    except (ValueError, TypeError):
+        return {
+            'success': False,
+            'error': 'amount must be a valid number'
+        }
+    
+    # Connection details
+    url = 'https://omnithrive-technologies1.odoo.com'
+    db = 'omnithrive-technologies1'
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    if not username or not password:
+        return {
+            'success': False,
+            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+        }
+    
+    try:
+        # Connect to Odoo
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        # Authenticate
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {
+                'success': False,
+                'error': 'Odoo authentication failed'
+            }
+        
+        vendor_id = data['vendor_id']
+        
+        # Verify vendor exists and is a supplier
+        vendor_exists = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search_count',
+            [[('id', '=', vendor_id), ('supplier_rank', '>', 0)]]
+        )
+        
+        if not vendor_exists:
+            return {
+                'success': False,
+                'error': f'Vendor with ID {vendor_id} not found or is not a supplier'
+            }
+        
+        # Get vendor info
+        vendor_info = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'read',
+            [[vendor_id]], 
+            {'fields': ['name']}
+        )[0]
+        
+        # Prepare payment data
+        payment_date = data.get('payment_date', datetime.now().strftime('%Y-%m-%d'))
+        
+        # Validate date format
+        try:
+            datetime.strptime(payment_date, '%Y-%m-%d')
+        except ValueError:
+            return {
+                'success': False,
+                'error': 'payment_date must be in YYYY-MM-DD format'
+            }
+        
+        # Create vendor payment (outbound payment to supplier)
+        payment_data = {
+            'payment_type': 'outbound',      # Money going OUT to vendor
+            'partner_type': 'supplier',      # Partner is a SUPPLIER  
+            'partner_id': vendor_id,
+            'amount': amount,
+            'date': payment_date,
+        }
+        
+        # Add reference if provided
+        if data.get('reference'):
+            payment_data['ref'] = data['reference']
+        
+        # Try creating the payment with multiple approaches
+        payment_id = None
+        error_messages = []
+        
+        # Method 1: Full payment data with partner_type
+        try:
+            payment_id = models.execute_kw(
+                db, uid, password,
+                'account.payment', 'create',
+                [payment_data]
+            )
+        except Exception as e1:
+            error_messages.append(f"Method 1 failed: {str(e1)}")
+            
+            # Method 2: Without partner_type field
+            try:
+                simplified_data = {
+                    'payment_type': 'outbound',
+                    'partner_id': vendor_id,
+                    'amount': amount,
+                    'date': payment_date,
+                }
+                
+                if data.get('reference'):
+                    simplified_data['ref'] = data['reference']
+                
+                payment_id = models.execute_kw(
+                    db, uid, password,
+                    'account.payment', 'create',
+                    [simplified_data]
+                )
+            except Exception as e2:
+                error_messages.append(f"Method 2 failed: {str(e2)}")
+        
+        if not payment_id:
+            return {
+                'success': False,
+                'error': f'Failed to create vendor payment. Errors: {"; ".join(error_messages)}'
+            }
+        
+        # Get created payment information
+        payment_info = models.execute_kw(
+            db, uid, password,
+            'account.payment', 'read',
+            [[payment_id]], 
+            {'fields': ['name', 'amount', 'state', 'payment_type', 'partner_type']}
+        )[0]
+        
+        return {
+            'success': True,
+            'payment_id': payment_id,
+            'payment_number': payment_info.get('name'),
+            'vendor_name': vendor_info['name'],
+            'vendor_id': vendor_id,
+            'amount': payment_info.get('amount'),
+            'payment_type': 'vendor_payment',
+            'state': payment_info.get('state'),
+            'payment_date': payment_date,
+            'message': 'Vendor payment created successfully'
+        }
+        
+    except xmlrpc.client.Fault as e:
+        return {
+            'success': False,
+            'error': f'Odoo API error: {str(e)}'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }
+
+def create(data):
+    """Alias for main function to maintain compatibility"""
+    return main(data)
+
+def list_vendor_payments():
+    """Get list of vendor payments for reference"""
+    
     url = 'https://omnithrive-technologies1.odoo.com'
     db = 'omnithrive-technologies1'
     username = os.getenv("ODOO_USERNAME")
@@ -18,165 +207,24 @@ def connect_odoo():
         
         uid = common.authenticate(db, username, password, {})
         if not uid:
-            raise Exception("Authentication failed")
+            return {'success': False, 'error': 'Authentication failed'}
         
-        print("✅ Connected to Odoo successfully!")
-        return models, db, uid, password
-        
-    except Exception as e:
-        print(f"❌ Connection error: {e}")
-        return None, None, None, None
-
-def test_vendor_payment():
-    """Test creating a vendor payment specifically"""
-    models, db, uid, password = connect_odoo()
-    if not models:
-        return
-    
-    try:
-        print("\n🧪 TEST VENDOR PAYMENT CREATION")
-        print("=" * 35)
-        
-        # First, let's see what payment types exist
-        print("🔍 Checking payment types in your system...")
-        
-        # Check existing payments to see the pattern
-        try:
-            all_payments = models.execute_kw(
-                db, uid, password,
-                'account.payment', 'search_read',
-                [[]], 
-                {'fields': ['id', 'name', 'payment_type', 'partner_type', 'partner_id'], 'limit': 5}
-            )
-            
-            print("📋 Sample existing payments:")
-            for payment in all_payments:
-                partner_name = payment['partner_id'][1] if payment.get('partner_id') else 'N/A'
-                print(f"   {payment['name']} | Type: {payment.get('payment_type', 'N/A')} | Partner Type: {payment.get('partner_type', 'N/A')} | Partner: {partner_name}")
-                
-        except Exception as e:
-            print(f"Could not fetch existing payments: {e}")
-        
-        # Get vendors
-        vendors = models.execute_kw(
+        # Get outbound payments (vendor payments)
+        payments = models.execute_kw(
             db, uid, password,
-            'res.partner', 'search_read',
-            [[('supplier_rank', '>', 0)]], 
-            {'fields': ['id', 'name'], 'limit': 5}
+            'account.payment', 'search_read',
+            [[('payment_type', '=', 'outbound')]], 
+            {'fields': ['id', 'name', 'partner_id', 'amount', 'state', 'date'], 'limit': 20}
         )
         
-        if not vendors:
-            print("❌ No vendors found!")
-            return
-        
-        print(f"\n👥 Available Vendors:")
-        for vendor in vendors:
-            print(f"   {vendor['id']}: {vendor['name']}")
-        
-        # Select vendor
-        vendor_id = input("Enter Vendor ID: ").strip()
-        try:
-            vendor_id = int(vendor_id)
-            vendor_name = next(v['name'] for v in vendors if v['id'] == vendor_id)
-            print(f"✅ Selected vendor: {vendor_name}")
-        except (ValueError, StopIteration):
-            print("❌ Invalid vendor ID!")
-            return
-        
-        # Get amount
-        amount = input("Payment amount: ").strip()
-        try:
-            amount = float(amount)
-        except ValueError:
-            print("❌ Invalid amount!")
-            return
-        
-        # Test different payment data configurations
-        print(f"\n🧪 Testing vendor payment creation...")
-        
-        # Configuration 1: Most explicit
-        payment_data_v1 = {
-            'payment_type': 'outbound',      # Money going OUT to vendor
-            'partner_type': 'supplier',      # Partner is a SUPPLIER
-            'partner_id': vendor_id,
-            'amount': amount,
-            'date': datetime.now().strftime('%Y-%m-%d'),
+        return {
+            'success': True,
+            'vendor_payments': payments,
+            'count': len(payments)
         }
         
-        print(f"📋 Creating vendor payment with data:")
-        print(f"   payment_type: 'outbound' (money going out)")
-        print(f"   partner_type: 'supplier' (vendor payment)")
-        print(f"   partner_id: {vendor_id} ({vendor_name})")
-        print(f"   amount: ${amount}")
-        
-        confirm = input("\nProceed with vendor payment creation? (y/n): ").lower().strip()
-        if confirm != 'y':
-            print("❌ Cancelled.")
-            return
-        
-        try:
-            payment_id = models.execute_kw(
-                db, uid, password,
-                'account.payment', 'create',
-                [payment_data_v1]
-            )
-            
-            if payment_id:
-                print(f"✅ SUCCESS! Vendor payment created with ID: {payment_id}")
-                
-                # Verify the created payment
-                created_payment = models.execute_kw(
-                    db, uid, password,
-                    'account.payment', 'read',
-                    [[payment_id]], 
-                    {'fields': ['name', 'payment_type', 'partner_type', 'partner_id', 'amount']}
-                )[0]
-                
-                print(f"\n✅ VERIFICATION - Created payment details:")
-                print(f"   Name: {created_payment['name']}")
-                print(f"   Payment Type: {created_payment['payment_type']}")
-                print(f"   Partner Type: {created_payment['partner_type']}")
-                print(f"   Partner: {created_payment['partner_id'][1]}")
-                print(f"   Amount: ${created_payment['amount']}")
-                
-                if created_payment['payment_type'] == 'outbound' and created_payment['partner_type'] == 'supplier':
-                    print(f"\n🎉 CONFIRMED: This is a VENDOR PAYMENT!")
-                else:
-                    print(f"\n⚠️  WARNING: This might not be a vendor payment!")
-                    
-            else:
-                print("❌ Failed to create payment")
-                
-        except Exception as e:
-            print(f"❌ Error creating payment: {e}")
-            
-            # Try alternative approach
-            print(f"\n🔄 Trying alternative approach...")
-            
-            payment_data_v2 = {
-                'payment_type': 'outbound',
-                'partner_id': vendor_id,
-                'amount': amount,
-                'date': datetime.now().strftime('%Y-%m-%d'),
-            }
-            
-            try:
-                payment_id = models.execute_kw(
-                    db, uid, password,
-                    'account.payment', 'create',
-                    [payment_data_v2]
-                )
-                
-                if payment_id:
-                    print(f"✅ Alternative approach worked! Payment ID: {payment_id}")
-                else:
-                    print("❌ Alternative approach also failed")
-                    
-            except Exception as e2:
-                print(f"❌ Alternative approach failed: {e2}")
-        
     except Exception as e:
-        print(f"❌ Test failed: {e}")
-
-if __name__ == "__main__":
-    test_vendor_payment()
+        return {
+            'success': False,
+            'error': str(e)
+        }

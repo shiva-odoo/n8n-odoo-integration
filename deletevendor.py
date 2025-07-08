@@ -4,14 +4,44 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def delete_vendor():
-    """Simple script to delete vendor in Odoo"""
+def main(data):
+    """
+    Delete vendor from HTTP request data
     
-    # Odoo connection details
+    Expected data format:
+    {
+        "vendor_id": 123,                      # required
+        "force_delete": false,                 # optional, force deletion despite transactions
+        "archive_instead": false               # optional, archive instead of delete
+    }
+    """
+    
+    # Validate required fields
+    if not data.get('vendor_id'):
+        return {
+            'success': False,
+            'error': 'vendor_id is required'
+        }
+    
+    try:
+        vendor_id = int(data['vendor_id'])
+    except (ValueError, TypeError):
+        return {
+            'success': False,
+            'error': 'vendor_id must be a valid number'
+        }
+    
+    # Connection details
     url = 'https://omnithrive-technologies1.odoo.com'
     db = 'omnithrive-technologies1'
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
+    
+    if not username or not password:
+        return {
+            'success': False,
+            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+        }
     
     try:
         # Connect to Odoo
@@ -21,18 +51,10 @@ def delete_vendor():
         # Authenticate
         uid = common.authenticate(db, username, password, {})
         if not uid:
-            print("❌ Authentication failed!")
-            return
-        
-        print("✅ Connected to Odoo successfully!")
-        
-        # Get vendor ID from user
-        vendor_id = input("\nEnter Vendor ID to delete: ")
-        try:
-            vendor_id = int(vendor_id)
-        except ValueError:
-            print("❌ Invalid vendor ID. Please enter a number.")
-            return
+            return {
+                'success': False,
+                'error': 'Odoo authentication failed'
+            }
         
         # Check if vendor exists
         vendor_exists = models.execute_kw(
@@ -42,80 +64,57 @@ def delete_vendor():
         )
         
         if not vendor_exists:
-            print(f"❌ Vendor with ID {vendor_id} not found!")
-            return
+            return {
+                'success': False,
+                'error': f'Vendor with ID {vendor_id} not found'
+            }
         
         # Get current vendor info
         current_vendor = models.execute_kw(
             db, uid, password,
             'res.partner', 'read',
             [[vendor_id]], 
-            {'fields': ['name', 'email', 'phone', 'vat', 'active']}
+            {'fields': ['name', 'email', 'phone', 'vat', 'active', 'supplier_rank']}
         )[0]
         
-        print(f"\n📋 Vendor to Delete:")
-        print(f"   ID: {vendor_id}")
-        print(f"   Name: {current_vendor.get('name', 'N/A')}")
-        print(f"   Email: {current_vendor.get('email', 'N/A')}")
-        print(f"   Phone: {current_vendor.get('phone', 'N/A')}")
-        print(f"   VAT: {current_vendor.get('vat', 'N/A')}")
-        print(f"   Status: {'Active' if current_vendor.get('active') else 'Archived'}")
-        
         # Check for existing transactions
-        print(f"\n🔍 Checking for existing transactions...")
+        transaction_counts = {}
         
         # Check for vendor bills
-        invoice_count = models.execute_kw(
-            db, uid, password,
-            'account.move', 'search_count',
-            [[('partner_id', '=', vendor_id), ('move_type', '=', 'in_invoice')]]
-        )
+        try:
+            transaction_counts['bills'] = models.execute_kw(
+                db, uid, password,
+                'account.move', 'search_count',
+                [[('partner_id', '=', vendor_id), ('move_type', '=', 'in_invoice')]]
+            )
+        except Exception:
+            transaction_counts['bills'] = 0
         
         # Check for payments
-        payment_count = models.execute_kw(
-            db, uid, password,
-            'account.payment', 'search_count',
-            [[('partner_id', '=', vendor_id)]]
-        )
-        
-        # Check for purchase orders (if module exists)
-        po_count = 0
         try:
-            po_count = models.execute_kw(
+            transaction_counts['payments'] = models.execute_kw(
+                db, uid, password,
+                'account.payment', 'search_count',
+                [[('partner_id', '=', vendor_id)]]
+            )
+        except Exception:
+            transaction_counts['payments'] = 0
+        
+        # Check for purchase orders
+        try:
+            transaction_counts['purchase_orders'] = models.execute_kw(
                 db, uid, password,
                 'purchase.order', 'search_count',
                 [[('partner_id', '=', vendor_id)]]
             )
-        except:
-            pass  # Purchase module might not be installed
+        except Exception:
+            transaction_counts['purchase_orders'] = 0
         
-        total_transactions = invoice_count + payment_count + po_count
+        total_transactions = sum(transaction_counts.values())
         
-        print(f"   📄 Vendor Bills: {invoice_count}")
-        print(f"   💰 Payments: {payment_count}")
-        print(f"   🛒 Purchase Orders: {po_count}")
-        print(f"   📊 Total Transactions: {total_transactions}")
-        
-        # Determine deletion approach
-        if total_transactions > 0:
-            print(f"\n⚠️  WARNING: This vendor has {total_transactions} existing transactions!")
-            print("   Deleting vendors with transactions may cause data integrity issues.")
-            print("\n🔧 Available Options:")
-            print("   1. Archive vendor (recommended - hides but preserves data)")
-            print("   2. Force delete (dangerous - may cause errors)")
-            print("   3. Cancel operation")
-            
-            choice = input("\nChoose option (1/2/3): ").strip()
-            
-            if choice == "1":
-                # Archive vendor
-                print(f"\n🗃️  Archiving vendor {vendor_id}...")
-                
-                confirm = input("Confirm archive operation? (y/n): ").lower().strip()
-                if confirm != 'y':
-                    print("❌ Operation cancelled.")
-                    return
-                
+        # If archive_instead is requested, archive the vendor
+        if data.get('archive_instead', False):
+            try:
                 result = models.execute_kw(
                     db, uid, password,
                     'res.partner', 'write',
@@ -123,87 +122,149 @@ def delete_vendor():
                 )
                 
                 if result:
-                    print(f"✅ Vendor {vendor_id} archived successfully!")
-                    print("   The vendor is now hidden but data is preserved.")
-                    print("   You can unarchive it later if needed.")
+                    return {
+                        'success': True,
+                        'vendor_id': vendor_id,
+                        'vendor_name': current_vendor['name'],
+                        'action': 'archived',
+                        'transaction_counts': transaction_counts,
+                        'message': 'Vendor archived successfully (data preserved)'
+                    }
                 else:
-                    print(f"❌ Failed to archive vendor {vendor_id}")
-                    
-            elif choice == "2":
-                # Force delete
-                print(f"\n⚠️  FORCE DELETING vendor {vendor_id}...")
-                print("   This may cause database errors or data corruption!")
-                
-                confirm = input("Are you absolutely sure? Type 'DELETE' to confirm: ").strip()
-                if confirm != 'DELETE':
-                    print("❌ Operation cancelled.")
-                    return
-                
-                try:
-                    result = models.execute_kw(
-                        db, uid, password,
-                        'res.partner', 'unlink',
-                        [[vendor_id]]
-                    )
-                    
-                    if result:
-                        print(f"✅ Vendor {vendor_id} force deleted!")
-                    else:
-                        print(f"❌ Failed to delete vendor {vendor_id}")
-                        
-                except Exception as e:
-                    print(f"❌ Force delete failed: {e}")
-                    print("   Consider archiving instead.")
-                    
-            else:
-                print("❌ Operation cancelled.")
-                return
-                
-        else:
-            # Safe to delete - no transactions
-            print(f"\n✅ Safe to delete - no existing transactions found.")
-            print(f"\n🗑️  Deleting vendor {vendor_id}...")
-            
-            confirm = input("Confirm deletion? (y/n): ").lower().strip()
-            if confirm != 'y':
-                print("❌ Operation cancelled.")
-                return
-            
-            try:
-                result = models.execute_kw(
-                    db, uid, password,
-                    'res.partner', 'unlink',
-                    [[vendor_id]]
-                )
-                
-                if result:
-                    print(f"✅ Vendor {vendor_id} deleted successfully!")
-                else:
-                    print(f"❌ Failed to delete vendor {vendor_id}")
-                    
+                    return {
+                        'success': False,
+                        'error': 'Failed to archive vendor'
+                    }
             except Exception as e:
-                print(f"❌ Deletion failed: {e}")
+                return {
+                    'success': False,
+                    'error': f'Archiving failed: {str(e)}'
+                }
+        
+        # If vendor has transactions and force_delete is not set, recommend archiving
+        if total_transactions > 0 and not data.get('force_delete', False):
+            return {
+                'success': False,
+                'error': f'Vendor has {total_transactions} existing transactions',
+                'transaction_counts': transaction_counts,
+                'suggestion': 'Set archive_instead: true to safely archive vendor or force_delete: true to delete anyway',
+                'risk': 'Deleting vendors with transactions may cause data integrity issues'
+            }
+        
+        # Attempt deletion
+        try:
+            result = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'unlink',
+                [[vendor_id]]
+            )
+            
+            if result:
+                warnings = []
+                if total_transactions > 0:
+                    warnings.append(f'Vendor had {total_transactions} transactions that may be affected')
                 
-                # Offer archiving as fallback
-                print("\n💡 Deletion failed. Try archiving instead?")
-                archive_choice = input("Archive vendor? (y/n): ").lower().strip()
+                return {
+                    'success': True,
+                    'vendor_id': vendor_id,
+                    'vendor_name': current_vendor['name'],
+                    'action': 'deleted',
+                    'transaction_counts': transaction_counts,
+                    'warnings': warnings,
+                    'message': 'Vendor deleted successfully'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Failed to delete vendor - unknown error'
+                }
                 
-                if archive_choice == 'y':
-                    result = models.execute_kw(
+        except Exception as delete_error:
+            error_msg = str(delete_error)
+            
+            # If deletion failed, try archiving as fallback (if not force_delete)
+            if not data.get('force_delete', False):
+                try:
+                    archive_result = models.execute_kw(
                         db, uid, password,
                         'res.partner', 'write',
                         [[vendor_id], {'active': False}]
                     )
                     
-                    if result:
-                        print(f"✅ Vendor {vendor_id} archived successfully!")
-                    else:
-                        print(f"❌ Archiving also failed.")
-                        
+                    if archive_result:
+                        return {
+                            'success': True,
+                            'vendor_id': vendor_id,
+                            'vendor_name': current_vendor['name'],
+                            'action': 'archived_fallback',
+                            'transaction_counts': transaction_counts,
+                            'message': 'Could not delete, but vendor archived successfully (data preserved)',
+                            'original_error': error_msg
+                        }
+                except Exception:
+                    pass
+            
+            # Provide specific error explanations
+            if "constraint" in error_msg.lower() or "foreign key" in error_msg.lower():
+                return {
+                    'success': False,
+                    'error': 'Vendor has related records that prevent deletion',
+                    'suggestion': 'Try archiving instead by setting archive_instead: true',
+                    'transaction_counts': transaction_counts
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f'Deletion failed: {error_msg}',
+                    'suggestion': 'Try archiving instead or remove related transactions first'
+                }
+        
+    except xmlrpc.client.Fault as e:
+        return {
+            'success': False,
+            'error': f'Odoo API error: {str(e)}'
+        }
     except Exception as e:
-        print(f"❌ Error: {e}")
+        return {
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }
 
-if __name__ == "__main__":
-    print("🗑️  Odoo Vendor Deletion Tool")
-    print("=" * 30)
-    delete_vendor()
+def delete(data):
+    """Alias for main function to maintain compatibility"""
+    return main(data)
+
+def list_vendors():
+    """Get list of vendors for reference"""
+    
+    url = 'https://omnithrive-technologies1.odoo.com'
+    db = 'omnithrive-technologies1'
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        vendors = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search_read',
+            [[('supplier_rank', '>', 0)]], 
+            {'fields': ['id', 'name', 'email', 'phone', 'active'], 'order': 'name', 'limit': 50}
+        )
+        
+        return {
+            'success': True,
+            'vendors': vendors,
+            'count': len(vendors)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }

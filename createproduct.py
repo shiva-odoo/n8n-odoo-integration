@@ -4,8 +4,235 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def connect_odoo():
-    """Connect to Odoo"""
+def main(data):
+    """
+    Create product from HTTP request data
+    
+    Expected data format:
+    {
+        "name": "Product Name",                  # required
+        "default_code": "PROD001",               # optional, product code/SKU
+        "list_price": 99.99,                     # optional, selling price
+        "product_type": "consu",                 # optional, defaults to "consu" (consumable)
+        "description": "Product description",    # optional
+        "barcode": "1234567890"                  # optional
+    }
+    """
+    
+    # Validate required fields
+    if not data.get('name'):
+        return {
+            'success': False,
+            'error': 'name is required'
+        }
+    
+    # Connection details
+    url = 'https://omnithrive-technologies1.odoo.com'
+    db = 'omnithrive-technologies1'
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    if not username or not password:
+        return {
+            'success': False,
+            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+        }
+    
+    try:
+        # Connect to Odoo
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        # Authenticate
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {
+                'success': False,
+                'error': 'Odoo authentication failed'
+            }
+        
+        # Check if product already exists (by name or code)
+        search_domain = [('name', '=', data['name'])]
+        if data.get('default_code'):
+            search_domain = ['|', ('name', '=', data['name']), ('default_code', '=', data['default_code'])]
+        
+        existing_product = models.execute_kw(
+            db, uid, password,
+            'product.product', 'search_read',
+            [search_domain], 
+            {'fields': ['id', 'name', 'default_code'], 'limit': 1}
+        )
+        
+        if existing_product:
+            product_info = existing_product[0]
+            return {
+                'success': True,
+                'product_id': product_info['id'],
+                'product_name': product_info['name'],
+                'default_code': product_info.get('default_code'),
+                'message': 'Product already exists',
+                'existing': True
+            }
+        
+        # Prepare product data
+        product_data = {
+            'name': data['name'],
+        }
+        
+        # Add optional fields with validation
+        if data.get('default_code'):
+            product_data['default_code'] = data['default_code']
+        
+        if data.get('list_price'):
+            try:
+                list_price = float(data['list_price'])
+                if list_price >= 0:
+                    product_data['list_price'] = list_price
+                else:
+                    return {
+                        'success': False,
+                        'error': 'list_price must be non-negative'
+                    }
+            except (ValueError, TypeError):
+                return {
+                    'success': False,
+                    'error': 'list_price must be a valid number'
+                }
+        
+        # Set product type (validate allowed values)
+        product_type = data.get('product_type', 'consu')
+        if product_type in ['consu', 'service', 'product']:
+            product_data['type'] = product_type
+        else:
+            return {
+                'success': False,
+                'error': 'product_type must be one of: consu, service, product'
+            }
+        
+        # Add description if provided
+        if data.get('description'):
+            product_data['description'] = data['description']
+        
+        # Add barcode if provided
+        if data.get('barcode'):
+            product_data['barcode'] = data['barcode']
+        
+        # Create product using multiple methods to handle different Odoo configurations
+        product_id = None
+        error_messages = []
+        
+        # Method 1: Try with all fields
+        try:
+            product_id = models.execute_kw(
+                db, uid, password,
+                'product.product', 'create',
+                [product_data]
+            )
+        except Exception as e1:
+            error_messages.append(f"Method 1 failed: {str(e1)}")
+            
+            # Method 2: Try with minimal fields only
+            try:
+                minimal_data = {'name': data['name']}
+                if 'type' in product_data:
+                    minimal_data['type'] = product_data['type']
+                
+                product_id = models.execute_kw(
+                    db, uid, password,
+                    'product.product', 'create',
+                    [minimal_data]
+                )
+                
+                # If successful, try to update with additional fields
+                if product_id and len(product_data) > len(minimal_data):
+                    update_data = {k: v for k, v in product_data.items() if k not in minimal_data}
+                    try:
+                        models.execute_kw(
+                            db, uid, password,
+                            'product.product', 'write',
+                            [[product_id], update_data]
+                        )
+                    except Exception as update_error:
+                        error_messages.append(f"Update failed: {str(update_error)}")
+                        
+            except Exception as e2:
+                error_messages.append(f"Method 2 failed: {str(e2)}")
+                
+                # Method 3: Try with product.template instead
+                try:
+                    template_id = models.execute_kw(
+                        db, uid, password,
+                        'product.template', 'create',
+                        [{'name': data['name']}]
+                    )
+                    
+                    if template_id:
+                        # Get the corresponding product.product record
+                        product_ids = models.execute_kw(
+                            db, uid, password,
+                            'product.product', 'search',
+                            [[('product_tmpl_id', '=', template_id)]], {'limit': 1}
+                        )
+                        if product_ids:
+                            product_id = product_ids[0]
+                            
+                except Exception as e3:
+                    error_messages.append(f"Method 3 failed: {str(e3)}")
+        
+        if not product_id:
+            return {
+                'success': False,
+                'error': f'Failed to create product. Errors: {"; ".join(error_messages)}'
+            }
+        
+        # Get created product information
+        try:
+            product_info = models.execute_kw(
+                db, uid, password,
+                'product.product', 'read',
+                [[product_id]], 
+                {'fields': ['name', 'default_code', 'list_price', 'type', 'barcode']}
+            )[0]
+        except Exception:
+            # Fallback if detailed read fails
+            product_info = {
+                'name': data['name'],
+                'default_code': data.get('default_code'),
+                'list_price': data.get('list_price', 0.0),
+                'type': data.get('product_type', 'consu'),
+                'barcode': data.get('barcode')
+            }
+        
+        return {
+            'success': True,
+            'product_id': product_id,
+            'product_name': product_info['name'],
+            'default_code': product_info.get('default_code'),
+            'list_price': product_info.get('list_price', 0.0),
+            'product_type': product_info.get('type'),
+            'barcode': product_info.get('barcode'),
+            'message': 'Product created successfully',
+            'existing': False
+        }
+        
+    except xmlrpc.client.Fault as e:
+        return {
+            'success': False,
+            'error': f'Odoo API error: {str(e)}'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }
+
+def create(data):
+    """Alias for main function to maintain compatibility"""
+    return main(data)
+
+def list_products():
+    """Get list of products for reference"""
+    
     url = 'https://omnithrive-technologies1.odoo.com'
     db = 'omnithrive-technologies1'
     username = os.getenv("ODOO_USERNAME")
@@ -17,277 +244,23 @@ def connect_odoo():
         
         uid = common.authenticate(db, username, password, {})
         if not uid:
-            raise Exception("Authentication failed")
+            return {'success': False, 'error': 'Authentication failed'}
         
-        print("✅ Connected to Odoo successfully!")
-        return models, db, uid, password
-        
-    except Exception as e:
-        print(f"❌ Connection error: {e}")
-        return None, None, None, None
-
-def list_products():
-    """List all products"""
-    models, db, uid, password = connect_odoo()
-    if not models:
-        return
-    
-    try:
         products = models.execute_kw(
             db, uid, password,
             'product.product', 'search_read',
             [[]], 
-            {'fields': ['id', 'name', 'default_code', 'list_price'], 'limit': 20}
+            {'fields': ['id', 'name', 'default_code', 'list_price', 'type'], 'limit': 20}
         )
         
-        print(f"\n📦 Products ({len(products)} found):")
-        print("=" * 60)
+        return {
+            'success': True,
+            'products': products,
+            'count': len(products)
+        }
         
-        if not products:
-            print("   No products found!")
-            return
-        
-        for product in products:
-            code_info = f" [{product['default_code']}]" if product.get('default_code') else ""
-            print(f"   ID: {product['id']} | {product['name']}{code_info} | ${product['list_price']}")
-            
     except Exception as e:
-        print(f"❌ Error listing products: {e}")
-
-def create_product():
-    """Create a new product with minimal data"""
-    models, db, uid, password = connect_odoo()
-    if not models:
-        return
-    
-    try:
-        print("\n➕ CREATE PRODUCT")
-        print("=" * 18)
-        
-        name = input("Product Name: ").strip()
-        if not name:
-            print("❌ Product name is required!")
-            return
-        
-        # Try different product type approaches
-        print("🔄 Creating product...")
-        
-        # Method 1: Just name (minimal approach)
-        try:
-            product_data = {'name': name}
-            
-            product_id = models.execute_kw(
-                db, uid, password,
-                'product.product', 'create',
-                [product_data]
-            )
-            
-            if product_id:
-                print(f"✅ Product created successfully!")
-                print(f"   Product ID: {product_id}")
-                print(f"   Name: {name}")
-                
-                # Now try to update with additional fields
-                code = input("Add product code? (optional): ").strip()
-                price = input("Add selling price? (optional): ").strip()
-                
-                updates = {}
-                if code:
-                    updates['default_code'] = code
-                if price:
-                    try:
-                        updates['list_price'] = float(price)
-                    except ValueError:
-                        print("⚠️  Invalid price format")
-                
-                if updates:
-                    try:
-                        models.execute_kw(
-                            db, uid, password,
-                            'product.product', 'write',
-                            [[product_id], updates]
-                        )
-                        print(f"✅ Product details updated!")
-                    except Exception as e:
-                        print(f"⚠️  Could not update additional details: {e}")
-                
-                return
-            
-        except Exception as e1:
-            print(f"❌ Method 1 failed: Basic creation error")
-            
-            # Method 2: Try with different type values
-            for product_type in [None, 'consu', 'service']:
-                try:
-                    print(f"🔄 Trying with type: {product_type or 'default'}")
-                    
-                    product_data = {'name': name}
-                    if product_type:
-                        product_data['type'] = product_type
-                    
-                    product_id = models.execute_kw(
-                        db, uid, password,
-                        'product.product', 'create',
-                        [product_data]
-                    )
-                    
-                    if product_id:
-                        print(f"✅ Product created successfully!")
-                        print(f"   Product ID: {product_id}")
-                        print(f"   Type: {product_type or 'default'}")
-                        return
-                        
-                except Exception as e2:
-                    print(f"   Failed with type {product_type}")
-                    continue
-            
-            print(f"❌ All creation methods failed")
-            print(f"💡 Your user may not have permission to create products")
-            
-    except Exception as e:
-        print(f"❌ Error creating product: {e}")
-
-def modify_product():
-    """Modify a product"""
-    models, db, uid, password = connect_odoo()
-    if not models:
-        return
-    
-    try:
-        list_products()
-        
-        product_id = input("\nEnter Product ID to modify: ").strip()
-        try:
-            product_id = int(product_id)
-        except ValueError:
-            print("❌ Invalid product ID!")
-            return
-        
-        # Get current info
-        current = models.execute_kw(
-            db, uid, password,
-            'product.product', 'read',
-            [[product_id]], {'fields': ['name', 'default_code', 'list_price']}
-        )
-        
-        if not current:
-            print(f"❌ Product not found!")
-            return
-        
-        info = current[0]
-        print(f"\nCurrent: {info['name']} | Code: {info.get('default_code', 'None')} | Price: ${info['list_price']}")
-        
-        # Get updates
-        updates = {}
-        
-        new_name = input("New name (Enter to skip): ").strip()
-        if new_name:
-            updates['name'] = new_name
-        
-        new_code = input("New code (Enter to skip): ").strip()
-        if new_code:
-            updates['default_code'] = new_code
-        
-        new_price = input("New price (Enter to skip): ").strip()
-        if new_price:
-            try:
-                updates['list_price'] = float(new_price)
-            except ValueError:
-                print("⚠️  Invalid price")
-        
-        if not updates:
-            print("No changes made.")
-            return
-        
-        result = models.execute_kw(
-            db, uid, password,
-            'product.product', 'write',
-            [[product_id], updates]
-        )
-        
-        if result:
-            print("✅ Product updated!")
-        else:
-            print("❌ Update failed")
-            
-    except Exception as e:
-        print(f"❌ Error: {e}")
-
-def delete_product():
-    """Delete a product"""
-    models, db, uid, password = connect_odoo()
-    if not models:
-        return
-    
-    try:
-        list_products()
-        
-        product_id = input("\nEnter Product ID to delete: ").strip()
-        try:
-            product_id = int(product_id)
-        except ValueError:
-            print("❌ Invalid product ID!")
-            return
-        
-        # Get product name for confirmation
-        product = models.execute_kw(
-            db, uid, password,
-            'product.product', 'read',
-            [[product_id]], {'fields': ['name']}
-        )
-        
-        if not product:
-            print("❌ Product not found!")
-            return
-        
-        name = product[0]['name']
-        
-        confirm = input(f"Delete '{name}'? (yes/no): ").lower().strip()
-        if confirm != 'yes':
-            print("❌ Cancelled.")
-            return
-        
-        result = models.execute_kw(
-            db, uid, password,
-            'product.product', 'unlink',
-            [[product_id]]
-        )
-        
-        if result:
-            print("✅ Product deleted!")
-        else:
-            print("❌ Delete failed")
-            
-    except Exception as e:
-        print(f"❌ Error: {e}")
-
-def main():
-    """Main menu"""
-    while True:
-        print("\n" + "="*30)
-        print("📦 MINIMAL PRODUCT MANAGER")
-        print("="*30)
-        print("1. List products")
-        print("2. Create product")
-        print("3. Modify product")
-        print("4. Delete product")
-        print("5. Exit")
-        
-        choice = input("\nChoice (1-5): ").strip()
-        
-        if choice == "1":
-            list_products()
-        elif choice == "2":
-            create_product()
-        elif choice == "3":
-            modify_product()
-        elif choice == "4":
-            delete_product()
-        elif choice == "5":
-            print("👋 Goodbye!")
-            break
-        else:
-            print("❌ Invalid choice!")
-
-if __name__ == "__main__":
-    main()
+        return {
+            'success': False,
+            'error': str(e)
+        }
