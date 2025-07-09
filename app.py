@@ -92,7 +92,7 @@ def home():
                 "method": "DELETE",
                 "body": {
                     "vendor_id": 123,
-                    "archive_instead": true
+                    "archive_instead": True  # ✅ Fixed: Python boolean
                 },
                 "description": "Safely delete vendor with archive fallback"
             },
@@ -122,7 +122,7 @@ def home():
                 "method": "DELETE",
                 "body": {
                     "company_id": 2,
-                    "archive_instead": true
+                    "archive_instead": True  # ✅ Fixed: Python boolean
                 },
                 "description": "Delete company with automatic archive fallback"
             }
@@ -492,11 +492,11 @@ def vendor_docs():
             "examples": {
                 "safe_delete": {
                     "vendor_id": 123,
-                    "archive_instead": true
+                    "archive_instead": True  # ✅ Fixed: Python boolean
                 },
                 "force_delete": {
                     "vendor_id": 123,
-                    "force_delete": true
+                    "force_delete": True  # ✅ Fixed: Python boolean
                 }
             }
         }
@@ -572,7 +572,7 @@ def bill_docs():
                 },
                 "force_delete_with_reset": {
                     "bill_id": 123,
-                    "reset_to_draft": true
+                    "reset_to_draft": True  # ✅ Fixed: Python boolean
                 }
             }
         }
@@ -622,6 +622,6 @@ def bad_request(error):
     return jsonify({'success': False, 'error': 'Bad request - check your JSON format'}), 400
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    port = int(os.environ.get('PORT', 8080))
+    debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug)
