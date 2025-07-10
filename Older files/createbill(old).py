@@ -1,9 +1,13 @@
 import xmlrpc.client
 from datetime import datetime
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+# Load .env only in development (when .env file exists)
+if os.path.exists('.env'):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass  # dotenv not installed, use system env vars
 
 def create_vendor_bill_simple():
     """Simplified vendor bill creation - avoids complex account lookups"""

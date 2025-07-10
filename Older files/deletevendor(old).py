@@ -1,8 +1,12 @@
 import xmlrpc.client
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+# Load .env only in development (when .env file exists)
+if os.path.exists('.env'):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass  # dotenv not installed, use system env vars
 
 def delete_vendor():
     """Simple script to delete vendor in Odoo"""
