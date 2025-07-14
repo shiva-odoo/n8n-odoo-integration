@@ -32,9 +32,15 @@ app = Flask(__name__)
 def home():
     endpoints = {
         "message": "Complete Business Management API",
-        "version": "3.0",
-        "total_endpoints": 28,
+        "version": "4.0",
+        "total_endpoints": 32,
         "available_endpoints": {
+            "PDF Extraction (NEW - 4 endpoints)": {
+                "/api/extract-pdf-data": "POST - Extract structured data from PDF files",
+                "/api/process-document": "POST - Complete document processing (extract + create records)",
+                "/api/extract-from-url": "POST - Extract from file URL",
+                "/api/extraction-status": "GET - Check extraction status"
+            },
             "Reference Data (9 endpoints)": {
                 "/api/vendors": "GET - List all vendors",
                 "/api/companies": "GET - List all companies", 
@@ -130,6 +136,226 @@ def home():
         }
     }
     return jsonify(endpoints)
+
+# NEW PDF EXTRACTION ENDPOINTS
+@app.route('/api/extract-pdf-data', methods=['POST'])
+def extract_pdf_data():
+    """
+    Extract structured data from PDF files
+    Expected input from n8n: file_name, file_content (base64), file_type
+    """
+    if not PDF_EXTRACTION_AVAILABLE:
+        return jsonify({"success": False, "error": "PDF extraction not available"}), 500
+    
+    try:
+        data = request.get_json()
+        
+        # Validate input
+        if not data:
+            return jsonify({"success": False, "error": "No JSON data provided"}), 400
+            
+        required_fields = ['file_name', 'file_content']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"success": False, "error": f"Missing required field: {field}"}), 400
+        
+        file_name = data['file_name']
+        file_content_b64 = data['file_content']
+        file_type = data.get('file_type', 'application/pdf')
+        
+        logger.info(f"Processing file: {file_name}, type: {file_type}")
+        
+        # Decode base64 content
+        try:
+            file_content = base64.b64decode(file_content_b64)
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Invalid base64 content: {str(e)}"}), 400
+        
+        # Process based on file type
+        if file_type == 'application/pdf':
+            result = pdf_extractor.extract_from_pdf(file_content, file_name)
+        elif file_type.startswith('image/'):
+            image_data = f"data:{file_type};base64,{file_content_b64}"
+            result = pdf_extractor.extract_from_image(image_data, file_name)
+        else:
+            return jsonify({"success": False, "error": f"Unsupported file type: {file_type}"}), 400
+        
+        if result["success"]:
+            # Format data for your existing Odoo APIs
+            formatted_data = pdf_extractor.format_for_odoo_apis(result["extracted_data"])
+            result["formatted_for_odoo"] = formatted_data
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Extraction error: {str(e)}")
+        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+
+@app.route('/api/process-document', methods=['POST'])
+def process_document():
+    """
+    Complete document processing: Extract data + Create vendor + Create company + Create bill
+    This is the main endpoint for n8n workflow
+    """
+    if not PDF_EXTRACTION_AVAILABLE:
+        return jsonify({"success": False, "error": "PDF extraction not available"}), 500
+    
+    try:
+        # Extract data from the same request
+        file_name = request.json.get('file_name')
+        file_content_b64 = request.json.get('file_content')
+        file_type = request.json.get('file_type', 'application/pdf')
+        
+        if not file_name or not file_content_b64:
+            return jsonify({"success": False, "error": "file_name and file_content are required"}), 400
+        
+        # Decode and extract
+        file_content = base64.b64decode(file_content_b64)
+        
+        if file_type == 'application/pdf':
+            extraction_result = pdf_extractor.extract_from_pdf(file_content, file_name)
+        elif file_type.startswith('image/'):
+            image_data = f"data:{file_type};base64,{file_content_b64}"
+            extraction_result = pdf_extractor.extract_from_image(image_data, file_name)
+        else:
+            return jsonify({"success": False, "error": f"Unsupported file type: {file_type}"}), 400
+        
+        if not extraction_result.get("success"):
+            return jsonify({
+                "success": False,
+                "step": "extraction",
+                "error": extraction_result.get("error")
+            })
+        
+        formatted_data = pdf_extractor.format_for_odoo_apis(extraction_result["extracted_data"])
+        results = {
+            "success": True,
+            "extraction": extraction_result,
+            "vendor_creation": None,
+            "company_creation": None,
+            "bill_creation": None,
+            "processing_summary": {
+                "file_name": file_name,
+                "extraction_method": extraction_result.get("extraction_method"),
+                "records_created": []
+            }
+        }
+        
+        # Step 2: Create vendor if vendor data exists
+        vendor_data = formatted_data.get("vendor_data", {})
+        if vendor_data.get("name"):
+            try:
+                vendor_result = createvendor.main(vendor_data)
+                results["vendor_creation"] = vendor_result
+                if vendor_result.get("success"):
+                    results["processing_summary"]["records_created"].append("vendor")
+                    vendor_id = vendor_result.get("vendor_id")
+                else:
+                    logger.warning(f"Vendor creation failed: {vendor_result.get('error')}")
+            except Exception as e:
+                logger.error(f"Vendor creation error: {str(e)}")
+                results["vendor_creation"] = {"success": False, "error": str(e)}
+        
+        # Step 3: Create company if customer data exists
+        company_data = formatted_data.get("company_data", {})
+        if company_data.get("name"):
+            try:
+                company_result = createcompany.main(company_data)
+                results["company_creation"] = company_result
+                if company_result.get("success"):
+                    results["processing_summary"]["records_created"].append("company")
+            except Exception as e:
+                logger.error(f"Company creation error: {str(e)}")
+                results["company_creation"] = {"success": False, "error": str(e)}
+        
+        # Step 4: Create bill if we have vendor and bill data
+        bill_data = formatted_data.get("bill_data", {})
+        vendor_result = results.get("vendor_creation", {})
+        
+        if bill_data and vendor_result and vendor_result.get("success"):
+            # Add vendor_id to bill data
+            bill_data["vendor_id"] = vendor_result.get("vendor_id")
+            
+            try:
+                bill_result = createbill.main(bill_data)
+                results["bill_creation"] = bill_result
+                if bill_result.get("success"):
+                    results["processing_summary"]["records_created"].append("bill")
+            except Exception as e:
+                logger.error(f"Bill creation error: {str(e)}")
+                results["bill_creation"] = {"success": False, "error": str(e)}
+        
+        # Generate summary
+        total_created = len(results["processing_summary"]["records_created"])
+        results["processing_summary"]["total_records_created"] = total_created
+        results["processing_summary"]["status"] = "completed" if total_created > 0 else "partial"
+        
+        return jsonify(results)
+        
+    except Exception as e:
+        logger.error(f"Document processing error: {str(e)}")
+        return jsonify({
+            "success": False,
+            "step": "processing",
+            "error": f"Processing failed: {str(e)}"
+        }), 500
+
+@app.route('/api/extract-from-url', methods=['POST'])
+def extract_from_url():
+    """
+    Extract data from a file URL (for Google Drive files)
+    """
+    if not PDF_EXTRACTION_AVAILABLE:
+        return jsonify({"success": False, "error": "PDF extraction not available"}), 500
+    
+    try:
+        data = request.get_json()
+        file_url = data.get('file_url')
+        
+        if not file_url:
+            return jsonify({"success": False, "error": "file_url is required"}), 400
+        
+        # Download file from URL
+        import requests
+        response = requests.get(file_url)
+        response.raise_for_status()
+        
+        file_content = response.content
+        file_name = data.get('file_name', 'document.pdf')
+        file_type = response.headers.get('content-type', 'application/pdf')
+        
+        # Process the downloaded file
+        if file_type == 'application/pdf':
+            result = pdf_extractor.extract_from_pdf(file_content, file_name)
+        elif file_type.startswith('image/'):
+            file_content_b64 = base64.b64encode(file_content).decode()
+            image_data = f"data:{file_type};base64,{file_content_b64}"
+            result = pdf_extractor.extract_from_image(image_data, file_name)
+        else:
+            return jsonify({"success": False, "error": f"Unsupported file type: {file_type}"}), 400
+        
+        if result["success"]:
+            formatted_data = pdf_extractor.format_for_odoo_apis(result["extracted_data"])
+            result["formatted_for_odoo"] = formatted_data
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"URL extraction error: {str(e)}")
+        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
+
+@app.route('/api/extraction-status', methods=['GET'])
+def extraction_status():
+    """
+    Check extraction service status
+    """
+    return jsonify({
+        "success": True,
+        "pdf_extraction_available": PDF_EXTRACTION_AVAILABLE,
+        "supported_formats": ["application/pdf", "image/jpeg", "image/png", "image/jpg"] if PDF_EXTRACTION_AVAILABLE else [],
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "version": "4.0"
+    })
 
 # Reference Data Operations
 @app.route('/api/vendors', methods=['GET'])
@@ -625,4 +851,4 @@ def bad_request(error):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    app.run(host='0.0.0.0', port=port, debug=debug)  # 0.0.0.0 allows external access
