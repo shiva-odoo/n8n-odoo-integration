@@ -49,7 +49,7 @@ def main(data):
             'error': 'vendor_id is required'
         }
     
-    # Odoo connection details 
+    # Odoo connection details  
     url = 'https://omnithrive-technologies1.odoo.com'
     db = 'omnithrive-technologies1'
     username = os.getenv("ODOO_USERNAME")
