@@ -27,6 +27,7 @@ except ImportError as e:
 app = Flask(__name__)
 
 # Home endpoint with comprehensive API documentation
+
 @app.route('/')
 def home():
     endpoints = {
