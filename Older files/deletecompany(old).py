@@ -12,8 +12,8 @@ def delete_company():
     """Simple script to delete a company in Odoo"""
     
     # Odoo connection details
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -174,8 +174,8 @@ def delete_company():
 def list_companies_only():
     """Just list companies without deleting"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = 'admin@omnithrivetech.com'
     password = '08d538a8d48fa4ad9d9fb0bbea9edb6d155a66fc'
     

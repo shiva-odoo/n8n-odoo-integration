@@ -13,8 +13,8 @@ def create_vendor_bill_with_company():
     """Create vendor bill with company selection"""
     
     # Odoo connection details
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -225,8 +225,8 @@ def create_vendor_bill_with_company():
 def list_companies():
     """List all companies in the system"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -262,8 +262,8 @@ def list_companies():
 def check_company_setup():
     """Check if companies have proper journal setup"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -341,8 +341,8 @@ def check_company_setup():
 def list_vendors_by_company():
     """List vendors grouped by company"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -412,8 +412,8 @@ def list_vendors_by_company():
 def list_vendors():
     """Helper function to list all vendors (original function)"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     

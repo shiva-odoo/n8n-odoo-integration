@@ -70,8 +70,8 @@ def main(data):
         }
     
     # Connection details
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -231,8 +231,8 @@ def create(data):
 def list_credit_notes():
     """Get list of credit notes for reference"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     

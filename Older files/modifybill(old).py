@@ -12,8 +12,8 @@ def modify_vendor_bill():
     """Simple script to modify a vendor bill in Odoo"""
     
     # Odoo connection details
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -288,8 +288,8 @@ def modify_vendor_bill():
 def list_vendor_bills():
     """Helper function to list all vendor bills"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = 'admin@omnithrivetech.com'
     password = '08d538a8d48fa4ad9d9fb0bbea9edb6d155a66fc'
     

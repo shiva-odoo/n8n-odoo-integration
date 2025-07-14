@@ -34,8 +34,8 @@ def main(data):
         }
     
     # Odoo connection details
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -154,8 +154,8 @@ def get_country_id(models, db, uid, password, country_code):
 def list_companies():
     """Get list of all companies for reference"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     

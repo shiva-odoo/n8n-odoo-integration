@@ -13,8 +13,8 @@ def create_vendor_bill_simple():
     """Simplified vendor bill creation - avoids complex account lookups"""
     
     # Odoo connection details
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
@@ -147,8 +147,8 @@ def create_vendor_bill_simple():
 def list_vendors():
     """Helper function to list vendors"""
     
-    url = 'https://omnithrive-technologies1.odoo.com'
-    db = 'omnithrive-technologies1'
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
     username = 'admin@omnithrivetech.com'
     password = '08d538a8d48fa4ad9d9fb0bbea9edb6d155a66fc'
     
