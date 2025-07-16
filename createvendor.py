@@ -80,7 +80,8 @@ def main(data):
                 'message': 'Vendor already exists',
                 'existing': True,
                 "invoice_date": data.get('invoice_date'),
-                "vendor_ref": data.get('vendor_ref')
+                "vendor_ref": data.get('vendor_ref'),
+                "line_items": data.get('line_items', [])
             }
         
         # Create vendor
