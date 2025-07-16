@@ -78,7 +78,9 @@ def main(data):
                 'vendor_id': existing_vendor,
                 'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
                 'message': 'Vendor already exists',
-                'existing': True
+                'existing': True,
+                "invoice_date": data.get('invoice_date'),
+                "vendor_ref": data.get('vendor_ref')
             }
         
         # Create vendor
