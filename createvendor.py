@@ -105,7 +105,10 @@ def main(data):
             'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
             'message': 'Vendor created successfully',
             'existing': False,
-            'vendor_details': vendor_info
+            'vendor_details': vendor_info,
+            "invoice_date": data.get('invoice_date'),
+            "vendor_ref": data.get('vendor_ref'),
+            "line_items": data.get('line_items', [])
         }
         
     except xmlrpc.client.Fault as e:
