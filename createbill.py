@@ -186,7 +186,35 @@ def main(data):
                 'error': 'Failed to create bill in Odoo'
             }
         
-        # Get created bill information
+        # POST THE BILL - Move from draft to posted state
+        try:
+            post_result = models.execute_kw(
+                db, uid, password,
+                'account.move', 'action_post',
+                [[bill_id]]
+            )
+            
+            # Verify the bill was posted successfully
+            bill_state = models.execute_kw(
+                db, uid, password,
+                'account.move', 'read',
+                [[bill_id]], 
+                {'fields': ['state']}
+            )[0]['state']
+            
+            if bill_state != 'posted':
+                return {
+                    'success': False,
+                    'error': f'Bill was created but failed to post. Current state: {bill_state}'
+                }
+                
+        except xmlrpc.client.Fault as e:
+            return {
+                'success': False,
+                'error': f'Bill created but failed to post: {str(e)}'
+            }
+        
+        # Get final bill information after posting
         bill_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
@@ -202,7 +230,7 @@ def main(data):
             'total_amount': bill_info.get('amount_total'),
             'state': bill_info.get('state'),
             'invoice_date': invoice_date,
-            'message': 'Vendor bill created successfully'
+            'message': 'Vendor bill created and posted successfully'
         }
         
     except xmlrpc.client.Fault as e:
