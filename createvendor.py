@@ -80,6 +80,12 @@ def main(data):
                 'message': 'Vendor already exists',
                 'existing': True,
                 "invoice_date": data.get('invoice_date'),
+                "due_date": data.get('due_date'),
+                "payment_reference": data.get('payment_reference'),
+                "subtotal": data.get('subtotal', 0.0),
+                "tax_amount": data.get('tax_amount', 0.0),
+                "total_amount": data.get('total_amount', 0.0),
+                "currency": data.get('currency_code', 'USD'),
                 "vendor_ref": data.get('vendor_ref'),
                 "line_items": data.get('line_items', [])
             }
@@ -105,7 +111,16 @@ def main(data):
             'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
             'message': 'Vendor created successfully',
             'existing': False,
-            'vendor_details': vendor_info
+            'vendor_details': vendor_info,
+            "invoice_date": data.get('invoice_date'),
+            "due_date": data.get('due_date'),
+            "payment_reference": data.get('payment_reference'),
+            "subtotal": data.get('subtotal', 0.0),
+            "tax_amount": data.get('tax_amount', 0.0),
+            "total_amount": data.get('total_amount', 0.0),
+            "currency": data.get('currency_code', 'USD'),
+            "vendor_ref": data.get('vendor_ref'),
+            "line_items": data.get('line_items', [])
         }
         
     except xmlrpc.client.Fault as e:
