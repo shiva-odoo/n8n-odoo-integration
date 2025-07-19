@@ -153,25 +153,20 @@ def main(data):
                 try:
                     quantity = float(item.get('quantity', 1.0))
                     price_unit = float(item.get('price_unit', 0.0))
-                    tax_rate = float(item.get('tax_rate', 0.0))
-                    line_total = float(item.get('line_total', price_unit * quantity))
+                    # tax_rate and line_total are parsed for validation but not sent to Odoo
+                    _ = float(item.get('tax_rate', 0.0))
+                    _ = float(item.get('line_total', price_unit * quantity))
                 except (ValueError, TypeError):
                     return {
                         'success': False,
                         'error': 'quantity, price_unit, tax_rate, and line_total must be valid numbers'
                     }
-
-                # Odoo expects tax as a tax_id, not rate. This is a placeholder for mapping tax_rate to tax_id.
-                # You may need to implement a lookup for the correct tax_id based on tax_rate.
+                # Only send valid Odoo fields
                 line_item = {
                     'name': item['description'],
                     'quantity': quantity,
                     'price_unit': price_unit,
                 }
-                # Optionally include line_total and tax_rate for reference
-                line_item['line_total'] = line_total
-                line_item['tax_rate'] = tax_rate
-
                 invoice_line_ids.append((0, 0, line_item))
         
         elif data.get('description') and data.get('amount'):
