@@ -48,6 +48,11 @@ def main(data):
             'success': False,
             'error': 'vendor_id is required'
         }
+    # Accept extra fields
+    payment_reference = data.get('payment_reference')
+    subtotal = data.get('subtotal')
+    tax_amount = data.get('tax_amount')
+    total_amount = data.get('total_amount')
     
     # Odoo connection details  
     url = os.getenv("ODOO_URL")
@@ -117,7 +122,22 @@ def main(data):
         # Add vendor reference if provided
         if data.get('vendor_ref'):
             bill_data['ref'] = data['vendor_ref']
-        
+
+        # Add payment_reference if provided (Odoo field: payment_reference or custom field)
+        if payment_reference:
+            bill_data['payment_reference'] = payment_reference
+
+        # Add subtotal, tax_amount, total_amount as notes if not native fields
+        notes = []
+        if subtotal is not None:
+            notes.append(f"Subtotal: {subtotal}")
+        if tax_amount is not None:
+            notes.append(f"Tax Amount: {tax_amount}")
+        if total_amount is not None:
+            notes.append(f"Total Amount: {total_amount}")
+        if notes:
+            bill_data['narration'] = '\n'.join(notes)
+
         # Handle line items
         invoice_line_ids = []
         
@@ -133,18 +153,25 @@ def main(data):
                 try:
                     quantity = float(item.get('quantity', 1.0))
                     price_unit = float(item.get('price_unit', 0.0))
+                    tax_rate = float(item.get('tax_rate', 0.0))
+                    line_total = float(item.get('line_total', price_unit * quantity))
                 except (ValueError, TypeError):
                     return {
                         'success': False,
-                        'error': 'quantity and price_unit must be valid numbers'
+                        'error': 'quantity, price_unit, tax_rate, and line_total must be valid numbers'
                     }
-                
+
+                # Odoo expects tax as a tax_id, not rate. This is a placeholder for mapping tax_rate to tax_id.
+                # You may need to implement a lookup for the correct tax_id based on tax_rate.
                 line_item = {
                     'name': item['description'],
                     'quantity': quantity,
                     'price_unit': price_unit,
                 }
-                
+                # Optionally include line_total and tax_rate for reference
+                line_item['line_total'] = line_total
+                line_item['tax_rate'] = tax_rate
+
                 invoice_line_ids.append((0, 0, line_item))
         
         elif data.get('description') and data.get('amount'):
@@ -230,6 +257,10 @@ def main(data):
             'total_amount': bill_info.get('amount_total'),
             'state': bill_info.get('state'),
             'invoice_date': invoice_date,
+            'payment_reference': payment_reference,
+            'subtotal': subtotal,
+            'tax_amount': tax_amount,
+            'line_items': data.get('line_items'),
             'message': 'Vendor bill created and posted successfully'
         }
         
