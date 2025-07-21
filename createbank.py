@@ -34,7 +34,11 @@ def main(data):
             'success': False,
             'error': 'name is required'
         }
-    
+
+    # Only allow valid fields for res.bank
+    allowed_fields = {"name", "bic", "active", "street", "city", "zip", "phone", "email"}
+    filtered_data = {k: v for k, v in data.items() if k in allowed_fields}
+
     # Connection details
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -63,8 +67,8 @@ def main(data):
         # Check if bank already exists
         existing_bank = check_bank_exists(
             models, db, uid, password,
-            name=data.get('name'),
-            bic=data.get('bic')
+            name=filtered_data.get('name'),
+            bic=filtered_data.get('bic')
         )
         
         if existing_bank:
@@ -72,15 +76,31 @@ def main(data):
             return {
                 'success': True,
                 'bank_id': existing_bank,
-                'bank_name': bank_info.get('name') if bank_info else data['name'],
+                'bank_name': bank_info.get('name') if bank_info else filtered_data['name'],
                 'message': 'Bank already exists',
                 'existing': True,
                 'bank_details': bank_info
             }
-        
+
+        # Handle country
+        if data.get('country_code'):
+            country_id = get_country_id(models, db, uid, password, data['country_code'])
+            if country_id:
+                filtered_data['country'] = country_id
+
+        # Handle state
+        if data.get('state_code') and data.get('country_code'):
+            state_id = get_state_id(models, db, uid, password, data['state_code'], data['country_code'])
+            if state_id:
+                filtered_data['state'] = state_id
+
         # Create bank
-        bank_id = create_bank(models, db, uid, password, data)
-        
+        bank_id = models.execute_kw(
+            db, uid, password,
+            'res.bank', 'create',
+            [filtered_data]
+        )
+
         if not bank_id:
             return {
                 'success': False,
@@ -93,7 +113,7 @@ def main(data):
         return {
             'success': True,
             'bank_id': bank_id,
-            'bank_name': bank_info.get('name') if bank_info else data['name'],
+            'bank_name': bank_info.get('name') if bank_info else filtered_data['name'],
             'message': 'Bank created successfully',
             'existing': False,
             'bank_details': bank_info
