@@ -65,7 +65,8 @@ def home():
                 "/api/create/customer-payments": "POST - Process customer payments (received/sent)",
                 "/api/create/vendor-payments": "POST - Process vendor payments",
                 "/api/create/credit-notes": "POST - Create customer/vendor credit notes",
-                "/api/create/refund": "POST - Process customer/vendor refunds"
+                "/api/create/refund": "POST - Process customer/vendor refunds",
+                "/api/create/bank": "POST - Create bank with name and BIC validation"
             },
             "Update Operations (2 endpoints)": {
                 "/api/modify/vendor": "PUT - Update vendor with change tracking",
@@ -74,7 +75,8 @@ def home():
             "Delete Operations (3 endpoints)": {
                 "/api/delete/vendor": "DELETE - Delete/archive vendors safely",
                 "/api/delete/company": "DELETE - Delete/archive companies safely", 
-                "/api/delete/bill": "DELETE - Delete bills with safety checks"
+                "/api/delete/bill": "DELETE - Delete bills with safety checks",
+                "/api/delete/bank": "DELETE - Delete bank with validation"
             },
             "Utility (3 endpoints)": {
                 "/health": "GET - Health check",
