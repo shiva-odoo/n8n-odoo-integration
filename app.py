@@ -20,6 +20,8 @@ try:
     import deletevendor
     import modifybill
     import modifyvendor
+    import createbank
+    import deletebank
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
@@ -473,6 +475,28 @@ def get_bill_details(bill_id):
     """Get specific bill details with line items"""
     try:
         result = modifybill.get_bill_details(bill_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Create bank endpoint
+@app.route('/api/create/bank', methods=['POST'])
+def create_bank():
+    """Create bank with name and BIC validation"""
+    try:
+        data = request.json or {}
+        result = createbank.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Delete bank endpoint
+@app.route('/api/delete/bank', methods=['DELETE'])
+def delete_bank():
+    """Delete bank with validation"""
+    try:
+        data = request.json or {}
+        result = deletebank.main(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
