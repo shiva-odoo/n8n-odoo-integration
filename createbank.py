@@ -1,5 +1,7 @@
-import xmlrpc.client
 import os
+import xmlrpc.client
+from datetime import datetime
+
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
     try:
@@ -10,34 +12,63 @@ if os.path.exists('.env'):
 
 def main(data):
     """
-    Create bank in Odoo from HTTP request data
+    Create bank journal entry in Odoo, creating bank and journal if needed
     
     Expected data format:
     {
-        "name": "Bank Name",                    # required
-        "bic": "SWIFT123456",                   # optional, SWIFT/BIC code
-        "street": "123 Bank Street",            # optional
-        "city": "City Name",                    # optional
-        "zip": "12345",                         # optional
-        "country_code": "US",                   # optional, ISO country code
-        "state_code": "CA",                     # optional, state code
-        "phone": "+1234567890",                 # optional
-        "email": "info@bank.com",               # optional
-        "website": "https://bank.com",          # optional
-        "active": true                          # optional, default true
+        # Bank Information (creates if not exists)
+        "bank_name": "Sample Bank Ltd",           # required
+        "bank_bic": "SAMBUS33XXX",               # optional
+        "bank_details": {                        # optional bank details
+            "street": "123 Banking Street",
+            "city": "New York", 
+            "zip": "10001",
+            "country_code": "US",
+            "phone": "+1-555-123-4567"
+        },
+        
+        # Journal Entry Information
+        "journal_name": "Bank - Sample Bank",     # required - journal name
+        "journal_code": "BNK1",                  # required - journal code
+        "bank_account_code": "101200",           # required - bank account code
+        "bank_account_name": "Sample Bank Account", # required
+        
+        # Transaction Details
+        "date": "2024-01-15",                    # required - YYYY-MM-DD format
+        "reference": "TXN001",                   # optional - transaction reference
+        "description": "Bank deposit",           # required - transaction description
+        "amount": 1000.00,                       # required - transaction amount
+        "transaction_type": "deposit",           # required - "deposit" or "withdrawal"
+        
+        # Counterpart Account
+        "counterpart_account_code": "400000",    # required - other account code
+        "counterpart_account_name": "Income Account", # required if account doesn't exist
+        
+        # Optional Details
+        "currency_code": "USD"                   # optional - defaults to company currency
     }
     """
     
     # Validate required fields
-    if not data.get('name'):
+    required_fields = [
+        'bank_name', 'journal_name', 'journal_code', 'bank_account_code', 
+        'bank_account_name', 'date', 'description', 'amount', 'transaction_type',
+        'counterpart_account_code', 'counterpart_account_name'
+    ]
+    
+    missing_fields = [field for field in required_fields if not data.get(field)]
+    if missing_fields:
         return {
             'success': False,
-            'error': 'name is required'
+            'error': f'Missing required fields: {", ".join(missing_fields)}'
         }
 
-    # Only allow valid fields for res.bank
-    allowed_fields = {"name", "bic", "active", "street", "city", "zip", "phone", "email"}
-    filtered_data = {k: v for k, v in data.items() if k in allowed_fields}
+    # Validate transaction type
+    if data['transaction_type'] not in ['deposit', 'withdrawal']:
+        return {
+            'success': False,
+            'error': 'transaction_type must be either "deposit" or "withdrawal"'
+        }
 
     # Connection details
     url = os.getenv("ODOO_URL")
@@ -45,10 +76,10 @@ def main(data):
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
-    if not username or not password:
+    if not all([url, db, username, password]):
         return {
             'success': False,
-            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+            'error': 'Missing Odoo connection environment variables'
         }
     
     try:
@@ -64,59 +95,66 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
-        # Check if bank already exists
-        existing_bank = check_bank_exists(
-            models, db, uid, password,
-            name=filtered_data.get('name'),
-            bic=filtered_data.get('bic')
-        )
-        
-        if existing_bank:
-            bank_info = get_bank_info(models, db, uid, password, existing_bank)
-            return {
-                'success': True,
-                'bank_id': existing_bank,
-                'bank_name': bank_info.get('name') if bank_info else filtered_data['name'],
-                'message': 'Bank already exists',
-                'existing': True,
-                'bank_details': bank_info
-            }
-
-        # Handle country
-        if data.get('country_code'):
-            country_id = get_country_id(models, db, uid, password, data['country_code'])
-            if country_id:
-                filtered_data['country'] = country_id
-
-        # Handle state
-        if data.get('state_code') and data.get('country_code'):
-            state_id = get_state_id(models, db, uid, password, data['state_code'], data['country_code'])
-            if state_id:
-                filtered_data['state'] = state_id
-
-        # Create bank
-        bank_id = models.execute_kw(
-            db, uid, password,
-            'res.bank', 'create',
-            [filtered_data]
-        )
-
+        # Step 1: Create/Get Bank
+        bank_id = get_or_create_bank(models, db, uid, password, data)
         if not bank_id:
             return {
                 'success': False,
-                'error': 'Failed to create bank in Odoo'
+                'error': 'Failed to create or find bank'
             }
         
-        # Get created bank information
-        bank_info = get_bank_info(models, db, uid, password, bank_id)
+        # Step 2: Create/Get Bank Account
+        bank_account_id = get_or_create_account(
+            models, db, uid, password,
+            data['bank_account_code'],
+            data['bank_account_name'],
+            'asset_cash'  # Account type for bank accounts
+        )
+        
+        # Step 3: Create/Get Counterpart Account  
+        counterpart_account_id = get_or_create_account(
+            models, db, uid, password,
+            data['counterpart_account_code'],
+            data['counterpart_account_name'],
+            'income_other'  # Default account type
+        )
+        
+        # Step 4: Create/Get Journal
+        journal_id = get_or_create_journal(
+            models, db, uid, password,
+            data['journal_name'],
+            data['journal_code'],
+            bank_account_id,
+            bank_id
+        )
+        
+        # Step 5: Create Journal Entry
+        journal_entry_id = create_journal_entry(
+            models, db, uid, password,
+            journal_id,
+            bank_account_id,
+            counterpart_account_id,
+            data
+        )
+        
+        if not journal_entry_id:
+            return {
+                'success': False,
+                'error': 'Failed to create journal entry'
+            }
+        
+        # Get created entry details
+        entry_details = get_journal_entry_details(models, db, uid, password, journal_entry_id)
         
         return {
             'success': True,
+            'journal_entry_id': journal_entry_id,
             'bank_id': bank_id,
-            'bank_name': bank_info.get('name') if bank_info else filtered_data['name'],
-            'message': 'Bank created successfully',
-            'existing': False,
-            'bank_details': bank_info
+            'journal_id': journal_id,
+            'reference': data.get('reference', ''),
+            'amount': data['amount'],
+            'message': 'Bank journal entry created successfully',
+            'entry_details': entry_details
         }
         
     except xmlrpc.client.Fault as e:
@@ -130,21 +168,13 @@ def main(data):
             'error': f'Unexpected error: {str(e)}'
         }
 
-def create(data):
-    """Alias for main function to maintain compatibility"""
-    return main(data)
-
-def check_bank_exists(models, db, uid, password, name=None, bic=None):
-    """Check if bank already exists"""
+def get_or_create_bank(models, db, uid, password, data):
+    """Create or get existing bank"""
     try:
-        domain = []
-        
-        if bic:
-            domain.append(('bic', '=', bic))
-        elif name:
-            domain.append(('name', '=', name))
-        else:
-            return None
+        # Check if bank exists
+        domain = [('name', '=', data['bank_name'])]
+        if data.get('bank_bic'):
+            domain = [('bic', '=', data['bank_bic'])]
             
         bank_ids = models.execute_kw(
             db, uid, password,
@@ -152,47 +182,169 @@ def check_bank_exists(models, db, uid, password, name=None, bic=None):
             [domain], {'limit': 1}
         )
         
-        return bank_ids[0] if bank_ids else None
+        if bank_ids:
+            return bank_ids[0]
         
-    except Exception:
-        return None
+        # Create new bank
+        bank_data = {
+            'name': data['bank_name'],
+            'active': True
+        }
+        
+        if data.get('bank_bic'):
+            bank_data['bic'] = data['bank_bic']
+            
+        # Add bank details if provided
+        bank_details = data.get('bank_details', {})
+        for field in ['street', 'city', 'zip', 'phone', 'email']:
+            if bank_details.get(field):
+                bank_data[field] = bank_details[field]
+        
+        # Handle country
+        if bank_details.get('country_code'):
+            country_id = get_country_id(models, db, uid, password, bank_details['country_code'])
+            if country_id:
+                bank_data['country'] = country_id
 
-def create_bank(models, db, uid, password, data):
-    """Create a bank with provided information"""
-    
-    bank_data = {
-        'name': data['name'],
-        'active': data.get('active', True),
-    }
-    
-    # Add optional fields
-    optional_fields = ['bic', 'street', 'city', 'zip', 'phone', 'email', 'website']
-    for field in optional_fields:
-        if data.get(field):
-            bank_data[field] = data[field]
-
-    # Handle country
-    if data.get('country_code'):
-        country_id = get_country_id(models, db, uid, password, data['country_code'])
-        if country_id:
-            bank_data['country'] = country_id
-
-    # Handle state
-    if data.get('state_code') and data.get('country_code'):
-        state_id = get_state_id(models, db, uid, password, data['state_code'], data['country_code'])
-        if state_id:
-            bank_data['state'] = state_id
-
-    try:
+        # Handle state
+        if bank_details.get('state_code') and bank_details.get('country_code'):
+            state_id = get_state_id(models, db, uid, password, bank_details['state_code'], bank_details['country_code'])
+            if state_id:
+                bank_data['state'] = state_id
+        
         bank_id = models.execute_kw(
             db, uid, password,
             'res.bank', 'create',
             [bank_data]
         )
+        
         return bank_id
         
     except Exception as e:
-        raise Exception(f"Error creating bank: {e}")
+        print(f"Error creating bank: {e}")
+        return None
+
+def get_or_create_account(models, db, uid, password, account_code, account_name, account_type):
+    """Create or get chart of account"""
+    try:
+        # Check if account exists
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('code', '=', account_code)]], {'limit': 1}
+        )
+        
+        if account_ids:
+            return account_ids[0]
+        
+        # Create new account
+        account_data = {
+            'code': account_code,
+            'name': account_name,
+            'account_type': account_type,
+        }
+        
+        account_id = models.execute_kw(
+            db, uid, password,
+            'account.account', 'create',
+            [account_data]
+        )
+        
+        return account_id
+        
+    except Exception as e:
+        print(f"Error creating account: {e}")
+        return None
+
+def get_or_create_journal(models, db, uid, password, journal_name, journal_code, bank_account_id, bank_id):
+    """Create or get bank journal"""
+    try:
+        # Check if journal exists
+        journal_ids = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search',
+            [[('code', '=', journal_code)]], {'limit': 1}
+        )
+        
+        if journal_ids:
+            return journal_ids[0]
+        
+        # Create new journal
+        journal_data = {
+            'name': journal_name,
+            'code': journal_code,
+            'type': 'bank',
+            'default_account_id': bank_account_id,
+            'bank_id': bank_id,
+        }
+        
+        journal_id = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'create',
+            [journal_data]
+        )
+        
+        return journal_id
+        
+    except Exception as e:
+        print(f"Error creating journal: {e}")
+        return None
+
+def create_journal_entry(models, db, uid, password, journal_id, bank_account_id, counterpart_account_id, data):
+    """Create the actual journal entry without partner"""
+    try:
+        amount = float(data['amount'])
+        is_deposit = data['transaction_type'] == 'deposit'
+        
+        # Prepare move lines
+        line_ids = []
+        
+        # Bank account line
+        bank_line = {
+            'account_id': bank_account_id,
+            'name': data['description'],
+            'debit': amount if is_deposit else 0.0,
+            'credit': 0.0 if is_deposit else amount,
+        }
+        
+        line_ids.append((0, 0, bank_line))
+        
+        # Counterpart account line
+        counterpart_line = {
+            'account_id': counterpart_account_id,
+            'name': data['description'],
+            'debit': 0.0 if is_deposit else amount,
+            'credit': amount if is_deposit else 0.0,
+        }
+        
+        line_ids.append((0, 0, counterpart_line))
+        
+        # Create journal entry
+        move_data = {
+            'journal_id': journal_id,
+            'date': data['date'],
+            'ref': data.get('reference', data['description']),
+            'line_ids': line_ids,
+        }
+        
+        move_id = models.execute_kw(
+            db, uid, password,
+            'account.move', 'create',
+            [move_data]
+        )
+        
+        # Post the journal entry
+        models.execute_kw(
+            db, uid, password,
+            'account.move', 'action_post',
+            [[move_id]]
+        )
+        
+        return move_id
+        
+    except Exception as e:
+        print(f"Error creating journal entry: {e}")
+        return None
 
 def get_country_id(models, db, uid, password, country_code):
     """Get country ID from country code"""
@@ -223,75 +375,49 @@ def get_state_id(models, db, uid, password, state_code, country_code):
     except Exception:
         return None
 
-def get_bank_info(models, db, uid, password, bank_id):
-    """Get bank information by ID"""
+def get_journal_entry_details(models, db, uid, password, move_id):
+    """Get details of created journal entry"""
     try:
-        bank_data = models.execute_kw(
+        move_data = models.execute_kw(
             db, uid, password,
-            'res.bank', 'read',
-            [[bank_id]], 
-            {'fields': ['name', 'bic', 'street', 'city', 'zip', 'country', 'state', 'phone', 'email', 'website', 'active']}
+            'account.move', 'read',
+            [[move_id]], 
+            {'fields': ['name', 'date', 'ref', 'journal_id', 'state', 'amount_total']}
         )
-        return bank_data[0] if bank_data else None
+        
+        return move_data[0] if move_data else None
+        
     except Exception:
         return None
 
-def list_banks():
-    """Get list of all banks for reference"""
-    
-    url = os.getenv("ODOO_URL")
-    db = os.getenv("ODOO_DB")
-    username = os.getenv("ODOO_USERNAME")
-    password = os.getenv("ODOO_API_KEY")
-    
-    try:
-        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
-        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
-        
-        uid = common.authenticate(db, username, password, {})
-        if not uid:
-            return {'success': False, 'error': 'Authentication failed'}
-        
-        banks = models.execute_kw(
-            db, uid, password,
-            'res.bank', 'search_read',
-            [[]], 
-            {'fields': ['id', 'name', 'bic', 'city', 'country', 'active'], 'order': 'name'}
-        )
-        
-        return {
-            'success': True,
-            'banks': banks,
-            'count': len(banks)
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': str(e)
-        }
+def create(data):
+    """Alias for main function to maintain compatibility"""
+    return main(data)
 
 # Example usage
 if __name__ == "__main__":
-    # Example: Create a new bank
-    sample_bank_data = {
-        "name": "Sample Bank Ltd",
-        "bic": "SAMBUS33XXX",
-        "street": "123 Banking Street",
-        "city": "New York",
-        "zip": "10001",
-        "country_code": "US",
-        "state_code": "NY",
-        "phone": "+1-555-123-4567",
-        "email": "info@samplebank.com",
-        "website": "https://www.samplebank.com"
+    sample_data = {
+        "bank_name": "Sample Bank Ltd",
+        "bank_bic": "SAMBUS33XXX",
+        "bank_details": {
+            "street": "123 Banking Street",
+            "city": "New York",
+            "zip": "10001",
+            "country_code": "US",
+            "phone": "+1-555-123-4567"
+        },
+        "journal_name": "Bank - Sample Bank",
+        "journal_code": "BNK1",
+        "bank_account_code": "101200",
+        "bank_account_name": "Sample Bank Account",
+        "date": "2024-01-15",
+        "reference": "TXN001",
+        "description": "Customer deposit",
+        "amount": 1000.00,
+        "transaction_type": "deposit",
+        "counterpart_account_code": "400000",
+        "counterpart_account_name": "Sales Revenue"
     }
     
-    print("Creating bank...")
-    result = main(sample_bank_data)
-    print(f"Create Result: {result}")
-    
-    # List all banks
-    print("\nListing all banks...")
-    banks_result = list_banks()
-    print(f"Banks: {banks_result}")
+    result = main(sample_data)
+    print(result)
