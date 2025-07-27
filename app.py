@@ -22,6 +22,7 @@ try:
     import modifyvendor
     import createbank
     import deletebank
+    import createjournal
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
@@ -35,7 +36,7 @@ def home():
     endpoints = {
         "message": "Complete Business Management API",
         "version": "4.0",
-        "total_endpoints": 32,
+        "total_endpoints": 35,
         "available_endpoints": {
             "PDF Extraction (NEW - 4 endpoints)": {
                 "/api/extract-pdf-data": "POST - Extract structured data from PDF files",
@@ -43,7 +44,7 @@ def home():
                 "/api/extract-from-url": "POST - Extract from file URL",
                 "/api/extraction-status": "GET - Check extraction status"
             },
-            "Reference Data (9 endpoints)": {
+            "Reference Data (11 endpoints)": {
                 "/api/vendors": "GET - List all vendors",
                 "/api/companies": "GET - List all companies", 
                 "/api/customers": "GET - List all customers",
@@ -54,9 +55,11 @@ def home():
                 "/api/invoices": "GET - List all customer invoices",
                 "/api/refunds": "GET - List all refunds",
                 "/api/bills": "GET - List all vendor bills",
+                "/api/journals": "GET - List all journals",
+                "/api/accounts": "GET - List chart of accounts",
                 "/api/companies/<id>/vendors": "GET - Get vendors for specific company"
             },
-            "Create Operations (11 endpoints)": {
+            "Create Operations (12 endpoints)": {
                 "/api/create/vendor": "POST - Create vendor with full address support",
                 "/api/create/company": "POST - Create company with country validation",
                 "/api/create/customer": "POST - Create customer with contact details",
@@ -64,6 +67,7 @@ def home():
                 "/api/create/bill": "POST - Create vendor bill with line items",
                 "/api/create/bill-company": "POST - Create company-specific vendor bill",
                 "/api/create/invoice": "POST - Create customer invoice with line items",
+                "/api/create/journal": "POST - Create journal entry with debit/credit lines",
                 "/api/create/customer-payments": "POST - Process customer payments (received/sent)",
                 "/api/create/vendor-payments": "POST - Process vendor payments",
                 "/api/create/credit-notes": "POST - Create customer/vendor credit notes",
@@ -80,10 +84,13 @@ def home():
                 "/api/delete/bill": "DELETE - Delete bills with safety checks",
                 "/api/delete/bank": "DELETE - Delete bank with validation"
             },
-            "Utility (3 endpoints)": {
+            "Utility (5 endpoints)": {
                 "/health": "GET - Health check",
                 "/api/test-config": "GET - Configuration test",
-                "/api/docs/<type>": "GET - Detailed documentation (vendor, bill, etc.)"
+                "/api/docs/vendor": "GET - Vendor API documentation",
+                "/api/docs/bill": "GET - Bill API documentation",
+                "/api/docs/journal": "GET - Journal entry API documentation",
+                "/api/docs/payment": "GET - Payment API documentation"
             }
         },
         "advanced_examples": {
@@ -98,12 +105,36 @@ def home():
                 },
                 "description": "Create vendor payment with validation"
             },
+            "journal_entry": {
+                "url": "/api/create/journal",
+                "method": "POST",
+                "body": {
+                    "date": "2025-01-15",
+                    "ref": "JE-001",
+                    "narration": "Monthly rent payment",
+                    "line_items": [
+                        {
+                            "account_id": 101,
+                            "name": "Office rent",
+                            "debit": 1500.00,
+                            "credit": 0.00
+                        },
+                        {
+                            "account_id": 201,
+                            "name": "Cash payment",
+                            "debit": 0.00,
+                            "credit": 1500.00
+                        }
+                    ]
+                },
+                "description": "Create journal entry with balanced debit/credit"
+            },
             "safe_vendor_deletion": {
                 "url": "/api/delete/vendor",
                 "method": "DELETE",
                 "body": {
                     "vendor_id": 123,
-                    "archive_instead": True  # ✅ Fixed: Python boolean
+                    "archive_instead": True
                 },
                 "description": "Safely delete vendor with archive fallback"
             },
@@ -133,7 +164,7 @@ def home():
                 "method": "DELETE",
                 "body": {
                     "company_id": 2,
-                    "archive_instead": True  # ✅ Fixed: Python boolean
+                    "archive_instead": True
                 },
                 "description": "Delete company with automatic archive fallback"
             }
@@ -452,6 +483,24 @@ def get_bills():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/journals', methods=['GET'])
+def get_journals():
+    """Get list of all journals"""
+    try:
+        result = createjournal.list_journals()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/accounts', methods=['GET'])
+def get_accounts():
+    """Get list of chart of accounts"""
+    try:
+        result = createjournal.list_accounts()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/companies/<int:company_id>/vendors', methods=['GET'])
 def get_vendors_by_company(company_id):
     """Get vendors available to a specific company"""
@@ -612,6 +661,16 @@ def create_refund():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/create/journal', methods=['POST'])
+def create_journal():
+    """Create journal entry"""
+    try:
+        data = request.json or {}
+        result = createjournal.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # Delete Operations (with smart safety features)
 @app.route('/api/delete/bill', methods=['DELETE'])
 def delete_bill():
@@ -670,8 +729,8 @@ def health():
     return jsonify({
         'status': 'healthy', 
         'message': 'Complete Business Management API is running',
-        'version': '3.0',
-        'total_endpoints': 28
+        'version': '4.0',
+        'total_endpoints': 35
     })
 
 @app.route('/api/test-config')
@@ -687,7 +746,7 @@ def test_config():
         'success': True,
         'config': config_status,
         'message': 'Configuration check complete',
-        'api_version': '3.0'
+        'api_version': '4.0'
     })
 
 # Enhanced API Documentation endpoints
@@ -745,11 +804,11 @@ def vendor_docs():
             "examples": {
                 "safe_delete": {
                     "vendor_id": 123,
-                    "archive_instead": True  # ✅ Fixed: Python boolean
+                    "archive_instead": True
                 },
                 "force_delete": {
                     "vendor_id": 123,
-                    "force_delete": True  # ✅ Fixed: Python boolean
+                    "force_delete": True
                 }
             }
         }
@@ -825,8 +884,80 @@ def bill_docs():
                 },
                 "force_delete_with_reset": {
                     "bill_id": 123,
-                    "reset_to_draft": True  # ✅ Fixed: Python boolean
+                    "reset_to_draft": True
                 }
+            }
+        }
+    }
+    return jsonify(docs)
+
+@app.route('/api/docs/journal', methods=['GET'])
+def journal_docs():
+    """Comprehensive journal entry API documentation"""
+    docs = {
+        "create_journal": {
+            "endpoint": "/api/create/journal",
+            "method": "POST",
+            "description": "Create a journal entry with debit/credit lines",
+            "required_fields": ["line_items"],
+            "optional_fields": ["journal_id", "date", "ref", "narration"],
+            "validation_rules": [
+                "Must have at least 2 line items",
+                "Total debits must equal total credits",
+                "Each line must have either debit OR credit (not both)",
+                "All account_id values must exist in chart of accounts"
+            ],
+            "examples": {
+                "simple_journal_entry": {
+                    "date": "2025-01-15",
+                    "ref": "JE-001",
+                    "narration": "Monthly office rent payment",
+                    "line_items": [
+                        {
+                            "account_id": 101,
+                            "name": "Office rent - January 2025",
+                            "debit": 1500.00,
+                            "credit": 0.00
+                        },
+                        {
+                            "account_id": 201,
+                            "name": "Cash payment for rent",
+                            "debit": 0.00,
+                            "credit": 1500.00
+                        }
+                    ]
+                },
+                "multi_line_with_partners": {
+                    "journal_id": 1,
+                    "date": "2025-01-15",
+                    "ref": "JE-002",
+                    "narration": "Multiple expense allocation",
+                    "line_items": [
+                        {
+                            "account_id": 102,
+                            "name": "Office supplies",
+                            "debit": 500.00,
+                            "credit": 0.00,
+                            "partner_id": 123
+                        },
+                        {
+                            "account_id": 103,
+                            "name": "Software license",
+                            "debit": 800.00,
+                            "credit": 0.00
+                        },
+                        {
+                            "account_id": 201,
+                            "name": "Bank payment",
+                            "debit": 0.00,
+                            "credit": 1300.00
+                        }
+                    ]
+                }
+            },
+            "helper_endpoints": {
+                "list_journals": "GET /api/journals - List all available journals",
+                "list_accounts": "GET /api/accounts - List chart of accounts"
             }
         }
     }
