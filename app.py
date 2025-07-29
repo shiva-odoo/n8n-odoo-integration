@@ -23,6 +23,7 @@ try:
     import createbank
     import deletebank
     import createjournal
+    import createtransaction
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
@@ -557,6 +558,16 @@ def create_bill():
     try:
         data = request.json or {}
         result = createbill.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/create/transaction', methods=['POST'])
+def create_transaction():
+    """Create bank transaction"""
+    try:
+        data = request.json or {}
+        result = createtransaction.main(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
