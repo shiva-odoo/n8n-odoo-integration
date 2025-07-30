@@ -22,7 +22,6 @@ def main(data):
         "description": "Registrar of companies fee reimbursement",
         "amount": 20,
         "currency": "EUR",
-        "table_name": "KYRASTELENTERPRISESLTD",
         "id": "20250721_BOC_143022",
         "date": "2025-07-21"
     }
@@ -31,7 +30,7 @@ def main(data):
     # Validate required fields
     required_fields = [
         'bank_name', 'company_name', 'entry_type', 'description', 
-        'amount', 'currency', 'table_name', 'id', 'date'
+        'amount', 'currency', 'id', 'date'
     ]
     
     missing_fields = [field for field in required_fields if not data.get(field)]
@@ -456,7 +455,6 @@ if __name__ == "__main__":
         "description": "Registrar of companies fee reimbursement",
         "amount": 20,
         "currency": "EUR",
-        "table_name": "KYRASTELENTERPRISESLTD",
         "id": "20250721_BOC_143022",
         "date": "2025-07-21"
     }
