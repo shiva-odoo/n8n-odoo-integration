@@ -185,6 +185,10 @@ def create_vendor_basic(models, db, uid, password, data):
         vendor_data['phone'] = data['phone']
     if data.get('website'):
         vendor_data['website'] = data['website']
+
+    # Add company_id if provided (for multi-company setup)
+    if data.get('company_id'):
+        vendor_data['company_id'] = data['company_id']
         
     try:
         vendor_id = models.execute_kw(
@@ -212,6 +216,10 @@ def create_vendor_comprehensive(models, db, uid, password, data):
     for field in optional_fields:
         if data.get(field):
             vendor_data[field] = data[field]
+
+    # Add company_id if provided (for multi-company setup)
+    if data.get('company_id'):
+        vendor_data['company_id'] = data['company_id']
 
     # Handle country
     if data.get('country_code'):

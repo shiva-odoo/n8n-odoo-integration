@@ -123,6 +123,10 @@ def main(data):
         if data.get('vendor_ref'):
             bill_data['ref'] = data['vendor_ref']
 
+        # Add company_id if provided (for multi-company setup)
+        if data.get('company_id'):
+            bill_data['company_id'] = data['company_id']
+
         # Add payment_reference if provided (Odoo field: payment_reference or custom field)
         if payment_reference:
             bill_data['payment_reference'] = payment_reference
@@ -196,10 +200,12 @@ def main(data):
         bill_data['invoice_line_ids'] = invoice_line_ids
         
         # Create the bill
+        context = {'allowed_company_ids': [data['company_id']]} if data.get('company_id') else {}
         bill_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
-            [bill_data]
+            [bill_data],
+            {'context': context}
         )
         
         if not bill_id:
