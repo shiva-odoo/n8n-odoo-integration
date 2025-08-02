@@ -18,6 +18,7 @@ def main(data):
         "customer_id": 123,                     # required (or customer_name for new)
         "customer_name": "New Customer Name",   # optional, creates new customer
         "customer_email": "contact@new.com",    # optional, for new customer
+        "company_id": 1,                        # optional, for multi-company setup
         "invoice_date": "2025-01-15",          # optional, defaults to today
         "due_date": "2025-02-15",              # optional
         "reference": "Customer reference",      # optional
@@ -152,6 +153,10 @@ def main(data):
             'invoice_date': invoice_date,
         }
         
+        # Add company_id if provided (for multi-company setup)
+        if data.get('company_id'):
+            invoice_data['company_id'] = data['company_id']
+        
         # Add due date if provided
         if data.get('due_date'):
             try:
@@ -218,10 +223,12 @@ def main(data):
         invoice_data['invoice_line_ids'] = invoice_line_ids
         
         # Create invoice
+        context = {'allowed_company_ids': [data['company_id']]} if data.get('company_id') else {}
         invoice_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
-            [invoice_data]
+            [invoice_data],
+            {'context': context}
         )
         
         if not invoice_id:
@@ -230,7 +237,35 @@ def main(data):
                 'error': 'Failed to create invoice in Odoo'
             }
         
-        # Get created invoice information
+        # POST THE INVOICE - Move from draft to posted state
+        try:
+            post_result = models.execute_kw(
+                db, uid, password,
+                'account.move', 'action_post',
+                [[invoice_id]]
+            )
+            
+            # Verify the invoice was posted successfully
+            invoice_state = models.execute_kw(
+                db, uid, password,
+                'account.move', 'read',
+                [[invoice_id]], 
+                {'fields': ['state']}
+            )[0]['state']
+            
+            if invoice_state != 'posted':
+                return {
+                    'success': False,
+                    'error': f'Invoice was created but failed to post. Current state: {invoice_state}'
+                }
+                
+        except xmlrpc.client.Fault as e:
+            return {
+                'success': False,
+                'error': f'Invoice created but failed to post: {str(e)}'
+            }
+        
+        # Get final invoice information after posting
         invoice_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
@@ -248,8 +283,9 @@ def main(data):
             'state': invoice_info.get('state'),
             'invoice_date': invoice_date,
             'due_date': invoice_info.get('invoice_date_due'),
+            'company_id': data.get('company_id'),
             'line_items_count': len(invoice_line_ids),
-            'message': 'Customer invoice created successfully'
+            'message': 'Customer invoice created and posted successfully'
         }
         
     except xmlrpc.client.Fault as e:
