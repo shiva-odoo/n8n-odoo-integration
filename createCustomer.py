@@ -22,7 +22,8 @@ def main(data):
         "street": "123 Main St",                 # optional
         "city": "City Name",                     # optional
         "zip": "12345",                          # optional
-        "country_code": "US"                     # optional, ISO country code
+        "country_code": "US",                    # optional, ISO country code
+        "company_id": 1                          # optional, for multi-company setup
     }
     """
     
@@ -78,10 +79,19 @@ def main(data):
                 'success': True,
                 'customer_id': customer_info['id'],
                 'customer_name': customer_info['name'],
+                'company_id': data.get('company_id'),
                 'email': customer_info.get('email'),
                 'phone': customer_info.get('phone'),
                 'message': 'Customer already exists',
-                'existing': True
+                'existing': True,
+                "invoice_date": data.get('invoice_date'),
+                "due_date": data.get('due_date'),
+                "reference": data.get('reference'),
+                "subtotal": data.get('subtotal', 0.0),
+                "tax_amount": data.get('tax_amount', 0.0),
+                "total_amount": data.get('total_amount', 0.0),
+                "currency": data.get('currency_code', 'USD'),
+                "line_items": data.get('line_items', [])
             }
         
         # Prepare customer data
@@ -91,6 +101,10 @@ def main(data):
             'customer_rank': 1,  # Mark as customer
             'supplier_rank': 0,  # Not a supplier
         }
+        
+        # Add company_id if provided (for multi-company setup)
+        if data.get('company_id'):
+            customer_data['company_id'] = data['company_id']
         
         # Add optional fields
         optional_fields = ['email', 'phone', 'website', 'street', 'city', 'zip']
@@ -134,6 +148,7 @@ def main(data):
             'success': True,
             'customer_id': customer_id,
             'customer_name': customer_info['name'],
+            'company_id': data.get('company_id'),
             'email': customer_info.get('email'),
             'phone': customer_info.get('phone'),
             'street': customer_info.get('street'),
@@ -141,7 +156,16 @@ def main(data):
             'country': customer_info.get('country_id', [None, 'N/A'])[1],
             'is_company': customer_info.get('is_company'),
             'message': 'Customer created successfully',
-            'existing': False
+            'existing': False,
+            'customer_details': customer_info,
+            "invoice_date": data.get('invoice_date'),
+            "due_date": data.get('due_date'),
+            "reference": data.get('reference'),
+            "subtotal": data.get('subtotal', 0.0),
+            "tax_amount": data.get('tax_amount', 0.0),
+            "total_amount": data.get('total_amount', 0.0),
+            "currency": data.get('currency_code', 'USD'),
+            "line_items": data.get('line_items', [])
         }
         
     except xmlrpc.client.Fault as e:
