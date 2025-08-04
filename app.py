@@ -20,8 +20,6 @@ try:
     import deletevendor
     import modifybill
     import modifyvendor
-    import createbank
-    import deletebank
     import createjournal
     import createtransaction
     
