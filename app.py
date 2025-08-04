@@ -22,6 +22,7 @@ try:
     import modifyvendor
     import createjournal
     import createtransaction
+    import getDetailsByCompany
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
@@ -56,7 +57,8 @@ def home():
                 "/api/bills": "GET - List all vendor bills",
                 "/api/journals": "GET - List all journals",
                 "/api/accounts": "GET - List chart of accounts",
-                "/api/companies/<id>/vendors": "GET - Get vendors for specific company"
+                "/api/companies/<id>/vendors": "GET - Get vendors for specific company",
+                "/api/getDetailsByCompany": "GET - Get details by company ID"
             },
             "Create Operations (12 endpoints)": {
                 "/api/create/vendor": "POST - Create vendor with full address support",
@@ -547,6 +549,16 @@ def create_transaction():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/getDetailsByCompany', methods=['POST'])
+def get_details_by_company():
+    """Get details by company ID"""
+    try:
+        data = request.json or {}
+        result = getDetailsByCompany.get_all_company_data(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/create/bill-company', methods=['POST'])
 def create_bill_company():
@@ -991,6 +1003,7 @@ def internal_error(error):
 @app.errorhandler(400)
 def bad_request(error):
     return jsonify({'success': False, 'error': 'Bad request - check your JSON format'}), 400
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
