@@ -72,8 +72,7 @@ def home():
                 "/api/create/customer-payments": "POST - Process customer payments (received/sent)",
                 "/api/create/vendor-payments": "POST - Process vendor payments",
                 "/api/create/credit-notes": "POST - Create customer/vendor credit notes",
-                "/api/create/refund": "POST - Process customer/vendor refunds",
-                "/api/create/bank": "POST - Create bank with name and BIC validation"
+                "/api/create/refund": "POST - Process customer/vendor refunds"
             },
             "Update Operations (2 endpoints)": {
                 "/api/modify/vendor": "PUT - Update vendor with change tracking",
@@ -82,8 +81,7 @@ def home():
             "Delete Operations (3 endpoints)": {
                 "/api/delete/vendor": "DELETE - Delete/archive vendors safely",
                 "/api/delete/company": "DELETE - Delete/archive companies safely", 
-                "/api/delete/bill": "DELETE - Delete bills with safety checks",
-                "/api/delete/bank": "DELETE - Delete bank with validation"
+                "/api/delete/bill": "DELETE - Delete bills with safety checks"
             },
             "Utility (5 endpoints)": {
                 "/health": "GET - Health check",
@@ -529,27 +527,6 @@ def get_bill_details(bill_id):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# Create bank endpoint
-@app.route('/api/create/bank', methods=['POST'])
-def create_bank():
-    """Create bank with name and BIC validation"""
-    try:
-        data = request.json or {}
-        result = createbank.main(data)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Delete bank endpoint
-@app.route('/api/delete/bank', methods=['DELETE'])
-def delete_bank():
-    """Delete bank with validation"""
-    try:
-        data = request.json or {}
-        result = deletebank.main(data)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 # Create Operations
 @app.route('/api/create/bill', methods=['POST'])

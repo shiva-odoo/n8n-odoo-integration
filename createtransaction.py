@@ -1,6 +1,7 @@
 import os
 import xmlrpc.client
 from datetime import datetime
+import hashlib
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -12,26 +13,33 @@ if os.path.exists('.env'):
 
 def main(data):
     """
-    Create bank transaction entry in Odoo for specific company
+    Create bank transaction entry in Odoo using flexible line items structure
     
     Expected data format:
     {
-        "bank_name": "Bank of Cyprus",
-        "company_name": "KYRASTEL ENTERPRISES LTD",
-        "entry_type": "transaction",
-        "description": "Registrar of companies fee reimbursement",
-        "amount": 20,
-        "currency": "EUR",
-        "id": "20250721_BOC_143022",
-        "date": "2025-07-21"
+        "company_id": 13,
+        "date": "2025-07-16",
+        "ref": "BOC Transfer 255492965",
+        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
+        "line_items": [
+            {
+                "name": "Bank of Cyprus",
+                "debit": 15000.00,
+                "credit": 0.00,
+                "partner_id": null
+            },
+            {
+                "name": "Share Capital",
+                "debit": 0.00,
+                "credit": 15000.00,
+                "partner_id": null
+            }
+        ]
     }
     """
     
     # Validate required fields
-    required_fields = [
-        'bank_name', 'company_name', 'entry_type', 'description', 
-        'amount', 'currency', 'id', 'date'
-    ]
+    required_fields = ['company_id', 'date', 'ref', 'narration', 'line_items']
     
     missing_fields = [field for field in required_fields if not data.get(field)]
     if missing_fields:
@@ -40,11 +48,50 @@ def main(data):
             'error': f'Missing required fields: {", ".join(missing_fields)}'
         }
 
-    # Validate entry type
-    if data['entry_type'] != 'transaction':
+    # Validate line_items
+    if not isinstance(data['line_items'], list) or len(data['line_items']) < 2:
         return {
             'success': False,
-            'error': 'entry_type must be "transaction"'
+            'error': 'line_items must be a list with at least 2 entries'
+        }
+
+    # Validate each line item
+    for i, line in enumerate(data['line_items']):
+        required_line_fields = ['name', 'debit', 'credit']
+        missing_line_fields = [field for field in required_line_fields if field not in line]
+        if missing_line_fields:
+            return {
+                'success': False,
+                'error': f'Line item {i+1} missing fields: {", ".join(missing_line_fields)}'
+            }
+        
+        # Validate debit/credit are numbers
+        try:
+            float(line['debit'])
+            float(line['credit'])
+        except (ValueError, TypeError):
+            return {
+                'success': False,
+                'error': f'Line item {i+1} debit/credit must be valid numbers'
+            }
+
+    # Validate company_id is a number
+    try:
+        company_id = int(data['company_id'])
+    except (ValueError, TypeError):
+        return {
+            'success': False,
+            'error': 'company_id must be a valid integer'
+        }
+
+    # Validate that debits equal credits
+    total_debits = sum(float(line['debit']) for line in data['line_items'])
+    total_credits = sum(float(line['credit']) for line in data['line_items'])
+    
+    if abs(total_debits - total_credits) > 0.01:  # Allow for small rounding differences
+        return {
+            'success': False,
+            'error': f'Debits ({total_debits}) must equal credits ({total_credits})'
         }
 
     # Fix future dates
@@ -63,11 +110,12 @@ def main(data):
         }
     
     try:
-        print(f"=== PROCESSING TRANSACTION ===")
-        print(f"Company: {data['company_name']}")
-        print(f"Description: {data['description']}")
-        print(f"Amount: {data['amount']} {data['currency']}")
+        print(f"=== PROCESSING FLEXIBLE TRANSACTION ===")
+        print(f"Company ID: {company_id}")
         print(f"Date: {data['date']}")
+        print(f"Reference: {data['ref']}")
+        print(f"Narration: {data['narration']}")
+        print(f"Line Items: {len(data['line_items'])}")
         
         # Initialize connection
         common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
@@ -83,49 +131,78 @@ def main(data):
         
         print("✅ Odoo authentication successful")
         
-        # Step 1: Find and switch to correct company
-        company_id = find_company(models, db, uid, password, data)
-        if not company_id:
+        # Step 1: Verify company exists and get its details
+        company_details = verify_company_exists(models, db, uid, password, company_id)
+        if not company_details:
             return {
                 'success': False,
-                'error': f'Company not found: {data["company_name"]}'
+                'error': f'Company with ID {company_id} not found'
             }
         
-        print(f"✅ Found Company ID: {company_id}")
+        print(f"✅ Found Company: {company_details['name']}")
         
         # Update context to work with specific company
         context = {'allowed_company_ids': [company_id]}
         
-        # Step 2: Get default bank and expense accounts
-        bank_account_id = get_default_bank_account(models, db, uid, password, context)
-        expense_account_id = get_default_expense_account(models, db, uid, password, context)
+        # Step 2: Check for duplicate transaction by reference
+        duplicate_check = check_for_duplicate_by_ref(
+            models, db, uid, password, data['ref'], company_id, context
+        )
         
-        if not bank_account_id or not expense_account_id:
+        if duplicate_check['is_duplicate']:
             return {
                 'success': False,
-                'error': 'Could not find default bank or expense accounts'
+                'error': 'Duplicate transaction',
+                'message': f'Transaction with reference "{data["ref"]}" already exists',
+                'existing_entry_id': duplicate_check['existing_entry_id'],
+                'company_id': company_id,
+                'company_name': company_details['name'],
+                'duplicate_details': duplicate_check
             }
         
-        print(f"✅ Using Bank Account ID: {bank_account_id}")
-        print(f"✅ Using Expense Account ID: {expense_account_id}")
+        print("✅ No duplicate found, proceeding with transaction creation")
         
-        # Step 3: Get default bank journal (with bank name)
-        journal_id = get_or_create_bank_journal(models, db, uid, password, data, context)
+        # Step 3: Resolve account IDs for all line items
+        resolved_line_items = []
+        for i, line_item in enumerate(data['line_items']):
+            account_id = find_account_by_name(models, db, uid, password, line_item['name'], context)
+            
+            if not account_id:
+                return {
+                    'success': False,
+                    'error': f'Could not find account for: "{line_item["name"]}"'
+                }
+            
+            resolved_line = {
+                'account_id': account_id,
+                'name': data['narration'],  # Use narration as line description
+                'debit': float(line_item['debit']),
+                'credit': float(line_item['credit']),
+            }
+            
+            # Add partner_id if specified
+            if line_item.get('partner_id'):
+                resolved_line['partner_id'] = line_item['partner_id']
+            
+            resolved_line_items.append(resolved_line)
+            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id}")
+        
+        # Step 4: Get default journal (or determine from line items)
+        journal_id = get_default_journal_for_transaction(models, db, uid, password, data, context)
         
         if not journal_id:
             return {
                 'success': False,
-                'error': 'Could not find default bank journal'
+                'error': 'Could not find appropriate journal'
             }
         
         print(f"✅ Using Journal ID: {journal_id}")
         
-        # Step 4: Create Journal Entry
-        journal_entry_id = create_journal_entry(
+        # Step 5: Create Journal Entry
+        journal_entry_id = create_journal_entry_flexible(
             models, db, uid, password,
             journal_id,
-            bank_account_id,
-            expense_account_id,
+            resolved_line_items,
             data,
             context
         )
@@ -143,10 +220,11 @@ def main(data):
             'success': True,
             'journal_entry_id': journal_entry_id,
             'company_id': company_id,
-            'transaction_id': data['id'],
-            'amount': data['amount'],
-            'currency': data['currency'],
-            'message': 'Bank transaction entry created successfully'
+            'company_name': company_details['name'],
+            'transaction_ref': data['ref'],
+            'total_amount': total_debits,
+            'line_count': len(data['line_items']),
+            'message': 'Flexible bank transaction entry created successfully'
         }
         
     except xmlrpc.client.Fault as e:
@@ -166,190 +244,250 @@ def main(data):
             'error': error_msg
         }
 
-def find_company(models, db, uid, password, data):
-    """Find company in Odoo using company_name with fuzzy matching"""
+def find_account_by_name(models, db, uid, password, account_name, context):
+    """
+    Find account ID by searching for account name or code
+    Searches both name and code fields for flexible matching
+    """
     try:
-        print(f"🔍 Searching for company: {data['company_name']}")
+        print(f"🔍 Looking for account: '{account_name}'")
         
-        # Get all companies first for better matching
-        all_companies = models.execute_kw(
-            db, uid, password,
-            'res.company', 'search_read',
-            [[]], {'fields': ['id', 'name']}
-        )
-        
-        print(f"📋 Available companies: {[c['name'] for c in all_companies]}")
-        
-        search_name = data['company_name']
-        
-        # Try exact match first
-        for company in all_companies:
-            if company['name'] == search_name:
-                print(f"✅ Found company by exact match: {company['name']}")
-                return company['id']
-        
-        # Try case-insensitive match
-        for company in all_companies:
-            if company['name'].upper() == search_name.upper():
-                print(f"✅ Found company by case-insensitive match: {company['name']}")
-                return company['id']
-        
-        # Try fuzzy matching - remove common suffixes and variations
-        def normalize_company_name(name):
-            name = name.upper()
-            # Replace common variations
-            name = name.replace('LIMITED', 'LTD')
-            name = name.replace('ENTERPRISES', 'ENT')
-            name = name.replace('COMPANY', 'CO')
-            name = name.replace('CORPORATION', 'CORP')
-            # Remove common punctuation and extra spaces
-            name = name.replace('.', '').replace(',', '').replace('-', ' ')
-            name = ' '.join(name.split())  # Remove extra spaces
-            return name
-        
-        normalized_search = normalize_company_name(search_name)
-        print(f"🔍 Normalized search name: {normalized_search}")
-        
-        for company in all_companies:
-            normalized_company = normalize_company_name(company['name'])
-            print(f"   Comparing with: {normalized_company}")
-            
-            if normalized_company == normalized_search:
-                print(f"✅ Found company by normalized match: {company['name']}")
-                return company['id']
-        
-        # Try partial matching - check if key words match
-        search_words = set(normalized_search.split())
-        for company in all_companies:
-            company_words = set(normalize_company_name(company['name']).split())
-            
-            # If most words match (at least 70% overlap)
-            if len(search_words & company_words) >= len(search_words) * 0.7:
-                print(f"✅ Found company by partial word match: {company['name']}")
-                return company['id']
-        
-        # Try contains matching
-        for company in all_companies:
-            if (normalized_search in normalize_company_name(company['name']) or 
-                normalize_company_name(company['name']) in normalized_search):
-                print(f"✅ Found company by contains match: {company['name']}")
-                return company['id']
-        
-        print(f"❌ Company not found: {data['company_name']}")
-        print(f"   Tried normalized: {normalized_search}")
-        return None
-        
-    except Exception as e:
-        print(f"❌ Error finding company: {e}")
-        return None
-
-def get_default_bank_account(models, db, uid, password, context):
-    """Get the default bank account"""
-    try:
-        # Look for any bank-type account
+        # First try exact match on name
         account_ids = models.execute_kw(
             db, uid, password,
             'account.account', 'search',
-            [[('account_type', '=', 'asset_cash')]], 
+            [[('name', '=', account_name)]], 
             {'limit': 1, 'context': context}
         )
         
         if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code']], 
+                {'context': context}
+            )
+            print(f"✅ Exact name match: {account_details[0]['name']} ({account_details[0]['code']})")
             return account_ids[0]
         
-        # If no cash account, look for any asset account
+        # Try exact match on code
         account_ids = models.execute_kw(
             db, uid, password,
             'account.account', 'search',
-            [[('account_type', 'like', 'asset')]], 
+            [[('code', '=', account_name)]], 
             {'limit': 1, 'context': context}
         )
         
-        return account_ids[0] if account_ids else None
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code']], 
+                {'context': context}
+            )
+            print(f"✅ Exact code match: {account_details[0]['name']} ({account_details[0]['code']})")
+            return account_ids[0]
         
-    except Exception as e:
-        print(f"❌ Error finding bank account: {e}")
-        return None
-
-def get_default_expense_account(models, db, uid, password, context):
-    """Get the default expense account"""
-    try:
-        # Look for expense account
+        # Try partial match on name (case insensitive)
         account_ids = models.execute_kw(
             db, uid, password,
             'account.account', 'search',
-            [[('account_type', '=', 'expense')]], 
+            [[('name', 'ilike', account_name)]], 
             {'limit': 1, 'context': context}
         )
         
-        return account_ids[0] if account_ids else None
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code']], 
+                {'context': context}
+            )
+            print(f"✅ Partial name match: {account_details[0]['name']} ({account_details[0]['code']})")
+            return account_ids[0]
+        
+        # Try to find by keywords for common account types
+        account_keywords = {
+            'bank': ['bank', 'cash', 'current account'],
+            'share capital': ['share capital', 'capital', 'equity'],
+            'revenue': ['revenue', 'income', 'sales'],
+            'expense': ['expense', 'cost'],
+            'accounts receivable': ['receivable', 'debtors'],
+            'accounts payable': ['payable', 'creditors']
+        }
+        
+        account_name_lower = account_name.lower()
+        
+        for account_type, keywords in account_keywords.items():
+            for keyword in keywords:
+                if keyword in account_name_lower:
+                    print(f"🔍 Searching by keyword '{keyword}' for account type '{account_type}'")
+                    
+                    # Search for accounts containing this keyword
+                    account_ids = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search',
+                        [[('name', 'ilike', keyword)]], 
+                        {'limit': 1, 'context': context}
+                    )
+                    
+                    if account_ids:
+                        account_details = models.execute_kw(
+                            db, uid, password,
+                            'account.account', 'read',
+                            [account_ids, ['name', 'code']], 
+                            {'context': context}
+                        )
+                        print(f"✅ Keyword match: {account_details[0]['name']} ({account_details[0]['code']})")
+                        return account_ids[0]
+        
+        print(f"❌ No account found for: '{account_name}'")
+        return None
         
     except Exception as e:
-        print(f"❌ Error finding expense account: {e}")
+        print(f"❌ Error finding account '{account_name}': {e}")
         return None
 
-def get_or_create_bank_journal(models, db, uid, password, data, context):
-    """Get or create bank journal with bank name"""
+def check_for_duplicate_by_ref(models, db, uid, password, ref, company_id, context):
+    """
+    Check if a duplicate transaction exists by reference
+    """
     try:
-        journal_name = data['bank_name']
-        journal_code = data['bank_name'][:10].upper().replace(' ', '')  # Short code from bank name
+        print(f"🔍 Checking for duplicate by reference: {ref}")
         
-        print(f"📋 Looking for journal: {journal_name}")
+        existing_moves = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[
+                ('company_id', '=', company_id),
+                ('ref', '=', ref)
+            ]], 
+            {'fields': ['id', 'ref', 'date', 'state', 'amount_total'], 'limit': 1, 'context': context}
+        )
         
-        # Look for journal with this bank name
+        if existing_moves:
+            move = existing_moves[0]
+            print(f"❌ Duplicate found by reference:")
+            print(f"   Existing: Move ID {move['id']}, Ref: {move['ref']}")
+            print(f"   Date: {move['date']}, Amount: {move['amount_total']}")
+            return {
+                'is_duplicate': True,
+                'existing_entry_id': move['id'],
+                'method': 'exact_reference_match',
+                'existing_ref': move['ref'],
+                'existing_amount': move['amount_total'],
+                'existing_date': move['date']
+            }
+        
+        print("✅ No duplicate reference found")
+        return {
+            'is_duplicate': False,
+            'existing_entry_id': None,
+            'method': None
+        }
+        
+    except Exception as e:
+        print(f"❌ Error checking for duplicates: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'is_duplicate': True,
+            'existing_entry_id': None,
+            'method': 'error_safe_mode',
+            'error': str(e)
+        }
+
+def verify_company_exists(models, db, uid, password, company_id):
+    """Verify that the company exists and return its details"""
+    try:
+        print(f"🔍 Verifying company with ID: {company_id}")
+        
+        company_data = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('id', '=', company_id)]], 
+            {'fields': ['id', 'name', 'country_id', 'currency_id'], 'limit': 1}
+        )
+        
+        if not company_data:
+            print(f"❌ Company with ID {company_id} not found")
+            return None
+        
+        company = company_data[0]
+        print(f"✅ Company verified: {company['name']}")
+        print(f"   Country: {company.get('country_id', 'Not set')}")
+        print(f"   Currency: {company.get('currency_id', 'Not set')}")
+        
+        return company
+        
+    except Exception as e:
+        print(f"❌ Error verifying company: {e}")
+        return None
+
+def get_default_journal_for_transaction(models, db, uid, password, data, context):
+    """
+    Determine appropriate journal for the transaction
+    Looks for bank journals or miscellaneous journals
+    """
+    try:
+        # First, try to find a bank journal
         journal_ids = models.execute_kw(
-            db, uid, password,
-            'account.journal', 'search',
-            [[('name', '=', journal_name), ('type', '=', 'bank')]], 
-            {'limit': 1, 'context': context}
-        )
-        
-        if journal_ids:
-            print(f"✅ Found existing journal: {journal_name}")
-            return journal_ids[0]
-        
-        # If not found, get any bank journal and update it, or create new one
-        existing_journal_ids = models.execute_kw(
             db, uid, password,
             'account.journal', 'search',
             [[('type', '=', 'bank')]], 
             {'limit': 1, 'context': context}
         )
         
-        if existing_journal_ids:
-            # Update existing journal with bank name
-            models.execute_kw(
+        if journal_ids:
+            journal_details = models.execute_kw(
                 db, uid, password,
-                'account.journal', 'write',
-                [existing_journal_ids, {'name': journal_name}],
+                'account.journal', 'read',
+                [journal_ids, ['name', 'code', 'type']], 
                 {'context': context}
             )
-            print(f"✅ Updated existing journal to: {journal_name}")
-            return existing_journal_ids[0]
+            print(f"✅ Using bank journal: {journal_details[0]['name']} ({journal_details[0]['code']})")
+            return journal_ids[0]
         
-        # Create new journal if none exists
-        bank_account_id = get_default_bank_account(models, db, uid, password, context)
-        if not bank_account_id:
-            return None
-            
-        journal_data = {
-            'name': journal_name,
-            'code': journal_code,
-            'type': 'bank',
-            'default_account_id': bank_account_id,
-        }
-        
-        journal_id = models.execute_kw(
+        # If no bank journal, look for miscellaneous journal
+        journal_ids = models.execute_kw(
             db, uid, password,
-            'account.journal', 'create',
-            [journal_data], {'context': context}
+            'account.journal', 'search',
+            [[('type', '=', 'general')]], 
+            {'limit': 1, 'context': context}
         )
         
-        print(f"✅ Created new journal: {journal_name}")
-        return journal_id
+        if journal_ids:
+            journal_details = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'read',
+                [journal_ids, ['name', 'code', 'type']], 
+                {'context': context}
+            )
+            print(f"✅ Using general journal: {journal_details[0]['name']} ({journal_details[0]['code']})")
+            return journal_ids[0]
+        
+        # If no specific journal found, get any available journal
+        journal_ids = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search',
+            [[]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if journal_ids:
+            journal_details = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'read',
+                [journal_ids, ['name', 'code', 'type']], 
+                {'context': context}
+            )
+            print(f"✅ Using default journal: {journal_details[0]['name']} ({journal_details[0]['code']})")
+            return journal_ids[0]
+        
+        return None
         
     except Exception as e:
-        print(f"❌ Error with bank journal: {e}")
+        print(f"❌ Error finding journal: {e}")
         return None
 
 def validate_and_fix_date(date_str):
@@ -371,48 +509,27 @@ def validate_and_fix_date(date_str):
         print(f"⚠️  Invalid date format {date_str} corrected to {corrected_date}")
         return corrected_date
 
-def create_journal_entry(models, db, uid, password, journal_id, bank_account_id, expense_account_id, data, context):
-    """Create the actual journal entry"""
+def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, context):
+    """Create journal entry using flexible line items"""
     try:
-        print(f"📝 Creating journal entry...")
+        print(f"📝 Creating flexible journal entry...")
         
-        amount = float(data['amount'])
-        
-        print(f"   Amount: {amount} {data['currency']}")
-        
-        # Most bank transactions are expenses (money going out)
-        # Bank account gets credited (money out), expense account gets debited
+        # Prepare line_ids for Odoo (using (0, 0, values) format)
         line_ids = []
-        
-        # Bank account line (credit - money going out)
-        bank_line = {
-            'account_id': bank_account_id,
-            'name': data['description'],
-            'debit': 0.0,
-            'credit': amount,
-        }
-        
-        line_ids.append((0, 0, bank_line))
-        
-        # Expense account line (debit - expense incurred)
-        expense_line = {
-            'account_id': expense_account_id,
-            'name': data['description'],
-            'debit': amount,
-            'credit': 0.0,
-        }
-        
-        line_ids.append((0, 0, expense_line))
+        for line_item in line_items:
+            line_ids.append((0, 0, line_item))
         
         # Create journal entry
         move_data = {
             'journal_id': journal_id,
             'date': data['date'],
-            'ref': data['description'],  # Use description as reference
+            'ref': data['ref'],
+            'narration': data['narration'],
             'line_ids': line_ids,
         }
         
-        print(f"📝 Creating move with reference: {data['description']}")
+        print(f"📝 Creating move with reference: {data['ref']}")
+        print(f"📝 Narration: {data['narration']}")
         
         move_id = models.execute_kw(
             db, uid, password,
@@ -442,6 +559,32 @@ def create_journal_entry(models, db, uid, password, journal_id, bank_account_id,
         traceback.print_exc()
         return None
 
+def list_available_accounts(models, db, uid, password, context, account_type=None):
+    """
+    Helper function to list available accounts (useful for debugging)
+    """
+    try:
+        search_domain = []
+        if account_type:
+            search_domain.append(('account_type', '=', account_type))
+        
+        accounts = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search_read',
+            [search_domain], 
+            {'fields': ['id', 'name', 'code', 'account_type'], 'limit': 50, 'context': context}
+        )
+        
+        print(f"📊 Available accounts ({len(accounts)}):")
+        for account in accounts:
+            print(f"   ID: {account['id']}, Code: {account['code']}, Name: {account['name']}, Type: {account['account_type']}")
+        
+        return accounts
+        
+    except Exception as e:
+        print(f"❌ Error listing accounts: {e}")
+        return []
+
 def create(data):
     """Alias for main function to maintain compatibility"""
     return main(data)
@@ -449,15 +592,27 @@ def create(data):
 # Example usage
 if __name__ == "__main__":
     sample_data = {
-        "bank_name": "Bank of Cyprus",
-        "company_name": "KYRASTEL ENTERPRISES LTD",
-        "entry_type": "transaction",
-        "description": "Registrar of companies fee reimbursement",
-        "amount": 20,
-        "currency": "EUR",
-        "id": "20250721_BOC_143022",
-        "date": "2025-07-21"
+        "company_id": 13,
+        "date": "2025-07-16",
+        "ref": "BOC Transfer 255492965",
+        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
+        "line_items": [
+            {
+                "name": "Bank of Cyprus",
+                "debit": 15000.00,
+                "credit": 0.00,
+                "partner_id": None
+            },
+            {
+                "name": "Share Capital",
+                "debit": 0.00,
+                "credit": 15000.00,
+                "partner_id": None
+            }
+        ]
     }
     
     result = main(sample_data)
+    print("\n" + "="*50)
+    print("FINAL RESULT:")
     print(result)
