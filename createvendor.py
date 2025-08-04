@@ -77,6 +77,7 @@ def main(data):
                 'success': True,
                 'vendor_id': existing_vendor,
                 'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
+                'company_id': data.get('company_id'),
                 'message': 'Vendor already exists',
                 'existing': True,
                 "invoice_date": data.get('invoice_date'),
@@ -109,6 +110,7 @@ def main(data):
             'success': True,
             'vendor_id': vendor_id,
             'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
+            'company_id': data.get('company_id'),
             'message': 'Vendor created successfully',
             'existing': False,
             'vendor_details': vendor_info,
@@ -185,6 +187,10 @@ def create_vendor_basic(models, db, uid, password, data):
         vendor_data['phone'] = data['phone']
     if data.get('website'):
         vendor_data['website'] = data['website']
+
+    # Add company_id if provided (for multi-company setup)
+    if data.get('company_id'):
+        vendor_data['company_id'] = data['company_id']
         
     try:
         vendor_id = models.execute_kw(
@@ -212,6 +218,10 @@ def create_vendor_comprehensive(models, db, uid, password, data):
     for field in optional_fields:
         if data.get(field):
             vendor_data[field] = data[field]
+
+    # Add company_id if provided (for multi-company setup)
+    if data.get('company_id'):
+        vendor_data['company_id'] = data['company_id']
 
     # Handle country
     if data.get('country_code'):
