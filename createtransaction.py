@@ -38,7 +38,7 @@ def main(data):
     }
     """
     
-    # Validate required fields
+    # Validate required fields ( important )
     required_fields = ['company_id', 'date', 'ref', 'narration', 'line_items']
     
     missing_fields = [field for field in required_fields if not data.get(field)]
