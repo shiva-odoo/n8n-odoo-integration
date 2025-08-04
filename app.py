@@ -72,7 +72,8 @@ def home():
                 "/api/create/customer-payments": "POST - Process customer payments (received/sent)",
                 "/api/create/vendor-payments": "POST - Process vendor payments",
                 "/api/create/credit-notes": "POST - Create customer/vendor credit notes",
-                "/api/create/refund": "POST - Process customer/vendor refunds"
+                "/api/create/refund": "POST - Process customer/vendor refunds",
+                "/api/create/transaction": "POST - Create bank transaction"
             },
             "Update Operations (2 endpoints)": {
                 "/api/modify/vendor": "PUT - Update vendor with change tracking",
