@@ -239,8 +239,7 @@ def get_bank_transactions_list(company_id):
             'account.journal',
             'search',
             [[
-                ('company_id', '=', company_id),
-                ('type', '=', 'bank')
+                ('company_id', '=', company_id)
             ]]
         )
         
@@ -260,7 +259,6 @@ def get_bank_transactions_list(company_id):
             [[
                 ('company_id', '=', company_id),
                 ('journal_id', 'in', bank_journal_ids),
-                ('account_id.account_type', 'in', ['asset_cash', 'asset_current']),
                 ('move_id.state', '!=', 'cancel')  # Exclude cancelled journal entries
             ]]
         )
