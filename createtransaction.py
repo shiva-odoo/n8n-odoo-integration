@@ -221,7 +221,8 @@ def main(data):
             'journal_entry_id': journal_entry_id,
             'company_id': company_id,
             'company_name': company_details['name'],
-            'transaction_ref': data['ref'],
+            'ref': data['ref'],
+            'description': data['narration'],
             'total_amount': total_debits,
             'line_count': len(data['line_items']),
             'message': 'Flexible bank transaction entry created successfully'
