@@ -23,6 +23,8 @@ try:
     import createjournal
     import createtransaction
     import getDetailsByCompany
+    import updateAuditStatus
+
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
@@ -990,6 +992,52 @@ def payment_docs():
         }
     }
     return jsonify(docs)
+
+@app.route('/api/update/audit-status', methods=['PUT'])
+def update_audit_status():
+    """
+    Update the audit status of one or more journal entries in Odoo
+    Accepts either a single object or a list of objects with transaction_id and audit_status
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"success": False, "error": "No JSON body provided"}), 400
+
+        updates = data if isinstance(data, list) else [data]
+
+        results = []
+        for item in updates:
+            transaction_id = item.get("transaction_id")
+            audit_status = item.get("audit_status")
+
+            if not transaction_id or not audit_status:
+                results.append({
+                    "success": False,
+                    "error": "Missing transaction_id or audit_status",
+                    "data": item
+                })
+                continue
+
+            success, result = updateAuditStatus.update_audit_status_in_odoo(transaction_id, audit_status)
+            results.append({
+                "transaction_id": transaction_id,
+                "audit_status": audit_status,
+                **result
+            })
+
+        return jsonify({
+            "success": all(r.get("success") for r in results),
+            "results": results
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 
 # Error handlers
 @app.errorhandler(404)
