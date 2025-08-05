@@ -343,7 +343,11 @@ def get_all_company_data(data):
         # Get bank transactions
         print("💳 Fetching bank transactions...")
         transactions_result = get_bank_transactions_list(company_id)
-        response['data']['bank_transactions'] = transactions_result
+        response['data']['bank_transactions'] = {
+            'success': transactions_result.get('success', False),
+            'count': transactions_result.get('count', 0),
+            'data': transactions_result.get('data', []),
+        }
         
         # Add summary
         response['summary'] = {
@@ -380,6 +384,7 @@ def get_all_company_data(data):
             'company_id': data.get('company_id'),
             'timestamp': datetime.now().isoformat()
         }
+
 
 def main(data):
     """
