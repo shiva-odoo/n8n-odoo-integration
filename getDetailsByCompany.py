@@ -2,6 +2,8 @@ import os
 import xmlrpc.client
 from datetime import datetime
 
+
+
 def authenticate_odoo():
     """Authenticate with Odoo and return connection objects and uid"""
     try:
@@ -223,7 +225,7 @@ def get_vendors_list(company_id):
         }
 
 def get_bank_transactions_list(company_id):
-    """Get list of all bank transactions (journal entries) for a specific company"""
+    """Get list of all bank transactions (journal entries) from account.move for a specific company"""
     try:
         common, models, uid, db = authenticate_odoo()
         if not uid:
@@ -231,18 +233,18 @@ def get_bank_transactions_list(company_id):
                 'success': False,
                 'error': 'Odoo authentication failed'
             }
-        
-        # Search for journal entries (account.move.line) related to bank journals
-        # First, get bank journal IDs
+
+        # Step 1: Get bank journal IDs for the company
         bank_journal_ids = models.execute_kw(
             db, uid, os.getenv("ODOO_API_KEY"),
             'account.journal',
             'search',
             [[
-                ('company_id', '=', company_id)
+                ('company_id', '=', company_id),
+                ('type', '=', 'bank')  # Only bank journals
             ]]
         )
-        
+
         if not bank_journal_ids:
             return {
                 'success': True,
@@ -250,45 +252,46 @@ def get_bank_transactions_list(company_id):
                 'count': 0,
                 'message': 'No bank journals found for this company'
             }
-        
-        # Search for journal entries in bank journals (exclude cancelled entries)
-        transaction_ids = models.execute_kw(
+
+        # Step 2: Get account.move records with matching journals
+        move_ids = models.execute_kw(
             db, uid, os.getenv("ODOO_API_KEY"),
-            'account.move.line',
+            'account.move',
             'search',
             [[
                 ('company_id', '=', company_id),
                 ('journal_id', 'in', bank_journal_ids),
-                ('move_id.state', '!=', 'cancel')  # Exclude cancelled journal entries
+                ('state', '!=', 'cancel')  # Exclude cancelled entries
             ]]
         )
-        
-        # Read transaction data
+
+        # Step 3: Read relevant fields, including audit status
         transactions = models.execute_kw(
             db, uid, os.getenv("ODOO_API_KEY"),
-            'account.move.line',
+            'account.move',
             'read',
-            [transaction_ids],
+            [move_ids],
             {
                 'fields': [
-                    'name', 'date', 'debit', 'credit', 'balance', 'partner_id', 
-                    'ref', 'move_id', 'journal_id', 'account_id', 'currency_id',
-                    'amount_currency', 'reconciled', 'payment_id'
+                    'id', 'name', 'date', 'ref', 'journal_id', 'amount_total',
+                    'partner_id', 'currency_id', 'state', 'x_studio_audit_status'
                 ]
             }
         )
-        
+
         return {
             'success': True,
             'data': transactions,
             'count': len(transactions)
         }
-        
+
     except Exception as e:
         return {
             'success': False,
             'error': f'Failed to retrieve bank transactions: {str(e)}'
         }
+
+
 
 def get_all_company_data(data):
     """
@@ -412,3 +415,7 @@ def main(data):
         }
         print(f"❌ Main function error: {str(e)}")
         return error_response
+    
+
+
+    
