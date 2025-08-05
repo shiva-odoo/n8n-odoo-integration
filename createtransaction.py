@@ -150,13 +150,48 @@ def main(data):
         )
         
         if duplicate_check['is_duplicate']:
+            # Get journal and partner info from existing entry for consistent response
+            existing_entry = models.execute_kw(
+                db, uid, password,
+                'account.move', 'read',
+                [duplicate_check['existing_entry_id']],
+                {'fields': ['journal_id', 'line_ids', 'partner_id']}
+            )
+            
+            journal_code = None
+            if existing_entry[0]['journal_id']:
+                journal_details = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'read',
+                    [existing_entry[0]['journal_id'][0]],
+                    {'fields': ['code']}
+                )
+                journal_code = journal_details[0]['code'] if journal_details else None
+            
+            partner_ids = []
+            
+            # Get partner info from line items
+            if existing_entry[0]['line_ids']:
+                line_details = models.execute_kw(
+                    db, uid, password,
+                    'account.move.line', 'read',
+                    existing_entry[0]['line_ids'],
+                    {'fields': ['partner_id']}
+                )
+                partner_ids = [line['partner_id'][0] for line in line_details if line['partner_id']]
+            
             return {
                 'success': False,
                 'error': 'Duplicate transaction',
                 'message': f'Transaction with reference "{data["ref"]}" already exists',
                 'existing_entry_id': duplicate_check['existing_entry_id'],
+                'date': data['date'],
+                'ref': data['ref'],
+                'journal_code': journal_code,
                 'company_id': company_id,
                 'company_name': company_details['name'],
+                'total_amount': total_debits,
+                'partner_ids': partner_ids,
                 'duplicate_details': duplicate_check
             }
         
@@ -164,6 +199,8 @@ def main(data):
         
         # Step 3: Resolve account IDs for all line items
         resolved_line_items = []
+        partner_ids = []
+        
         for i, line_item in enumerate(data['line_items']):
             account_id = find_account_by_name(models, db, uid, password, line_item['name'], context)
             
@@ -180,9 +217,11 @@ def main(data):
                 'credit': float(line_item['credit']),
             }
             
-            # Add partner_id if specified
+            # Add partner_id if specified and collect partner IDs
             if line_item.get('partner_id'):
                 resolved_line['partner_id'] = line_item['partner_id']
+                if line_item['partner_id'] not in partner_ids:
+                    partner_ids.append(line_item['partner_id'])
             
             resolved_line_items.append(resolved_line)
             print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id}")
@@ -197,6 +236,17 @@ def main(data):
             }
         
         print(f"✅ Using Journal ID: {journal_id}")
+        
+        # Get journal code for return response
+        journal_code = None
+        if journal_id:
+            journal_details = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'read',
+                [journal_id],
+                {'fields': ['code']}
+            )
+            journal_code = journal_details[0]['code'] if journal_details else None
         
         # Step 5: Create Journal Entry
         journal_entry_id = create_journal_entry_flexible(
@@ -219,11 +269,14 @@ def main(data):
         return {
             'success': True,
             'journal_entry_id': journal_entry_id,
+            'date': data['date'],
+            'ref': data['ref'],
+            'journal_code': journal_code,
             'company_id': company_id,
             'company_name': company_details['name'],
-            'ref': data['ref'],
-            'description': data['narration'],
             'total_amount': total_debits,
+            'partner_ids': partner_ids,
+            'description': data['narration'],
             'line_count': len(data['line_items']),
             'message': 'Flexible bank transaction entry created successfully'
         }
