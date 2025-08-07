@@ -173,12 +173,34 @@ def mark_entry_as_paid(data):
 
 def create_suspense_account(data):
     """
-    Safe version that first checks available fields before creating account
+    Creates a suspense account in Odoo with flexible input parameters
+    
+    Args:
+        data (dict): Contains account_name, account_type, company_name, and optional fields
+        Required fields:
+        - account_name (str): Name of the account to create
+        - account_type (str): Type of account (e.g., 'asset_current', 'liability_current', etc.)
+        - company_name (str): Name of the company
+        Optional fields:
+        - account_code (str): Account code (auto-generated if not provided)
+        - reconcile (bool): Enable reconciliation (default: True)
+        - reference (str): Reference for code generation
+        - amount (float): Context amount
+    
+    Returns:
+        tuple: (success_bool, result_dict)
     """
     try:
+        # Extract required fields
+        account_name = data['account_name']
+        account_type = data['account_type']
         company_name = data['company_name']
-        amount = data.get('amount')
+        
+        # Extract optional fields
+        account_code = data.get('account_code')
+        reconcile = data.get('reconcile', True)
         reference = data.get('reference')
+        amount = data.get('amount')
         
         # Load Odoo credentials
         url = os.getenv("ODOO_URL")
@@ -207,8 +229,10 @@ def create_suspense_account(data):
         
         has_company_id = 'company_id' in fields_info
         has_company_ids = 'company_ids' in fields_info
+        has_account_type = 'account_type' in fields_info
+        has_user_type_id = 'user_type_id' in fields_info
         
-        # Find company ID (we'll need it even if we can't filter by it)
+        # Find company ID
         companies = models.execute_kw(
             db, uid, password,
             'res.company', 'search_read',
@@ -222,17 +246,18 @@ def create_suspense_account(data):
         company_id = companies[0]['id']
         actual_company_name = companies[0]['name']
 
-        # Create account name and code based on reference
-        if reference:
-            account_name = f"Suspense Account - {reference}"
-            try:
-                ref_suffix = str(reference)[-4:]
-                account_code = f"4999{ref_suffix}"
-            except:
-                account_code = "499999"
-        else:
-            account_name = "Suspense Account"
-            account_code = "499999"
+        # Generate account code if not provided
+        if not account_code:
+            if reference:
+                try:
+                    ref_suffix = str(reference)[-4:]
+                    account_code = f"4999{ref_suffix}"
+                except:
+                    account_code = "499999"
+            else:
+                # Generate a random code or use default
+                import random
+                account_code = f"4999{random.randint(10, 99)}"
 
         # Build account data based on available fields
         account_data = {
@@ -240,17 +265,26 @@ def create_suspense_account(data):
             'code': account_code,
         }
         
-        # Add account_type if available
-        if 'account_type' in fields_info:
-            account_data['account_type'] = 'asset_current'
-        elif 'user_type_id' in fields_info:
-            # Older Odoo versions might use user_type_id
-            # You'd need to find the appropriate account type ID
-            pass
+        # Add account type based on available fields
+        if has_account_type:
+            account_data['account_type'] = account_type
+        elif has_user_type_id:
+            # For older Odoo versions, find the user_type_id based on account_type
+            user_types = models.execute_kw(
+                db, uid, password,
+                'account.account.type', 'search_read',
+                [[('type', '=', account_type)]],
+                {'fields': ['id'], 'limit': 1}
+            )
+            if user_types:
+                account_data['user_type_id'] = user_types[0]['id']
+            else:
+                # Fallback to a general type if specific type not found
+                account_data['user_type_id'] = 1  # You might need to adjust this
             
         # Add reconcile if available
         if 'reconcile' in fields_info:
-            account_data['reconcile'] = True
+            account_data['reconcile'] = reconcile
             
         # Add company reference if available
         if has_company_id:
@@ -310,16 +344,74 @@ def create_suspense_account(data):
                 "account_id": account_id,
                 "account_name": created_account['name'],
                 "account_code": created_account['code'],
+                "account_type": account_type,
                 "company": actual_company_name,
+                "reconcile_enabled": reconcile,
                 "reference_used": reference,
                 "amount_context": amount,
                 "fields_used": list(account_data.keys()),
-                "message": f"Suspense account '{created_account['name']}' ({created_account['code']}) created successfully"
+                "message": f"Account '{created_account['name']}' ({created_account['code']}) created successfully"
             }
         else:
-            return False, {"error": "Failed to create suspense account"}
+            return False, {"error": "Failed to create account"}
 
     except xmlrpc.client.Fault as fault:
         return False, {"error": f"XML-RPC Fault: {fault.faultString}"}
     except Exception as e:
         return False, {"error": f"Unexpected error: {str(e)}"}
+
+
+def get_available_account_types():
+    """
+    Get list of available account types for reference
+    """
+    try:
+        url = os.getenv("ODOO_URL")
+        db = os.getenv("ODOO_DB")
+        username = os.getenv("ODOO_USERNAME")
+        password = os.getenv("ODOO_API_KEY")
+
+        common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+        models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
+        uid = common.authenticate(db, username, password, {})
+
+        if not uid:
+            return False, {"error": "Authentication failed"}
+
+        # Get field information to see available account types
+        fields_info = models.execute_kw(
+            db, uid, password,
+            'account.account', 'fields_get',
+            [],
+            {'attributes': ['selection']}
+        )
+        
+        account_types = []
+        
+        # Check if account_type field exists and has selection values
+        if 'account_type' in fields_info:
+            account_type_field = fields_info.get('account_type', {})
+            selection = account_type_field.get('selection', [])
+            account_types = selection
+        elif 'user_type_id' in fields_info:
+            # For older versions, get account types from account.account.type
+            try:
+                user_types = models.execute_kw(
+                    db, uid, password,
+                    'account.account.type', 'search_read',
+                    [[]],
+                    {'fields': ['name', 'type'], 'order': 'name'}
+                )
+                account_types = [(ut['type'], ut['name']) for ut in user_types if ut.get('type')]
+            except:
+                account_types = [
+                    ('receivable', 'Receivable'),
+                    ('payable', 'Payable'),
+                    ('liquidity', 'Bank and Cash'),
+                    ('other', 'Regular'),
+                ]
+        
+        return True, {"account_types": account_types}
+        
+    except Exception as e:
+        return False, {"error": str(e)}
