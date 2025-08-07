@@ -339,7 +339,7 @@ def create_suspense_account(data):
                 {'fields': ['id', 'name', 'code']}
             )[0]
 
-            return True, {
+            return {
                 "success": True,
                 "account_id": account_id,
                 "account_name": created_account['name'],
