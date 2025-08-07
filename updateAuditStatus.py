@@ -152,7 +152,7 @@ def mark_entry_as_paid(data):
         )
 
         if updated:
-            return True, {
+            return {
                 "success": True,
                 "entry_name": journal_entry['name'],
                 "ref_field": journal_entry.get('ref', 'None'),
