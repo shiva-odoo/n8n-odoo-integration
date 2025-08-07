@@ -581,6 +581,16 @@ def mark_as_paid():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/createSuspenseAccount', methods=['POST'])
+def create_suspense_account():
+    """Create suspense account for unallocated payments"""
+    try:
+        data = request.json or {}
+        result = updateAuditStatus.create_suspense_account(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/create/bill-company', methods=['POST'])
 def create_bill_company():

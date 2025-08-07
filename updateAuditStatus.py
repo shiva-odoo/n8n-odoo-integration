@@ -169,3 +169,157 @@ def mark_entry_as_paid(data):
         return False, {"error": f"XML-RPC Fault: {fault.faultString}"}
     except Exception as e:
         return False, {"error": f"Unexpected error: {str(e)}"}
+
+
+def create_suspense_account(data):
+    """
+    Safe version that first checks available fields before creating account
+    """
+    try:
+        company_name = data['company_name']
+        amount = data.get('amount')
+        reference = data.get('reference')
+        
+        # Load Odoo credentials
+        url = os.getenv("ODOO_URL")
+        db = os.getenv("ODOO_DB")
+        username = os.getenv("ODOO_USERNAME")
+        password = os.getenv("ODOO_API_KEY")
+
+        if not all([url, db, username, password]):
+            return False, {"error": "Missing Odoo connection configuration"}
+
+        # Setup connection
+        common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+        models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
+        uid = common.authenticate(db, username, password, {})
+
+        if not uid:
+            return False, {"error": "Authentication with Odoo failed"}
+
+        # Check available fields first
+        fields_info = models.execute_kw(
+            db, uid, password,
+            'account.account', 'fields_get',
+            [],
+            {}
+        )
+        
+        has_company_id = 'company_id' in fields_info
+        has_company_ids = 'company_ids' in fields_info
+        
+        # Find company ID (we'll need it even if we can't filter by it)
+        companies = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('name', 'ilike', company_name)]],
+            {'fields': ['id', 'name'], 'limit': 1}
+        )
+        
+        if not companies:
+            return False, {"error": f"Company '{company_name}' not found"}
+        
+        company_id = companies[0]['id']
+        actual_company_name = companies[0]['name']
+
+        # Create account name and code based on reference
+        if reference:
+            account_name = f"Suspense Account - {reference}"
+            try:
+                ref_suffix = str(reference)[-4:]
+                account_code = f"4999{ref_suffix}"
+            except:
+                account_code = "499999"
+        else:
+            account_name = "Suspense Account"
+            account_code = "499999"
+
+        # Build account data based on available fields
+        account_data = {
+            'name': account_name,
+            'code': account_code,
+        }
+        
+        # Add account_type if available
+        if 'account_type' in fields_info:
+            account_data['account_type'] = 'asset_current'
+        elif 'user_type_id' in fields_info:
+            # Older Odoo versions might use user_type_id
+            # You'd need to find the appropriate account type ID
+            pass
+            
+        # Add reconcile if available
+        if 'reconcile' in fields_info:
+            account_data['reconcile'] = True
+            
+        # Add company reference if available
+        if has_company_id:
+            account_data['company_id'] = company_id
+        elif has_company_ids:
+            account_data['company_ids'] = [(6, 0, [company_id])]
+
+        # Check if account already exists
+        try:
+            if has_company_id:
+                existing_accounts = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search_read',
+                    [[('code', '=', account_code), ('company_id', '=', company_id)]],
+                    {'fields': ['id', 'name', 'code'], 'limit': 1}
+                )
+            else:
+                existing_accounts = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search_read',
+                    [[('code', '=', account_code)]],
+                    {'fields': ['id', 'name', 'code'], 'limit': 1}
+                )
+        except Exception as e:
+            # If search fails, try without company filter
+            existing_accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('code', '=', account_code)]],
+                {'fields': ['id', 'name', 'code'], 'limit': 1}
+            )
+
+        if existing_accounts:
+            return False, {
+                "error": f"Account with code '{account_code}' already exists: {existing_accounts[0]['name']}",
+                "existing_account": existing_accounts[0]
+            }
+
+        # Create the account
+        account_id = models.execute_kw(
+            db, uid, password,
+            'account.account', 'create',
+            [account_data]
+        )
+
+        if account_id:
+            # Get created account details
+            created_account = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [[account_id]],
+                {'fields': ['id', 'name', 'code']}
+            )[0]
+
+            return True, {
+                "success": True,
+                "account_id": account_id,
+                "account_name": created_account['name'],
+                "account_code": created_account['code'],
+                "company": actual_company_name,
+                "reference_used": reference,
+                "amount_context": amount,
+                "fields_used": list(account_data.keys()),
+                "message": f"Suspense account '{created_account['name']}' ({created_account['code']}) created successfully"
+            }
+        else:
+            return False, {"error": "Failed to create suspense account"}
+
+    except xmlrpc.client.Fault as fault:
+        return False, {"error": f"XML-RPC Fault: {fault.faultString}"}
+    except Exception as e:
+        return False, {"error": f"Unexpected error: {str(e)}"}
