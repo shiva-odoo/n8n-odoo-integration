@@ -294,3 +294,68 @@ def list_companies():
             'success': False,
             'error': str(e)
         }
+
+def get_company_email_partial(data):
+    """
+    Get email of a company by name with partial matching option
+    
+    Args:
+        company_name (str): The company name to search for
+        exact_match (bool): If True, uses exact match; if False, uses partial match (default: False)
+    
+    Returns:
+        dict: Success status and company data or error message
+    """
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        company_name = data['company_name']
+        exact_match = data.get('exact_match', False)  # Default to partial match
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Define basic fields that should exist in res.company
+        basic_fields = ['id', 'name', 'email']
+        
+        # Choose search operator based on exact_match parameter
+        if exact_match:
+            domain = [('name', '=', company_name)]
+        else:
+            domain = [('name', 'ilike', company_name)]  # Case-insensitive partial match
+        
+        companies = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [domain], 
+            {'fields': basic_fields, 'limit': 1}
+        )
+        
+        if not companies:
+            match_type = "exact" if exact_match else "partial"
+            return {
+                'success': False,
+                'error': f'No company found with {match_type} match for "{company_name}"'
+            }
+        
+        company = companies[0]
+        return {
+            'success': True,
+            'company_name': company.get('name'),
+            'email': company.get('email'),
+            'company_id': company.get('id'),
+            'match_type': 'exact' if exact_match else 'partial'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }

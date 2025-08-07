@@ -561,6 +561,26 @@ def get_details_by_company():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/getDetailsOfCompany', methods=['POST'])
+def get_details_of_company():
+    """Get details by company ID"""
+    try:
+        data = request.json or {}
+        result = createcompany.get_company_email_partial(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/markAsPaid', methods=['POST'])
+def mark_as_paid():
+    """Mark journal entry as paid"""
+    try:
+        data = request.json or {}
+        result = updateAuditStatus.mark_entry_as_paid(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/create/bill-company', methods=['POST'])
 def create_bill_company():
