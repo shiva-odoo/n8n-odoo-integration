@@ -157,6 +157,8 @@ def mark_entry_as_paid(data):
                 "entry_name": journal_entry['name'],
                 "ref_field": journal_entry.get('ref', 'None'),
                 "amount": journal_entry['amount_total'],
+                "description": data.get('description', 'No description provided'),
+                "partner": data.get('partner', 'Unknown'),
                 "company": actual_company_name,
                 "previous_payment_state": journal_entry.get('payment_state', 'unknown'),
                 "new_payment_state": 'paid',
