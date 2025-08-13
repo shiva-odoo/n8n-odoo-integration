@@ -178,7 +178,8 @@ def handle_bank_suspense_transaction(data):
     Handles bank suspense account transactions by:
     1. Finding or creating a 'Bank Suspense Account'
     2. Finding journal entry by reference and amount
-    3. Marking the transaction as a suspense account transaction
+    3. Checking if the journal entry already uses Bank Suspense Account
+    4. If not already using suspense account, marking the transaction as such
     
     Args:
         data (dict): Contains amount and reference
@@ -247,7 +248,30 @@ def handle_bank_suspense_transaction(data):
         if not journal_entry['success']:
             return journal_entry
 
-        # Step 3: Mark transaction as suspense account transaction
+        # Step 3: NEW - Check if journal entry already uses Bank Suspense Account
+        suspense_check = check_if_already_using_suspense_account(
+            models, db, uid, password, journal_entry['move_id'], 
+            suspense_account['account_id'], company_id
+        )
+        
+        if not suspense_check['success']:
+            return suspense_check
+            
+        # If already using suspense account, return early
+        if suspense_check['is_using_suspense']:
+            return {
+                "success": True,
+                "message": "Journal entry is already using Bank Suspense Account",
+                "suspense_account": suspense_account,
+                "journal_entry": journal_entry,
+                "already_processed": True,
+                "suspense_details": suspense_check,
+                "reference": reference,
+                "amount": amount,
+                "company": actual_company_name
+            }
+
+        # Step 4: Mark transaction as suspense account transaction (only if not already using)
         suspense_result = mark_as_suspense_transaction(
             models, db, uid, password, journal_entry['move_id'], 
             suspense_account['account_id'], amount
@@ -262,6 +286,7 @@ def handle_bank_suspense_transaction(data):
             "suspense_account": suspense_account,
             "journal_entry": journal_entry,
             "transaction_update": suspense_result,
+            "already_processed": False,
             "reference": reference,
             "amount": amount,
             "company": actual_company_name
@@ -271,6 +296,80 @@ def handle_bank_suspense_transaction(data):
         return {"success": False, "error": f"XML-RPC Fault: {fault.faultString}"}
     except Exception as e:
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
+
+
+def check_if_already_using_suspense_account(models, db, uid, password, move_id, suspense_account_id, company_id):
+    """
+    Check if the journal entry already has move lines using the Bank Suspense Account
+    
+    Args:
+        models: Odoo models proxy
+        db: Database name
+        uid: User ID
+        password: API password
+        move_id: Journal entry (account.move) ID
+        suspense_account_id: Bank Suspense Account ID
+        company_id: Company ID
+    
+    Returns:
+        dict: Result indicating if suspense account is already being used
+    """
+    try:
+        # Search for move lines in this journal entry that use the suspense account
+        search_domain = [
+            ('move_id', '=', move_id),
+            ('account_id', '=', suspense_account_id),
+            ('company_id', '=', company_id)
+        ]
+        
+        suspense_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [search_domain],
+            {'fields': ['id', 'account_id', 'debit', 'credit', 'name', 'ref']}
+        )
+        
+        # If no company-specific lines found, try without company filter
+        if not suspense_lines:
+            fallback_domain = [
+                ('move_id', '=', move_id),
+                ('account_id', '=', suspense_account_id)
+            ]
+            
+            suspense_lines = models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'search_read',
+                [fallback_domain],
+                {'fields': ['id', 'account_id', 'debit', 'credit', 'name', 'ref', 'company_id']}
+            )
+        
+        is_using_suspense = len(suspense_lines) > 0
+        
+        if is_using_suspense:
+            total_debit = sum(line.get('debit', 0) for line in suspense_lines)
+            total_credit = sum(line.get('credit', 0) for line in suspense_lines)
+            
+            return {
+                "success": True,
+                "is_using_suspense": True,
+                "suspense_lines_count": len(suspense_lines),
+                "suspense_lines": suspense_lines,
+                "total_debit": total_debit,
+                "total_credit": total_credit,
+                "net_amount": total_debit - total_credit,
+                "message": f"Journal entry already has {len(suspense_lines)} move line(s) using Bank Suspense Account"
+            }
+        else:
+            return {
+                "success": True,
+                "is_using_suspense": False,
+                "suspense_lines_count": 0,
+                "suspense_lines": [],
+                "message": "Journal entry is not currently using Bank Suspense Account"
+            }
+            
+    except Exception as e:
+        return {"success": False, "error": f"Error checking suspense account usage: {str(e)}"}
 
 
 def find_or_create_bank_suspense_account(models, db, uid, password, company_id, company_name):
