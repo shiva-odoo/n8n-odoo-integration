@@ -17,22 +17,21 @@ def main(data):
     
     Expected data format:
     {
-        "company_id": 13,
-        "date": "2025-07-16",
-        "ref": "BOC Transfer 255492965",
-        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
+        "company_id": 1,
+        "date": "2025-07-20",
+        "ref": "BOC Transfer 09444",
+        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice 34",
+        "partner": "New Share Capital of Kyrastel Investments Ltd",
         "line_items": [
             {
                 "name": "Bank of Cyprus",
                 "debit": 15000.00,
-                "credit": 0.00,
-                "partner_id": null
+                "credit": 0.00
             },
             {
                 "name": "Share Capital",
                 "debit": 0.00,
-                "credit": 15000.00,
-                "partner_id": null
+                "credit": 15000.00
             }
         ]
     }
@@ -117,6 +116,7 @@ def main(data):
         print(f"Date: {data['date']}")
         print(f"Reference: {data['ref']}")
         print(f"Narration: {data['narration']}")
+        print(f"Partner: {data.get('partner', 'None')}")
         print(f"Line Items: {len(data['line_items'])}")
         
         # Initialize connection
@@ -164,9 +164,24 @@ def main(data):
         
         print("✅ No duplicate found, proceeding with transaction creation")
         
-        # STEP 2: Resolve account IDs and collect partner information for all line items
+        # Step 3: Handle partner information
+        partner_id = None
+        partner_info = None
+        
+        if data.get('partner'):
+            partner_result = find_or_create_partner(models, db, uid, password, data['partner'], context)
+            if partner_result:
+                partner_id = partner_result['id']
+                partner_info = partner_result
+                print(f"✅ Partner resolved: {partner_info['name']} (ID: {partner_id})")
+            else:
+                return {
+                    'success': False,
+                    'error': f'Failed to find or create partner: {data["partner"]}'
+                }
+        
+        # Step 4: Resolve account IDs for all line items
         resolved_line_items = []
-        partners_info = []  # To collect partner information
         
         for i, line_item in enumerate(data['line_items']):
             account_id = find_account_by_name(models, db, uid, password, line_item['name'], context)
@@ -184,21 +199,15 @@ def main(data):
                 'credit': float(line_item['credit']),
             }
             
-            # STEP 3: Handle partner information and collect partner details
-            partner_info = None
-            if line_item.get('partner_id'):
-                resolved_line['partner_id'] = line_item['partner_id']
-                # Fetch partner details for return information
-                partner_info = get_partner_details(models, db, uid, password, line_item['partner_id'], context)
+            # Add partner to each line if available
+            if partner_id:
+                resolved_line['partner_id'] = partner_id
             
-            partners_info.append(partner_info)
             resolved_line_items.append(resolved_line)
             
             print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id}")
-            if partner_info:
-                print(f"   Partner: {partner_info['name']} (ID: {partner_info['id']})")
         
-        # Step 4: Get default journal (or determine from line items)
+        # Step 5: Get default journal (or determine from line items)
         journal_id = get_default_journal_for_transaction(models, db, uid, password, data, context)
         
         if not journal_id:
@@ -207,7 +216,7 @@ def main(data):
                 'error': 'Could not find appropriate journal'
             }
         
-        # STEP 4: Get journal details including code
+        # Step 6: Get journal details including code
         journal_details = get_journal_details(models, db, uid, password, journal_id, context)
         if not journal_details:
             return {
@@ -217,12 +226,13 @@ def main(data):
         
         print(f"✅ Using Journal: {journal_details['name']} (Code: {journal_details['code']})")
         
-        # Step 5: Create Journal Entry
+        # Step 7: Create Journal Entry
         journal_entry_id = create_journal_entry_flexible(
             models, db, uid, password,
             journal_id,
             resolved_line_items,
             data,
+            partner_id,
             context
         )
         
@@ -235,31 +245,31 @@ def main(data):
         print(f"✅ Journal Entry ID: {journal_entry_id}")
         print(f"✅ Transaction completed successfully")
         
-        # STEP 5: Prepare enhanced return response with all missing information
+        # Step 8: Prepare enhanced return response
         return {
             'success': True,
             'journal_entry_id': journal_entry_id,
             'date': data['date'],
-            'original_date': original_date,  # Include original date
-            'date_was_modified': date_was_modified,  # Flag if date was changed
+            'original_date': original_date,
+            'date_was_modified': date_was_modified,
             'company_id': company_id,
             'company_name': company_details['name'],
             'journal_id': journal_id,
-            'journal_code': journal_details['code'],  # Include journal code
-            'journal_name': journal_details['name'],  # Include journal name
-            'journal_type': journal_details['type'],  # Include journal type
+            'journal_code': journal_details['code'],
+            'journal_name': journal_details['name'],
+            'journal_type': journal_details['type'],
             'reference': data['ref'],
             'description': data['narration'],
+            'partner': partner_info,
             'total_amount': total_debits,
             'line_count': len(data['line_items']),
-            'partners': partners_info,  # Include partner information
-            'line_items_processed': [  # Include processed line items details
+            'line_items_processed': [
                 {
                     'account_name': data['line_items'][i]['name'],
                     'account_id': resolved_line_items[i]['account_id'],
                     'debit': resolved_line_items[i]['debit'],
                     'credit': resolved_line_items[i]['credit'],
-                    'partner': partners_info[i]
+                    'partner_id': partner_id
                 }
                 for i in range(len(data['line_items']))
             ],
@@ -283,7 +293,140 @@ def main(data):
             'error': error_msg
         }
 
-# STEP 6: Add new helper function to get journal details
+def find_or_create_partner(models, db, uid, password, partner_name, context):
+    """
+    Find existing partner by name or create new one
+    Returns partner details including ID
+    """
+    try:
+        print(f"🔍 Looking for partner: '{partner_name}'")
+        
+        # First check if partner_name is actually an ID (integer)
+        try:
+            partner_id = int(partner_name)
+            # If it's an ID, try to fetch the partner details
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [[partner_id], ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            if partner_data:
+                partner = partner_data[0]
+                print(f"✅ Found partner by ID: {partner['name']} (ID: {partner['id']})")
+                return {
+                    'id': partner['id'],
+                    'name': partner['name'],
+                    'email': partner.get('email'),
+                    'phone': partner.get('phone'),
+                    'is_company': partner.get('is_company'),
+                    'vat': partner.get('vat'),
+                    'created': False
+                }
+        except ValueError:
+            # Not an integer, continue with name search
+            pass
+        
+        # Search for existing partner by exact name match
+        partner_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [[('name', '=', partner_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if partner_ids:
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [partner_ids, ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            partner = partner_data[0]
+            print(f"✅ Found existing partner: {partner['name']} (ID: {partner['id']})")
+            return {
+                'id': partner['id'],
+                'name': partner['name'],
+                'email': partner.get('email'),
+                'phone': partner.get('phone'),
+                'is_company': partner.get('is_company'),
+                'vat': partner.get('vat'),
+                'created': False
+            }
+        
+        # Try partial match (case insensitive)
+        partner_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [[('name', 'ilike', partner_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if partner_ids:
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [partner_ids, ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            partner = partner_data[0]
+            print(f"✅ Found partner by partial match: {partner['name']} (ID: {partner['id']})")
+            return {
+                'id': partner['id'],
+                'name': partner['name'],
+                'email': partner.get('email'),
+                'phone': partner.get('phone'),
+                'is_company': partner.get('is_company'),
+                'vat': partner.get('vat'),
+                'created': False
+            }
+        
+        # Partner not found, create new one
+        print(f"📝 Creating new partner: {partner_name}")
+        
+        # Determine if it's a company based on name patterns
+        is_company = any(keyword in partner_name.lower() for keyword in 
+                        ['ltd', 'limited', 'corp', 'corporation', 'inc', 'llc', 'plc', 'sa', 'bv', 'gmbh'])
+        
+        partner_data = {
+            'name': partner_name,
+            'is_company': is_company,
+            'customer_rank': 1,  # Mark as customer
+            'supplier_rank': 1,  # Mark as supplier (can be both)
+        }
+        
+        new_partner_id = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'create',
+            [partner_data], 
+            {'context': context}
+        )
+        
+        if new_partner_id:
+            print(f"✅ Created new partner: {partner_name} (ID: {new_partner_id})")
+            return {
+                'id': new_partner_id,
+                'name': partner_name,
+                'email': None,
+                'phone': None,
+                'is_company': is_company,
+                'vat': None,
+                'created': True
+            }
+        else:
+            print(f"❌ Failed to create partner: {partner_name}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error finding/creating partner '{partner_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# Update the get_journal_details function to remain the same
 def get_journal_details(models, db, uid, password, journal_id, context):
     """
     Fetch journal details including code, name, and type
@@ -307,42 +450,6 @@ def get_journal_details(models, db, uid, password, journal_id, context):
         
     except Exception as e:
         print(f"❌ Error retrieving journal details: {e}")
-        return None
-
-# STEP 7: Add new helper function to get partner details
-def get_partner_details(models, db, uid, password, partner_id, context):
-    """
-    Fetch partner details for a given partner_id
-    """
-    try:
-        if not partner_id:
-            return None
-            
-        partner_data = models.execute_kw(
-            db, uid, password,
-            'res.partner', 'read',
-            [[partner_id], ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
-            {'context': context}
-        )
-        
-        if not partner_data:
-            print(f"❌ Partner with ID {partner_id} not found")
-            return None
-        
-        partner = partner_data[0]
-        print(f"✅ Partner details retrieved: {partner['name']} (ID: {partner['id']})")
-        
-        return {
-            'id': partner['id'],
-            'name': partner['name'],
-            'email': partner.get('email'),
-            'phone': partner.get('phone'),
-            'is_company': partner.get('is_company'),
-            'vat': partner.get('vat')
-        }
-        
-    except Exception as e:
-        print(f"❌ Error retrieving partner details for ID {partner_id}: {e}")
         return None
 
 def find_account_by_name(models, db, uid, password, account_name, context):
@@ -382,7 +489,7 @@ def find_account_by_name(models, db, uid, password, account_name, context):
         if account_ids:
             account_details = models.execute_kw(
                 db, uid, password,
-                'account.account', 'read',
+                'account.journal', 'read',
                 [account_ids, ['name', 'code']], 
                 {'context': context}
             )
@@ -610,8 +717,8 @@ def validate_and_fix_date(date_str):
         print(f"⚠️  Invalid date format {date_str} corrected to {corrected_date}")
         return corrected_date
 
-def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, context):
-    """Create journal entry using flexible line items"""
+def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, partner_id, context):
+    """Create journal entry using flexible line items with partner support"""
     try:
         print(f"📝 Creating flexible journal entry...")
         
@@ -628,6 +735,11 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
             'narration': data['narration'],
             'line_ids': line_ids,
         }
+        
+        # Add partner to the main journal entry if available
+        if partner_id:
+            move_data['partner_id'] = partner_id
+            print(f"📝 Adding partner ID {partner_id} to journal entry")
         
         print(f"📝 Creating move with reference: {data['ref']}")
         print(f"📝 Narration: {data['narration']}")
@@ -685,35 +797,3 @@ def list_available_accounts(models, db, uid, password, context, account_type=Non
     except Exception as e:
         print(f"❌ Error listing accounts: {e}")
         return []
-
-def create(data):
-    """Alias for main function to maintain compatibility"""
-    return main(data)
-
-# Example usage
-if __name__ == "__main__":
-    sample_data = {
-        "company_id": 13,
-        "date": "2025-07-16",
-        "ref": "BOC Transfer 255492965",
-        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
-        "line_items": [
-            {
-                "name": "Bank of Cyprus",
-                "debit": 15000.00,
-                "credit": 0.00,
-                "partner_id": None
-            },
-            {
-                "name": "Share Capital",
-                "debit": 0.00,
-                "credit": 15000.00,
-                "partner_id": None
-            }
-        ]
-    }
-    
-    result = main(sample_data)
-    print("\n" + "="*50)
-    print("FINAL RESULT:")
-    print(result)
