@@ -1,6 +1,7 @@
 # updateAuditStatus.py
 
 import os
+import random
 import xmlrpc.client
 
 def update_audit_status_in_odoo(transaction_id, new_status):

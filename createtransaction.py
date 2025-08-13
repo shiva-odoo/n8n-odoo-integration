@@ -180,17 +180,22 @@ def main(data):
                     'error': f'Failed to find or create partner: {data["partner"]}'
                 }
         
-        # Step 4: Resolve account IDs for all line items
+        # Step 4: Resolve account IDs for all line items (with auto-creation)
         resolved_line_items = []
+        created_accounts = []
         
         for i, line_item in enumerate(data['line_items']):
-            account_id = find_account_by_name(models, db, uid, password, line_item['name'], context)
+            account_result = find_or_create_account(models, db, uid, password, line_item['name'], context)
             
-            if not account_id:
+            if not account_result:
                 return {
                     'success': False,
-                    'error': f'Could not find account for: "{line_item["name"]}"'
+                    'error': f'Could not find or create account for: "{line_item["name"]}"'
                 }
+            
+            account_id = account_result['id']
+            if account_result.get('created'):
+                created_accounts.append(account_result)
             
             resolved_line = {
                 'account_id': account_id,
@@ -205,7 +210,8 @@ def main(data):
             
             resolved_line_items.append(resolved_line)
             
-            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id}")
+            status = "created" if account_result.get('created') else "found"
+            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id} ({status})")
         
         # Step 5: Get default journal (or determine from line items)
         journal_id = get_default_journal_for_transaction(models, db, uid, password, data, context)
@@ -263,6 +269,7 @@ def main(data):
             'partner': partner_info,
             'total_amount': total_debits,
             'line_count': len(data['line_items']),
+            'created_accounts': created_accounts,
             'line_items_processed': [
                 {
                     'account_name': data['line_items'][i]['name'],
@@ -292,6 +299,319 @@ def main(data):
             'success': False,
             'error': error_msg
         }
+
+def find_or_create_account(models, db, uid, password, account_name, context):
+    """
+    Find existing account by name/code or create new one
+    Returns account details including ID and creation status
+    """
+    try:
+        print(f"🔍 Looking for account: '{account_name}'")
+        
+        # First try exact match on name
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', '=', account_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code', 'account_type']], 
+                {'context': context}
+            )
+            account = account_details[0]
+            print(f"✅ Exact name match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
+        
+        # Try exact match on code
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('code', '=', account_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code', 'account_type']], 
+                {'context': context}
+            )
+            account = account_details[0]
+            print(f"✅ Exact code match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
+        
+        # Try partial match on name (case insensitive)
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', 'ilike', account_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code', 'account_type']], 
+                {'context': context}
+            )
+            account = account_details[0]
+            print(f"✅ Partial name match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
+        
+        # Try to find by keywords for common account types
+        account_keywords = {
+            'bank': ['bank', 'cash', 'current account'],
+            'share capital': ['share capital', 'capital', 'equity'],
+            'revenue': ['revenue', 'income', 'sales'],
+            'expense': ['expense', 'cost'],
+            'accounts receivable': ['receivable', 'debtors'],
+            'accounts payable': ['payable', 'creditors']
+        }
+        
+        account_name_lower = account_name.lower()
+        
+        for account_type, keywords in account_keywords.items():
+            for keyword in keywords:
+                if keyword in account_name_lower:
+                    print(f"🔍 Searching by keyword '{keyword}' for account type '{account_type}'")
+                    
+                    # Search for accounts containing this keyword
+                    account_ids = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search',
+                        [[('name', 'ilike', keyword)]], 
+                        {'limit': 1, 'context': context}
+                    )
+                    
+                    if account_ids:
+                        account_details = models.execute_kw(
+                            db, uid, password,
+                            'account.account', 'read',
+                            [account_ids, ['name', 'code', 'account_type']], 
+                            {'context': context}
+                        )
+                        account = account_details[0]
+                        print(f"✅ Keyword match: {account['name']} ({account['code']})")
+                        return {
+                            'id': account_ids[0],
+                            'name': account['name'],
+                            'code': account['code'],
+                            'account_type': account['account_type'],
+                            'created': False
+                        }
+        
+        # Account not found, create new one
+        print(f"📝 Creating new account: {account_name}")
+        return create_new_account(models, db, uid, password, account_name, context)
+        
+    except Exception as e:
+        print(f"❌ Error finding/creating account '{account_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def create_new_account(models, db, uid, password, account_name, context):
+    """
+    Create a new account based on the account name and intelligent type detection
+    """
+    try:
+        # Determine account type and code based on name patterns
+        account_type, account_code = determine_account_type_and_code(models, db, uid, password, account_name, context)
+        
+        # Prepare account data
+        account_data = {
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'reconcile': False,  # Default to False, can be True for receivables/payables
+        }
+        
+        # Set reconcile to True for specific account types
+        if account_type in ['asset_receivable', 'liability_payable']:
+            account_data['reconcile'] = True
+        
+        print(f"📝 Creating account with data: {account_data}")
+        
+        # Create the account
+        new_account_id = models.execute_kw(
+            db, uid, password,
+            'account.account', 'create',
+            [account_data], 
+            {'context': context}
+        )
+        
+        if new_account_id:
+            print(f"✅ Created new account: {account_name} (ID: {new_account_id}, Code: {account_code}, Type: {account_type})")
+            return {
+                'id': new_account_id,
+                'name': account_name,
+                'code': account_code,
+                'account_type': account_type,
+                'created': True
+            }
+        else:
+            print(f"❌ Failed to create account: {account_name}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error creating account '{account_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def determine_account_type_and_code(models, db, uid, password, account_name, context):
+    """
+    Intelligently determine account type and generate unique code based on account name
+    """
+    try:
+        account_name_lower = account_name.lower()
+        
+        # Account type mapping based on keywords
+        type_mapping = {
+            # Assets
+            'asset_current': [
+                'bank', 'cash', 'current account', 'checking', 'savings', 'petty cash',
+                'accounts receivable', 'receivable', 'debtors', 'inventory', 'stock',
+                'prepaid', 'deposits'
+            ],
+            'asset_non_current': [
+                'fixed asset', 'equipment', 'building', 'land', 'machinery', 'vehicle',
+                'furniture', 'computer', 'depreciation'
+            ],
+            # Liabilities
+            'liability_current': [
+                'accounts payable', 'payable', 'creditors', 'accrued', 'wages payable',
+                'tax payable', 'short term loan'
+            ],
+            'liability_non_current': [
+                'long term loan', 'mortgage', 'bonds', 'deferred tax'
+            ],
+            # Equity
+            'equity': [
+                'share capital', 'capital', 'equity', 'retained earnings', 'reserves',
+                'common stock', 'preferred stock', 'owner equity'
+            ],
+            # Income
+            'income': [
+                'revenue', 'sales', 'income', 'service income', 'interest income',
+                'rental income', 'fees', 'commission'
+            ],
+            # Expenses
+            'expense': [
+                'expense', 'cost', 'salary', 'wage', 'rent', 'utilities', 'insurance',
+                'supplies', 'travel', 'marketing', 'advertising', 'office', 'telephone',
+                'professional fees', 'maintenance', 'repair'
+            ]
+        }
+        
+        # Find matching account type
+        detected_type = 'asset_current'  # Default fallback
+        
+        for account_type, keywords in type_mapping.items():
+            for keyword in keywords:
+                if keyword in account_name_lower:
+                    detected_type = account_type
+                    print(f"🔍 Detected account type '{detected_type}' from keyword '{keyword}'")
+                    break
+            if detected_type != 'asset_current':
+                break
+        
+        # Generate unique account code
+        account_code = generate_unique_account_code(models, db, uid, password, account_name, detected_type, context)
+        
+        return detected_type, account_code
+        
+    except Exception as e:
+        print(f"❌ Error determining account type: {e}")
+        return 'asset_current', '999999'  # Safe fallback
+
+def generate_unique_account_code(models, db, uid, password, account_name, account_type, context):
+    """
+    Generate a unique account code based on account type and name
+    """
+    try:
+        # Base code mapping for different account types
+        base_codes = {
+            'asset_current': '1',
+            'asset_non_current': '15',
+            'liability_current': '2',
+            'liability_non_current': '25',
+            'equity': '3',
+            'income': '4',
+            'expense': '5'
+        }
+        
+        base_code = base_codes.get(account_type, '9')
+        
+        # Create a numeric suffix based on account name
+        name_hash = hashlib.md5(account_name.encode()).hexdigest()
+        numeric_suffix = ''.join(filter(str.isdigit, name_hash))[:4]
+        
+        # If no digits in hash, use a default
+        if not numeric_suffix:
+            numeric_suffix = '0001'
+        
+        # Pad to ensure 4 digits
+        numeric_suffix = numeric_suffix.zfill(4)
+        
+        # Combine base code with suffix
+        proposed_code = f"{base_code}{numeric_suffix}"
+        
+        # Check if code already exists and find a unique one
+        attempt = 0
+        while attempt < 100:  # Prevent infinite loop
+            existing_accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('code', '=', proposed_code)]], 
+                {'limit': 1, 'context': context}
+            )
+            
+            if not existing_accounts:
+                print(f"✅ Generated unique account code: {proposed_code}")
+                return proposed_code
+            
+            # Code exists, try with incremented suffix
+            attempt += 1
+            incremented_suffix = str(int(numeric_suffix) + attempt).zfill(4)
+            proposed_code = f"{base_code}{incremented_suffix}"
+        
+        # If all attempts failed, use timestamp-based code
+        timestamp_suffix = str(int(datetime.now().timestamp()))[-4:]
+        proposed_code = f"{base_code}{timestamp_suffix}"
+        
+        print(f"✅ Generated fallback account code: {proposed_code}")
+        return proposed_code
+        
+    except Exception as e:
+        print(f"❌ Error generating account code: {e}")
+        # Ultimate fallback
+        return f"9{str(int(datetime.now().timestamp()))[-5:]}"
 
 def find_or_create_partner(models, db, uid, password, partner_name, context):
     """
@@ -426,7 +746,6 @@ def find_or_create_partner(models, db, uid, password, partner_name, context):
         traceback.print_exc()
         return None
 
-# Update the get_journal_details function to remain the same
 def get_journal_details(models, db, uid, password, journal_id, context):
     """
     Fetch journal details including code, name, and type
@@ -450,110 +769,6 @@ def get_journal_details(models, db, uid, password, journal_id, context):
         
     except Exception as e:
         print(f"❌ Error retrieving journal details: {e}")
-        return None
-
-def find_account_by_name(models, db, uid, password, account_name, context):
-    """
-    Find account ID by searching for account name or code
-    Searches both name and code fields for flexible matching
-    """
-    try:
-        print(f"🔍 Looking for account: '{account_name}'")
-        
-        # First try exact match on name
-        account_ids = models.execute_kw(
-            db, uid, password,
-            'account.account', 'search',
-            [[('name', '=', account_name)]], 
-            {'limit': 1, 'context': context}
-        )
-        
-        if account_ids:
-            account_details = models.execute_kw(
-                db, uid, password,
-                'account.account', 'read',
-                [account_ids, ['name', 'code']], 
-                {'context': context}
-            )
-            print(f"✅ Exact name match: {account_details[0]['name']} ({account_details[0]['code']})")
-            return account_ids[0]
-        
-        # Try exact match on code
-        account_ids = models.execute_kw(
-            db, uid, password,
-            'account.account', 'search',
-            [[('code', '=', account_name)]], 
-            {'limit': 1, 'context': context}
-        )
-        
-        if account_ids:
-            account_details = models.execute_kw(
-                db, uid, password,
-                'account.journal', 'read',
-                [account_ids, ['name', 'code']], 
-                {'context': context}
-            )
-            print(f"✅ Exact code match: {account_details[0]['name']} ({account_details[0]['code']})")
-            return account_ids[0]
-        
-        # Try partial match on name (case insensitive)
-        account_ids = models.execute_kw(
-            db, uid, password,
-            'account.account', 'search',
-            [[('name', 'ilike', account_name)]], 
-            {'limit': 1, 'context': context}
-        )
-        
-        if account_ids:
-            account_details = models.execute_kw(
-                db, uid, password,
-                'account.account', 'read',
-                [account_ids, ['name', 'code']], 
-                {'context': context}
-            )
-            print(f"✅ Partial name match: {account_details[0]['name']} ({account_details[0]['code']})")
-            return account_ids[0]
-        
-        # Try to find by keywords for common account types
-        account_keywords = {
-            'bank': ['bank', 'cash', 'current account'],
-            'share capital': ['share capital', 'capital', 'equity'],
-            'revenue': ['revenue', 'income', 'sales'],
-            'expense': ['expense', 'cost'],
-            'accounts receivable': ['receivable', 'debtors'],
-            'accounts payable': ['payable', 'creditors']
-        }
-        
-        account_name_lower = account_name.lower()
-        
-        for account_type, keywords in account_keywords.items():
-            for keyword in keywords:
-                if keyword in account_name_lower:
-                    print(f"🔍 Searching by keyword '{keyword}' for account type '{account_type}'")
-                    
-                    # Search for accounts containing this keyword
-                    account_ids = models.execute_kw(
-                        db, uid, password,
-                        'account.account', 'search',
-                        [[('name', 'ilike', keyword)]], 
-                        {'limit': 1, 'context': context}
-                    )
-                    
-                    if account_ids:
-                        account_details = models.execute_kw(
-                            db, uid, password,
-                            'account.account', 'read',
-                            [account_ids, ['name', 'code']], 
-                            {'context': context}
-                        )
-                        print(f"✅ Keyword match: {account_details[0]['name']} ({account_details[0]['code']})")
-                        return account_ids[0]
-        
-        print(f"❌ No account found for: '{account_name}'")
-        return None
-        
-    except Exception as e:
-        print(f"❌ Error finding account '{account_name}': {e}")
         return None
 
 def check_for_duplicate_by_ref(models, db, uid, password, ref, company_id, context):
@@ -797,3 +1012,4 @@ def list_available_accounts(models, db, uid, password, context, account_type=Non
     except Exception as e:
         print(f"❌ Error listing accounts: {e}")
         return []
+
