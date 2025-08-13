@@ -173,36 +173,29 @@ def mark_entry_as_paid(data):
         return False, {"error": f"Unexpected error: {str(e)}"}
 
 
-def create_suspense_account(data):
+def handle_bank_suspense_transaction(data):
     """
-    Creates a suspense account in Odoo with flexible input parameters
+    Handles bank suspense account transactions by:
+    1. Finding or creating a 'Bank Suspense Account'
+    2. Finding journal entry by reference and amount
+    3. Marking the transaction as a suspense account transaction
     
     Args:
-        data (dict): Contains account_name, account_type, company_name, and optional fields
+        data (dict): Contains amount and reference
         Required fields:
-        - account_name (str): Name of the account to create
-        - account_type (str): Type of account (e.g., 'asset_current', 'liability_current', etc.)
-        - company_name (str): Name of the company
+        - amount (float): Transaction amount
+        - reference (str): Journal entry reference (e.g., "SO2024/5103379")
         Optional fields:
-        - account_code (str): Account code (auto-generated if not provided)
-        - reconcile (bool): Enable reconciliation (default: True)
-        - reference (str): Reference for code generation
-        - amount (float): Context amount
+        - company_name (str): Company name (required for proper company-specific operations)
     
     Returns:
-        tuple: (success_bool, result_dict)
+        dict: Result with success status and transaction details
     """
     try:
         # Extract required fields
-        account_name = data['account_name']
-        account_type = data['account_type']
-        company_name = data['company_name']
-        
-        # Extract optional fields
-        account_code = data.get('account_code')
-        reconcile = data.get('reconcile', True)
-        reference = data.get('reference')
-        amount = data.get('amount')
+        amount = data['amount']
+        reference = data['reference']
+        company_name = data.get('company_name')
         
         # Load Odoo credentials
         url = os.getenv("ODOO_URL")
@@ -211,7 +204,7 @@ def create_suspense_account(data):
         password = os.getenv("ODOO_API_KEY")
 
         if not all([url, db, username, password]):
-            return False, {"error": "Missing Odoo connection configuration"}
+            return {"success": False, "error": "Missing Odoo connection configuration"}
 
         # Setup connection
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
@@ -219,8 +212,72 @@ def create_suspense_account(data):
         uid = common.authenticate(db, username, password, {})
 
         if not uid:
-            return False, {"error": "Authentication with Odoo failed"}
+            return {"success": False, "error": "Authentication with Odoo failed"}
 
+        # Get company information - company_name is now required
+        if not company_name:
+            return {"success": False, "error": "Company name is required"}
+            
+        companies = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('name', 'ilike', company_name)]],
+            {'fields': ['id', 'name'], 'limit': 1}
+        )
+        
+        if not companies:
+            return {"success": False, "error": f"Company '{company_name}' not found"}
+        
+        company_id = companies[0]['id']
+        actual_company_name = companies[0]['name']
+
+        # Step 1: Check if 'Bank Suspense Account' exists
+        suspense_account = find_or_create_bank_suspense_account(
+            models, db, uid, password, company_id, actual_company_name
+        )
+        
+        if not suspense_account['success']:
+            return suspense_account
+
+        # Step 2: Find journal entry by reference and amount
+        journal_entry = find_journal_entry_by_reference_and_amount(
+            models, db, uid, password, reference, amount, company_id
+        )
+        
+        if not journal_entry['success']:
+            return journal_entry
+
+        # Step 3: Mark transaction as suspense account transaction
+        suspense_result = mark_as_suspense_transaction(
+            models, db, uid, password, journal_entry['move_id'], 
+            suspense_account['account_id'], amount
+        )
+
+        if not suspense_result['success']:
+            return suspense_result
+
+        return {
+            "success": True,
+            "message": "Bank suspense transaction processed successfully",
+            "suspense_account": suspense_account,
+            "journal_entry": journal_entry,
+            "transaction_update": suspense_result,
+            "reference": reference,
+            "amount": amount,
+            "company": actual_company_name
+        }
+
+    except xmlrpc.client.Fault as fault:
+        return {"success": False, "error": f"XML-RPC Fault: {fault.faultString}"}
+    except Exception as e:
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+
+
+def find_or_create_bank_suspense_account(models, db, uid, password, company_id, company_name):
+    """
+    Find existing 'Bank Suspense Account' or create it if it doesn't exist
+    """
+    try:
         # Check available fields first
         fields_info = models.execute_kw(
             db, uid, password,
@@ -233,97 +290,62 @@ def create_suspense_account(data):
         has_company_ids = 'company_ids' in fields_info
         has_account_type = 'account_type' in fields_info
         has_user_type_id = 'user_type_id' in fields_info
-        
-        # Find company ID
-        companies = models.execute_kw(
+
+        # Search for existing Bank Suspense Account
+        search_domain = [('name', 'ilike', 'Bank Suspense Account')]
+        if has_company_id:
+            search_domain.append(('company_id', '=', company_id))
+
+        existing_accounts = models.execute_kw(
             db, uid, password,
-            'res.company', 'search_read',
-            [[('name', 'ilike', company_name)]],
-            {'fields': ['id', 'name'], 'limit': 1}
+            'account.account', 'search_read',
+            [search_domain],
+            {'fields': ['id', 'name', 'code', 'account_type'], 'limit': 1}
         )
-        
-        if not companies:
-            return False, {"error": f"Company '{company_name}' not found"}
-        
-        company_id = companies[0]['id']
-        actual_company_name = companies[0]['name']
 
-        # Generate account code if not provided
-        if not account_code:
-            if reference:
-                try:
-                    ref_suffix = str(reference)[-4:]
-                    account_code = f"4999{ref_suffix}"
-                except:
-                    account_code = "499999"
-            else:
-                # Generate a random code or use default
-                import random
-                account_code = f"4999{random.randint(10, 99)}"
+        if existing_accounts:
+            account = existing_accounts[0]
+            return {
+                "success": True,
+                "account_id": account['id'],
+                "account_name": account['name'],
+                "account_code": account['code'],
+                "account_type": account.get('account_type', 'Unknown'),
+                "status": "existing",
+                "message": f"Using existing Bank Suspense Account: {account['name']} ({account['code']})"
+            }
 
-        # Build account data based on available fields
+        # Create new Bank Suspense Account if it doesn't exist
+        account_code = f"4999{random.randint(10, 99)}"
+        
+        # Build account data
         account_data = {
-            'name': account_name,
+            'name': 'Bank Suspense Account',
             'code': account_code,
+            'reconcile': True
         }
         
         # Add account type based on available fields
         if has_account_type:
-            account_data['account_type'] = account_type
+            account_data['account_type'] = 'asset_current'  # Current asset for suspense
         elif has_user_type_id:
-            # For older Odoo versions, find the user_type_id based on account_type
+            # For older Odoo versions, find appropriate user_type_id
             user_types = models.execute_kw(
                 db, uid, password,
                 'account.account.type', 'search_read',
-                [[('type', '=', account_type)]],
+                [[('type', '=', 'other')]],
                 {'fields': ['id'], 'limit': 1}
             )
             if user_types:
                 account_data['user_type_id'] = user_types[0]['id']
             else:
-                # Fallback to a general type if specific type not found
-                account_data['user_type_id'] = 1  # You might need to adjust this
+                account_data['user_type_id'] = 1  # Fallback
             
-        # Add reconcile if available
-        if 'reconcile' in fields_info:
-            account_data['reconcile'] = reconcile
-            
-        # Add company reference if available
+        # Add company reference
         if has_company_id:
             account_data['company_id'] = company_id
         elif has_company_ids:
             account_data['company_ids'] = [(6, 0, [company_id])]
-
-        # Check if account already exists
-        try:
-            if has_company_id:
-                existing_accounts = models.execute_kw(
-                    db, uid, password,
-                    'account.account', 'search_read',
-                    [[('code', '=', account_code), ('company_id', '=', company_id)]],
-                    {'fields': ['id', 'name', 'code'], 'limit': 1}
-                )
-            else:
-                existing_accounts = models.execute_kw(
-                    db, uid, password,
-                    'account.account', 'search_read',
-                    [[('code', '=', account_code)]],
-                    {'fields': ['id', 'name', 'code'], 'limit': 1}
-                )
-        except Exception as e:
-            # If search fails, try without company filter
-            existing_accounts = models.execute_kw(
-                db, uid, password,
-                'account.account', 'search_read',
-                [[('code', '=', account_code)]],
-                {'fields': ['id', 'name', 'code'], 'limit': 1}
-            )
-
-        if existing_accounts:
-            return False, {
-                "error": f"Account with code '{account_code}' already exists: {existing_accounts[0]['name']}",
-                "existing_account": existing_accounts[0]
-            }
 
         # Create the account
         account_id = models.execute_kw(
@@ -333,7 +355,6 @@ def create_suspense_account(data):
         )
 
         if account_id:
-            # Get created account details
             created_account = models.execute_kw(
                 db, uid, password,
                 'account.account', 'read',
@@ -346,74 +367,213 @@ def create_suspense_account(data):
                 "account_id": account_id,
                 "account_name": created_account['name'],
                 "account_code": created_account['code'],
-                "account_type": account_type,
-                "company": actual_company_name,
-                "reconcile_enabled": reconcile,
-                "reference_used": reference,
-                "amount_context": amount,
-                "fields_used": list(account_data.keys()),
-                "message": f"Account '{created_account['name']}' ({created_account['code']}) created successfully"
+                "account_type": "asset_current",
+                "status": "created",
+                "message": f"Created new Bank Suspense Account: {created_account['name']} ({created_account['code']})"
             }
         else:
-            return False, {"error": "Failed to create account"}
+            return {"success": False, "error": "Failed to create Bank Suspense Account"}
 
-    except xmlrpc.client.Fault as fault:
-        return False, {"error": f"XML-RPC Fault: {fault.faultString}"}
     except Exception as e:
-        return False, {"error": f"Unexpected error: {str(e)}"}
+        return {"success": False, "error": f"Error with suspense account: {str(e)}"}
 
 
-def get_available_account_types():
+def find_journal_entry_by_reference_and_amount(models, db, uid, password, reference, amount, company_id):
     """
-    Get list of available account types for reference
+    Find journal entry by reference and amount within the specific company
     """
     try:
-        url = os.getenv("ODOO_URL")
-        db = os.getenv("ODOO_DB")
-        username = os.getenv("ODOO_USERNAME")
-        password = os.getenv("ODOO_API_KEY")
-
-        common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
-        models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-        uid = common.authenticate(db, username, password, {})
-
-        if not uid:
-            return False, {"error": "Authentication failed"}
-
-        # Get field information to see available account types
-        fields_info = models.execute_kw(
+        # Search for journal entry (account.move) by reference and company
+        search_domain = [
+            ('ref', '=', reference),
+            ('company_id', '=', company_id)
+        ]
+        
+        journal_moves = models.execute_kw(
             db, uid, password,
-            'account.account', 'fields_get',
-            [],
-            {'attributes': ['selection']}
+            'account.move', 'search_read',
+            [search_domain],
+            {'fields': ['id', 'ref', 'amount_total', 'state', 'move_type', 'date', 'company_id']}
         )
+
+        if not journal_moves:
+            # Try without company filter as fallback
+            fallback_domain = [('ref', '=', reference)]
+            journal_moves = models.execute_kw(
+                db, uid, password,
+                'account.move', 'search_read',
+                [fallback_domain],
+                {'fields': ['id', 'ref', 'amount_total', 'state', 'move_type', 'date', 'company_id']}
+            )
+            
+            if not journal_moves:
+                return {
+                    "success": False, 
+                    "error": f"No journal entry found with reference: {reference} in company ID: {company_id}"
+                }
+
+        # Find the move that matches the amount (or closest match)
+        matching_move = None
+        for move in journal_moves:
+            # Prefer moves from the correct company
+            if move.get('company_id') and move['company_id'][0] == company_id:
+                if abs(move.get('amount_total', 0) - amount) < 0.01:
+                    matching_move = move
+                    break
         
-        account_types = []
+        # If no exact company + amount match, try any move with matching amount
+        if not matching_move:
+            for move in journal_moves:
+                if abs(move.get('amount_total', 0) - amount) < 0.01:
+                    matching_move = move
+                    break
         
-        # Check if account_type field exists and has selection values
-        if 'account_type' in fields_info:
-            account_type_field = fields_info.get('account_type', {})
-            selection = account_type_field.get('selection', [])
-            account_types = selection
-        elif 'user_type_id' in fields_info:
-            # For older versions, get account types from account.account.type
-            try:
-                user_types = models.execute_kw(
-                    db, uid, password,
-                    'account.account.type', 'search_read',
-                    [[]],
-                    {'fields': ['name', 'type'], 'order': 'name'}
-                )
-                account_types = [(ut['type'], ut['name']) for ut in user_types if ut.get('type')]
-            except:
-                account_types = [
-                    ('receivable', 'Receivable'),
-                    ('payable', 'Payable'),
-                    ('liquidity', 'Bank and Cash'),
-                    ('other', 'Regular'),
-                ]
-        
-        return True, {"account_types": account_types}
-        
+        # If still no match, take the first move from the correct company
+        if not matching_move:
+            for move in journal_moves:
+                if move.get('company_id') and move['company_id'][0] == company_id:
+                    matching_move = move
+                    break
+                    
+        # Last resort: take any move with the reference
+        if not matching_move:
+            matching_move = journal_moves[0]
+            
+        # Get move lines for more details (company-specific)
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [[
+                ('move_id', '=', matching_move['id']),
+                ('company_id', '=', company_id)
+            ]],
+            {'fields': ['id', 'account_id', 'debit', 'credit', 'name', 'ref', 'company_id']}
+        )
+
+        # If no company-specific lines found, get all lines for the move
+        if not move_lines:
+            move_lines = models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'search_read',
+                [[('move_id', '=', matching_move['id'])]],
+                {'fields': ['id', 'account_id', 'debit', 'credit', 'name', 'ref', 'company_id']}
+            )
+
+        company_info = matching_move.get('company_id', [company_id, 'Unknown'])
+        return {
+            "success": True,
+            "move_id": matching_move['id'],
+            "reference": matching_move['ref'],
+            "amount_total": matching_move.get('amount_total', 0),
+            "state": matching_move.get('state'),
+            "move_type": matching_move.get('move_type'),
+            "date": matching_move.get('date'),
+            "company_id": company_info[0] if isinstance(company_info, list) else company_info,
+            "company_name": company_info[1] if isinstance(company_info, list) and len(company_info) > 1 else 'Unknown',
+            "move_lines": move_lines,
+            "move_lines_count": len(move_lines),
+            "message": f"Found journal entry {matching_move['ref']} with amount {matching_move.get('amount_total', 0)} in company {company_info[1] if isinstance(company_info, list) else 'Unknown'}"
+        }
+
     except Exception as e:
-        return False, {"error": str(e)}
+        return {"success": False, "error": f"Error finding journal entry: {str(e)}"}
+
+
+def mark_as_suspense_transaction(models, db, uid, password, move_id, suspense_account_id, amount):
+    """
+    Mark the transaction as a suspense account transaction
+    This can involve updating move lines or adding notes
+    """
+    try:
+        # Get current move lines (company-specific)
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [[('move_id', '=', move_id)]],
+            {'fields': ['id', 'account_id', 'debit', 'credit', 'name', 'company_id']}
+        )
+
+        # Find a move line that matches the amount to update
+        line_to_update = None
+        for line in move_lines:
+            line_amount = line.get('debit', 0) or line.get('credit', 0)
+            if abs(line_amount - abs(amount)) < 0.01:  # Match the amount
+                line_to_update = line
+                break
+
+        if not line_to_update:
+            # If no exact match, create a new move line for the suspense account
+            return create_suspense_move_line(models, db, uid, password, move_id, suspense_account_id, amount)
+
+        # Update existing move line to use suspense account
+        update_data = {
+            'account_id': suspense_account_id,
+            'name': f"Bank Suspense - {line_to_update.get('name', '')}"
+        }
+
+        models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'write',
+            [[line_to_update['id']], update_data]
+        )
+
+        # Add a note to the move
+        move_update = {
+            'narration': f"Transaction marked as Bank Suspense Account transaction. Amount: {amount}"
+        }
+        
+        models.execute_kw(
+            db, uid, password,
+            'account.move', 'write',
+            [[move_id], move_update]
+        )
+
+        return {
+            "success": True,
+            "updated_line_id": line_to_update['id'],
+            "suspense_account_id": suspense_account_id,
+            "amount": amount,
+            "message": f"Updated move line {line_to_update['id']} to use Bank Suspense Account"
+        }
+
+    except Exception as e:
+        return {"success": False, "error": f"Error marking as suspense transaction: {str(e)}"}
+
+
+def create_suspense_move_line(models, db, uid, password, move_id, suspense_account_id, amount):
+    """
+    Create a new move line for the suspense account if no matching line exists
+    """
+    try:
+        # Create balancing move lines for suspense account
+        if amount > 0:
+            debit_amount = amount
+            credit_amount = 0
+        else:
+            debit_amount = 0
+            credit_amount = abs(amount)
+
+        move_line_data = {
+            'move_id': move_id,
+            'account_id': suspense_account_id,
+            'name': 'Bank Suspense Account Entry',
+            'debit': debit_amount,
+            'credit': credit_amount,
+        }
+
+        line_id = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'create',
+            [move_line_data]
+        )
+
+        return {
+            "success": True,
+            "new_line_id": line_id,
+            "suspense_account_id": suspense_account_id,
+            "amount": amount,
+            "message": f"Created new suspense account move line with ID {line_id}"
+        }
+
+    except Exception as e:
+        return {"success": False, "error": f"Error creating suspense move line: {str(e)}"}
