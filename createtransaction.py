@@ -2,6 +2,7 @@ import os
 import xmlrpc.client
 from datetime import datetime
 import hashlib
+import time
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -180,12 +181,13 @@ def main(data):
                     'error': f'Failed to find or create partner: {data["partner"]}'
                 }
         
-        # Step 4: Resolve account IDs for all line items (with auto-creation)
+        # Step 4: Pre-create all accounts first (batch creation)
         resolved_line_items = []
         created_accounts = []
         
+        # First pass: Create all accounts that don't exist
         for i, line_item in enumerate(data['line_items']):
-            account_result = find_or_create_account(models, db, uid, password, line_item['name'], context)
+            account_result = find_or_create_account_with_retry(models, db, uid, password, line_item['name'], context)
             
             if not account_result:
                 return {
@@ -213,6 +215,20 @@ def main(data):
             status = "created" if account_result.get('created') else "found"
             print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id} ({status})")
         
+        # If we created any accounts, wait and refresh cache
+        if created_accounts:
+            print(f"⏳ Created {len(created_accounts)} new accounts, waiting for database sync...")
+            time.sleep(1)  # Brief wait for database consistency
+            
+            # Force cache refresh by doing a simple search
+            models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('id', 'in', [acc['id'] for acc in created_accounts])]], 
+                {'limit': len(created_accounts), 'context': context}
+            )
+            print("✅ Account cache refreshed")
+        
         # Step 5: Get default journal (or determine from line items)
         journal_id = get_default_journal_for_transaction(models, db, uid, password, data, context)
         
@@ -232,8 +248,8 @@ def main(data):
         
         print(f"✅ Using Journal: {journal_details['name']} (Code: {journal_details['code']})")
         
-        # Step 7: Create Journal Entry
-        journal_entry_id = create_journal_entry_flexible(
+        # Step 7: Create Journal Entry with retry mechanism
+        journal_entry_id = create_journal_entry_flexible_with_retry(
             models, db, uid, password,
             journal_id,
             resolved_line_items,
@@ -299,6 +315,30 @@ def main(data):
             'success': False,
             'error': error_msg
         }
+
+def find_or_create_account_with_retry(models, db, uid, password, account_name, context, max_retries=3):
+    """
+    Find existing account by name/code or create new one with retry mechanism
+    Returns account details including ID and creation status
+    """
+    for attempt in range(max_retries):
+        try:
+            result = find_or_create_account(models, db, uid, password, account_name, context)
+            if result:
+                return result
+            
+            if attempt < max_retries - 1:
+                print(f"⚠️  Attempt {attempt + 1} failed for account '{account_name}', retrying...")
+                time.sleep(0.5)  # Brief wait before retry
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"⚠️  Attempt {attempt + 1} failed with error: {e}, retrying...")
+                time.sleep(0.5)
+            else:
+                raise e
+    
+    return None
 
 def find_or_create_account(models, db, uid, password, account_name, context):
     """
@@ -427,7 +467,7 @@ def find_or_create_account(models, db, uid, password, account_name, context):
         
         # Account not found, create new one
         print(f"📝 Creating new account: {account_name}")
-        return create_new_account(models, db, uid, password, account_name, context)
+        return create_new_account_with_verification(models, db, uid, password, account_name, context)
         
     except Exception as e:
         print(f"❌ Error finding/creating account '{account_name}': {e}")
@@ -435,9 +475,9 @@ def find_or_create_account(models, db, uid, password, account_name, context):
         traceback.print_exc()
         return None
 
-def create_new_account(models, db, uid, password, account_name, context):
+def create_new_account_with_verification(models, db, uid, password, account_name, context):
     """
-    Create a new account based on the account name and intelligent type detection
+    Create a new account with verification that it was successfully created
     """
     try:
         # Determine account type and code based on name patterns
@@ -457,32 +497,118 @@ def create_new_account(models, db, uid, password, account_name, context):
         
         print(f"📝 Creating account with data: {account_data}")
         
-        # Create the account
+        # Create the account with explicit context
+        create_context = context.copy()
+        create_context.update({
+            'check_move_validity': False,  # Skip some validations during creation
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
         new_account_id = models.execute_kw(
             db, uid, password,
             'account.account', 'create',
             [account_data], 
-            {'context': context}
+            {'context': create_context}
         )
         
-        if new_account_id:
-            print(f"✅ Created new account: {account_name} (ID: {new_account_id}, Code: {account_code}, Type: {account_type})")
-            return {
-                'id': new_account_id,
-                'name': account_name,
-                'code': account_code,
-                'account_type': account_type,
-                'created': True
-            }
-        else:
+        if not new_account_id:
             print(f"❌ Failed to create account: {account_name}")
             return None
+        
+        print(f"✅ Account created with ID: {new_account_id}")
+        
+        # Verify the account was created by reading it back
+        max_verification_attempts = 3
+        for attempt in range(max_verification_attempts):
+            try:
+                verification_context = context.copy()
+                account_details = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'read',
+                    [[new_account_id], ['id', 'name', 'code', 'account_type']], 
+                    {'context': verification_context}
+                )
+                
+                if account_details:
+                    account = account_details[0]
+                    print(f"✅ Account verified: {account['name']} (ID: {new_account_id}, Code: {account['code']}, Type: {account['account_type']})")
+                    return {
+                        'id': new_account_id,
+                        'name': account['name'],
+                        'code': account['code'],
+                        'account_type': account['account_type'],
+                        'created': True
+                    }
+                else:
+                    if attempt < max_verification_attempts - 1:
+                        print(f"⚠️  Account verification attempt {attempt + 1} failed, retrying...")
+                        time.sleep(0.3)
+                    else:
+                        print(f"❌ Account verification failed after {max_verification_attempts} attempts")
+                        
+            except Exception as verify_error:
+                if attempt < max_verification_attempts - 1:
+                    print(f"⚠️  Account verification error on attempt {attempt + 1}: {verify_error}, retrying...")
+                    time.sleep(0.3)
+                else:
+                    print(f"❌ Account verification failed with error: {verify_error}")
+        
+        # If verification failed but creation succeeded, return basic info
+        print(f"⚠️  Using account without full verification")
+        return {
+            'id': new_account_id,
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'created': True
+        }
             
     except Exception as e:
         print(f"❌ Error creating account '{account_name}': {e}")
         import traceback
         traceback.print_exc()
         return None
+
+def create_journal_entry_flexible_with_retry(models, db, uid, password, journal_id, line_items, data, partner_id, context, max_retries=3):
+    """Create journal entry with retry mechanism for account availability issues"""
+    
+    for attempt in range(max_retries):
+        try:
+            return create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, partner_id, context)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Check if it's an account-related error
+            if any(keyword in error_str for keyword in ['account', 'not found', 'invalid', 'missing']):
+                if attempt < max_retries - 1:
+                    print(f"⚠️  Journal entry creation attempt {attempt + 1} failed (account issue), retrying...")
+                    time.sleep(1)  # Longer wait for account issues
+                    
+                    # Refresh account cache by searching for all used accounts
+                    account_ids = [line['account_id'] for line in line_items]
+                    models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search',
+                        [[('id', 'in', account_ids)]], 
+                        {'context': context}
+                    )
+                    print("✅ Account cache refreshed before retry")
+                    continue
+            
+            # If not an account error or final attempt, re-raise
+            if attempt == max_retries - 1:
+                raise e
+            else:
+                print(f"⚠️  Journal entry creation attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(0.5)
+    
+    return None
+
+# [Rest of the functions remain the same - determine_account_type_and_code, generate_unique_account_code, 
+#  find_or_create_partner, get_journal_details, check_for_duplicate_by_ref, verify_company_exists,
+#  get_default_journal_for_transaction, validate_and_fix_date, create_journal_entry_flexible, 
+#  list_available_accounts]
 
 def determine_account_type_and_code(models, db, uid, password, account_name, context):
     """
@@ -942,6 +1068,14 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
         for line_item in line_items:
             line_ids.append((0, 0, line_item))
         
+        # Create enhanced context for journal entry creation
+        journal_context = context.copy()
+        journal_context.update({
+            'check_move_validity': True,  # Enable move validation
+            'skip_invoice_sync': True,    # Skip invoice synchronization if applicable
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
         # Create journal entry
         move_data = {
             'journal_id': journal_id,
@@ -949,6 +1083,7 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
             'ref': data['ref'],
             'narration': data['narration'],
             'line_ids': line_ids,
+            'move_type': 'entry',  # Explicitly set as journal entry
         }
         
         # Add partner to the main journal entry if available
@@ -958,11 +1093,12 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
         
         print(f"📝 Creating move with reference: {data['ref']}")
         print(f"📝 Narration: {data['narration']}")
+        print(f"📝 Line items count: {len(line_items)}")
         
         move_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
-            [move_data], {'context': context}
+            [move_data], {'context': journal_context}
         )
         
         if not move_id:
@@ -970,12 +1106,25 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
         
         print(f"✅ Move created with ID: {move_id}")
         
+        # Verify the move was created properly before posting
+        move_verification = models.execute_kw(
+            db, uid, password,
+            'account.move', 'read',
+            [[move_id], ['id', 'state', 'ref', 'line_ids']], 
+            {'context': journal_context}
+        )
+        
+        if not move_verification or not move_verification[0].get('line_ids'):
+            raise Exception(f"Move {move_id} was not created properly - missing line items")
+        
+        print(f"✅ Move verification passed - {len(move_verification[0]['line_ids'])} lines created")
+        
         # Post the journal entry
         print(f"📝 Posting journal entry...")
         models.execute_kw(
             db, uid, password,
             'account.move', 'action_post',
-            [[move_id]], {'context': context}
+            [[move_id]], {'context': journal_context}
         )
         
         print(f"✅ Journal entry posted successfully")
@@ -1012,4 +1161,3 @@ def list_available_accounts(models, db, uid, password, context, account_type=Non
     except Exception as e:
         print(f"❌ Error listing accounts: {e}")
         return []
-
