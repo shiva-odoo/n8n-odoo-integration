@@ -79,7 +79,7 @@ def mark_entry_as_paid(data):
         password = os.getenv("ODOO_API_KEY")
 
         if not all([url, db, username, password]):
-            return False, {"error": "Missing Odoo connection configuration"}
+            return {"error": "Missing Odoo connection configuration"}
 
         # Setup connection
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
@@ -87,7 +87,7 @@ def mark_entry_as_paid(data):
         uid = common.authenticate(db, username, password, {})
 
         if not uid:
-            return False, {"error": "Authentication with Odoo failed"}
+            return {"error": "Authentication with Odoo failed"}
 
         # First, find the company ID by name
         companies = models.execute_kw(
@@ -98,7 +98,7 @@ def mark_entry_as_paid(data):
         )
         
         if not companies:
-            return False, {"error": f"Company '{company_name}' not found"}
+            return {"error": f"Company '{company_name}' not found"}
         
         company_id = companies[0]['id']
         actual_company_name = companies[0]['name']
@@ -107,7 +107,7 @@ def mark_entry_as_paid(data):
         try:
             amount = float(amount)
         except (ValueError, TypeError):
-            return False, {"error": f"Invalid amount: {amount}"}
+            return {"error": f"Invalid amount: {amount}"}
 
         # Search for the journal entry with correct field names
         domain = [
@@ -125,7 +125,7 @@ def mark_entry_as_paid(data):
         )
 
         if not entry_ids:
-            return False, {
+            return {
                 "error": f"No journal entry found with reference '{reference}', amount {amount}, and company '{actual_company_name}'"
             }
 
@@ -141,7 +141,7 @@ def mark_entry_as_paid(data):
 
         # Check if entry is in draft state
         if journal_entry.get('state') == 'draft':
-            return False, {
+            return {
                 "error": f"Journal entry {journal_entry['name']} is in draft state. Please post it first before marking as paid."
             }
 
@@ -166,7 +166,7 @@ def mark_entry_as_paid(data):
                 "message": f"Journal entry '{journal_entry['name']}' marked as paid"
             }
         else:
-            return False, {"error": "Failed to update payment status"}
+            return {"error": "Failed to update payment status"}
 
     except xmlrpc.client.Fault as fault:
         return False, {"error": f"XML-RPC Fault: {fault.faultString}"}
