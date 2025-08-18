@@ -293,7 +293,7 @@ def handle_bank_suspense_transaction(data):
             "amount": amount,
             "description": data.get('description', ""),
             "reference": reference,
-            "partner": partner_name,
+            "partner": data.get('partner', partner_name),
             "company": actual_company_name
         }
 
