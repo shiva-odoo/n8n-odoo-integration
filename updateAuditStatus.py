@@ -192,7 +192,7 @@ def handle_bank_suspense_transaction(data):
         - company_name (str): Company name (required for proper company-specific operations)
     
     Returns:
-        dict: Result with success status and transaction details
+        dict: Simple result with amount, description, reference, partner, and company
     """
     try:
         # Extract required fields
@@ -250,7 +250,7 @@ def handle_bank_suspense_transaction(data):
         if not journal_entry['success']:
             return journal_entry
 
-        # Step 3: NEW - Check if journal entry already uses Bank Suspense Account
+        # Step 3: Check if journal entry already uses Bank Suspense Account
         suspense_check = check_if_already_using_suspense_account(
             models, db, uid, password, journal_entry['move_id'], 
             suspense_account['account_id'], company_id
@@ -258,39 +258,42 @@ def handle_bank_suspense_transaction(data):
         
         if not suspense_check['success']:
             return suspense_check
-            
-        # If already using suspense account, return early
-        if suspense_check['is_using_suspense']:
-            return {
-                "success": True,
-                "message": "Journal entry is already using Bank Suspense Account",
-                "suspense_account": suspense_account,
-                "journal_entry": journal_entry,
-                "already_processed": True,
-                "suspense_details": suspense_check,
-                "reference": reference,
-                "amount": amount,
-                "company": actual_company_name
-            }
 
         # Step 4: Mark transaction as suspense account transaction (only if not already using)
-        suspense_result = mark_as_suspense_transaction(
-            models, db, uid, password, journal_entry['move_id'], 
-            suspense_account['account_id'], amount, company_id
-        )
+        if not suspense_check['is_using_suspense']:
+            suspense_result = mark_as_suspense_transaction(
+                models, db, uid, password, journal_entry['move_id'], 
+                suspense_account['account_id'], amount, company_id
+            )
 
-        if not suspense_result['success']:
-            return suspense_result
+            if not suspense_result['success']:
+                return suspense_result
 
+        # Get partner information from journal entry if available
+        partner_name = "Unknown"
+        if journal_entry.get('move_lines'):
+            for line in journal_entry['move_lines']:
+                if line.get('partner_id'):
+                    partner_info = models.execute_kw(
+                        db, uid, password,
+                        'res.partner', 'read',
+                        [line['partner_id']],
+                        {'fields': ['name']}
+                    )
+                    if partner_info:
+                        partner_name = partner_info[0]['name']
+                        break
+
+        # Create description based on reference and suspense status
+        status = "already processed" if suspense_check['is_using_suspense'] else "processed"
+
+
+        # Return simplified format
         return {
-            "success": True,
-            "message": "Bank suspense transaction processed successfully",
-            "suspense_account": suspense_account,
-            "journal_entry": journal_entry,
-            "transaction_update": suspense_result,
-            "already_processed": False,
-            "reference": reference,
             "amount": amount,
+            "description": data.get('description', ""),
+            "reference": reference,
+            "partner": partner_name,
             "company": actual_company_name
         }
 
@@ -298,7 +301,7 @@ def handle_bank_suspense_transaction(data):
         return {"success": False, "error": f"XML-RPC Fault: {fault.faultString}"}
     except Exception as e:
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
-
+    
 
 def find_or_create_bank_suspense_account(models, db, uid, password, company_id, company_name):
     """
