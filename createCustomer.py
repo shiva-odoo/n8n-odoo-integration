@@ -59,20 +59,20 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
-        # Check if customer already exists
-        existing_customer = models.execute_kw(
-            db, uid, password,
-            'res.partner', 'search_count',
-            [[('name', '=', data['name']), ('customer_rank', '>', 0)]]
+        # FIXED: Check if customer already exists WITH company context
+        existing_customer_id = check_customer_exists(
+            models, db, uid, password,
+            name=data['name'],
+            company_id=data.get('company_id')
         )
         
-        if existing_customer:
+        if existing_customer_id:
             # Get existing customer info
             customer_info = models.execute_kw(
                 db, uid, password,
-                'res.partner', 'search_read',
-                [[('name', '=', data['name']), ('customer_rank', '>', 0)]], 
-                {'fields': ['id', 'name', 'email', 'phone'], 'limit': 1}
+                'res.partner', 'read',
+                [[existing_customer_id]], 
+                {'fields': ['id', 'name', 'email', 'phone']}
             )[0]
             
             return {
@@ -178,6 +178,38 @@ def main(data):
             'success': False,
             'error': f'Unexpected error: {str(e)}'
         }
+
+def check_customer_exists(models, db, uid, password, name=None, email=None, company_id=None):
+    """Check if customer already exists - considers company context"""
+    try:
+        domain = [('customer_rank', '>', 0)]
+        
+        # CRITICAL: Add company context to avoid cross-company matches
+        if company_id:
+            # In Odoo, company_id can be False for records available to all companies
+            # So we need to check for both the specific company AND company_id=False
+            domain.append('|')  # OR condition
+            domain.append(('company_id', '=', company_id))
+            domain.append(('company_id', '=', False))
+        
+        # Add the search criteria
+        if name:
+            domain.append(('name', '=', name))
+        elif email:
+            domain.append(('email', '=', email))
+        else:
+            return None
+            
+        customer_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [domain], {'limit': 1}
+        )
+        
+        return customer_ids[0] if customer_ids else None
+        
+    except Exception:
+        return None
 
 def create(data):
     """Alias for main function to maintain compatibility"""
