@@ -587,7 +587,7 @@ def create_suspense_account():
     """Create suspense account for unallocated payments"""
     try:
         data = request.json or {}
-        result = updateAuditStatus.create_suspense_account(data)
+        result = updateAuditStatus.handle_bank_suspense_transaction(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

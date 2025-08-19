@@ -2,6 +2,7 @@ import os
 import xmlrpc.client
 from datetime import datetime
 import hashlib
+import time
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -17,22 +18,21 @@ def main(data):
     
     Expected data format:
     {
-        "company_id": 13,
-        "date": "2025-07-16",
-        "ref": "BOC Transfer 255492965",
-        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
+        "company_id": 1,
+        "date": "2025-07-20",
+        "ref": "BOC Transfer 09444",
+        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice 34",
+        "partner": "New Share Capital of Kyrastel Investments Ltd",
         "line_items": [
             {
                 "name": "Bank of Cyprus",
                 "debit": 15000.00,
-                "credit": 0.00,
-                "partner_id": null
+                "credit": 0.00
             },
             {
                 "name": "Share Capital",
                 "debit": 0.00,
-                "credit": 15000.00,
-                "partner_id": null
+                "credit": 15000.00
             }
         ]
     }
@@ -117,6 +117,7 @@ def main(data):
         print(f"Date: {data['date']}")
         print(f"Reference: {data['ref']}")
         print(f"Narration: {data['narration']}")
+        print(f"Partner: {data.get('partner', 'None')}")
         print(f"Line Items: {len(data['line_items'])}")
         
         # Initialize connection
@@ -164,18 +165,39 @@ def main(data):
         
         print("✅ No duplicate found, proceeding with transaction creation")
         
-        # STEP 2: Resolve account IDs and collect partner information for all line items
-        resolved_line_items = []
-        partners_info = []  # To collect partner information
+        # Step 3: Handle partner information
+        partner_id = None
+        partner_info = None
         
-        for i, line_item in enumerate(data['line_items']):
-            account_id = find_account_by_name(models, db, uid, password, line_item['name'], context)
-            
-            if not account_id:
+        if data.get('partner'):
+            partner_result = find_or_create_partner(models, db, uid, password, data['partner'], context)
+            if partner_result:
+                partner_id = partner_result['id']
+                partner_info = partner_result
+                print(f"✅ Partner resolved: {partner_info['name']} (ID: {partner_id})")
+            else:
                 return {
                     'success': False,
-                    'error': f'Could not find account for: "{line_item["name"]}"'
+                    'error': f'Failed to find or create partner: {data["partner"]}'
                 }
+        
+        # Step 4: Pre-create all accounts first (batch creation)
+        resolved_line_items = []
+        created_accounts = []
+        
+        # First pass: Create all accounts that don't exist
+        for i, line_item in enumerate(data['line_items']):
+            account_result = find_or_create_account_with_retry(models, db, uid, password, line_item['name'], context)
+            
+            if not account_result:
+                return {
+                    'success': False,
+                    'error': f'Could not find or create account for: "{line_item["name"]}"'
+                }
+            
+            account_id = account_result['id']
+            if account_result.get('created'):
+                created_accounts.append(account_result)
             
             resolved_line = {
                 'account_id': account_id,
@@ -184,21 +206,30 @@ def main(data):
                 'credit': float(line_item['credit']),
             }
             
-            # STEP 3: Handle partner information and collect partner details
-            partner_info = None
-            if line_item.get('partner_id'):
-                resolved_line['partner_id'] = line_item['partner_id']
-                # Fetch partner details for return information
-                partner_info = get_partner_details(models, db, uid, password, line_item['partner_id'], context)
+            # Add partner to each line if available
+            if partner_id:
+                resolved_line['partner_id'] = partner_id
             
-            partners_info.append(partner_info)
             resolved_line_items.append(resolved_line)
             
-            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id}")
-            if partner_info:
-                print(f"   Partner: {partner_info['name']} (ID: {partner_info['id']})")
+            status = "created" if account_result.get('created') else "found"
+            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id} ({status})")
         
-        # Step 4: Get default journal (or determine from line items)
+        # If we created any accounts, wait and refresh cache
+        if created_accounts:
+            print(f"⏳ Created {len(created_accounts)} new accounts, waiting for database sync...")
+            time.sleep(1)  # Brief wait for database consistency
+            
+            # Force cache refresh by doing a simple search
+            models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('id', 'in', [acc['id'] for acc in created_accounts])]], 
+                {'limit': len(created_accounts), 'context': context}
+            )
+            print("✅ Account cache refreshed")
+        
+        # Step 5: Get default journal (or determine from line items)
         journal_id = get_default_journal_for_transaction(models, db, uid, password, data, context)
         
         if not journal_id:
@@ -207,7 +238,7 @@ def main(data):
                 'error': 'Could not find appropriate journal'
             }
         
-        # STEP 4: Get journal details including code
+        # Step 6: Get journal details including code
         journal_details = get_journal_details(models, db, uid, password, journal_id, context)
         if not journal_details:
             return {
@@ -217,12 +248,13 @@ def main(data):
         
         print(f"✅ Using Journal: {journal_details['name']} (Code: {journal_details['code']})")
         
-        # Step 5: Create Journal Entry
-        journal_entry_id = create_journal_entry_flexible(
+        # Step 7: Create Journal Entry with retry mechanism
+        journal_entry_id = create_journal_entry_flexible_with_retry(
             models, db, uid, password,
             journal_id,
             resolved_line_items,
             data,
+            partner_id,
             context
         )
         
@@ -235,31 +267,32 @@ def main(data):
         print(f"✅ Journal Entry ID: {journal_entry_id}")
         print(f"✅ Transaction completed successfully")
         
-        # STEP 5: Prepare enhanced return response with all missing information
+        # Step 8: Prepare enhanced return response
         return {
             'success': True,
             'journal_entry_id': journal_entry_id,
             'date': data['date'],
-            'original_date': original_date,  # Include original date
-            'date_was_modified': date_was_modified,  # Flag if date was changed
+            'original_date': original_date,
+            'date_was_modified': date_was_modified,
             'company_id': company_id,
             'company_name': company_details['name'],
             'journal_id': journal_id,
-            'journal_code': journal_details['code'],  # Include journal code
-            'journal_name': journal_details['name'],  # Include journal name
-            'journal_type': journal_details['type'],  # Include journal type
+            'journal_code': journal_details['code'],
+            'journal_name': journal_details['name'],
+            'journal_type': journal_details['type'],
             'reference': data['ref'],
             'description': data['narration'],
+            'partner': partner_info,
             'total_amount': total_debits,
             'line_count': len(data['line_items']),
-            'partners': partners_info,  # Include partner information
-            'line_items_processed': [  # Include processed line items details
+            'created_accounts': created_accounts,
+            'line_items_processed': [
                 {
                     'account_name': data['line_items'][i]['name'],
                     'account_id': resolved_line_items[i]['account_id'],
                     'debit': resolved_line_items[i]['debit'],
                     'credit': resolved_line_items[i]['credit'],
-                    'partner': partners_info[i]
+                    'partner_id': partner_id
                 }
                 for i in range(len(data['line_items']))
             ],
@@ -283,72 +316,34 @@ def main(data):
             'error': error_msg
         }
 
-# STEP 6: Add new helper function to get journal details
-def get_journal_details(models, db, uid, password, journal_id, context):
+def find_or_create_account_with_retry(models, db, uid, password, account_name, context, max_retries=3):
     """
-    Fetch journal details including code, name, and type
+    Find existing account by name/code or create new one with retry mechanism
+    Returns account details including ID and creation status
     """
-    try:
-        journal_data = models.execute_kw(
-            db, uid, password,
-            'account.journal', 'read',
-            [[journal_id], ['id', 'name', 'code', 'type']], 
-            {'context': context}
-        )
-        
-        if not journal_data:
-            print(f"❌ Journal with ID {journal_id} not found")
-            return None
-        
-        journal = journal_data[0]
-        print(f"✅ Journal details retrieved: {journal['name']} ({journal['code']}) - Type: {journal['type']}")
-        
-        return journal
-        
-    except Exception as e:
-        print(f"❌ Error retrieving journal details: {e}")
-        return None
-
-# STEP 7: Add new helper function to get partner details
-def get_partner_details(models, db, uid, password, partner_id, context):
-    """
-    Fetch partner details for a given partner_id
-    """
-    try:
-        if not partner_id:
-            return None
+    for attempt in range(max_retries):
+        try:
+            result = find_or_create_account(models, db, uid, password, account_name, context)
+            if result:
+                return result
             
-        partner_data = models.execute_kw(
-            db, uid, password,
-            'res.partner', 'read',
-            [[partner_id], ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
-            {'context': context}
-        )
-        
-        if not partner_data:
-            print(f"❌ Partner with ID {partner_id} not found")
-            return None
-        
-        partner = partner_data[0]
-        print(f"✅ Partner details retrieved: {partner['name']} (ID: {partner['id']})")
-        
-        return {
-            'id': partner['id'],
-            'name': partner['name'],
-            'email': partner.get('email'),
-            'phone': partner.get('phone'),
-            'is_company': partner.get('is_company'),
-            'vat': partner.get('vat')
-        }
-        
-    except Exception as e:
-        print(f"❌ Error retrieving partner details for ID {partner_id}: {e}")
-        return None
+            if attempt < max_retries - 1:
+                print(f"⚠️  Attempt {attempt + 1} failed for account '{account_name}', retrying...")
+                time.sleep(0.5)  # Brief wait before retry
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"⚠️  Attempt {attempt + 1} failed with error: {e}, retrying...")
+                time.sleep(0.5)
+            else:
+                raise e
+    
+    return None
 
-def find_account_by_name(models, db, uid, password, account_name, context):
+def find_or_create_account(models, db, uid, password, account_name, context):
     """
-    Find account ID by searching for account name or code
-    Searches both name and code fields for flexible matching
+    Find existing account by name/code or create new one
+    Returns account details including ID and creation status
     """
     try:
         print(f"🔍 Looking for account: '{account_name}'")
@@ -365,11 +360,18 @@ def find_account_by_name(models, db, uid, password, account_name, context):
             account_details = models.execute_kw(
                 db, uid, password,
                 'account.account', 'read',
-                [account_ids, ['name', 'code']], 
+                [account_ids, ['name', 'code', 'account_type']], 
                 {'context': context}
             )
-            print(f"✅ Exact name match: {account_details[0]['name']} ({account_details[0]['code']})")
-            return account_ids[0]
+            account = account_details[0]
+            print(f"✅ Exact name match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
         
         # Try exact match on code
         account_ids = models.execute_kw(
@@ -383,11 +385,18 @@ def find_account_by_name(models, db, uid, password, account_name, context):
             account_details = models.execute_kw(
                 db, uid, password,
                 'account.account', 'read',
-                [account_ids, ['name', 'code']], 
+                [account_ids, ['name', 'code', 'account_type']], 
                 {'context': context}
             )
-            print(f"✅ Exact code match: {account_details[0]['name']} ({account_details[0]['code']})")
-            return account_ids[0]
+            account = account_details[0]
+            print(f"✅ Exact code match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
         
         # Try partial match on name (case insensitive)
         account_ids = models.execute_kw(
@@ -401,11 +410,18 @@ def find_account_by_name(models, db, uid, password, account_name, context):
             account_details = models.execute_kw(
                 db, uid, password,
                 'account.account', 'read',
-                [account_ids, ['name', 'code']], 
+                [account_ids, ['name', 'code', 'account_type']], 
                 {'context': context}
             )
-            print(f"✅ Partial name match: {account_details[0]['name']} ({account_details[0]['code']})")
-            return account_ids[0]
+            account = account_details[0]
+            print(f"✅ Partial name match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
         
         # Try to find by keywords for common account types
         account_keywords = {
@@ -436,17 +452,449 @@ def find_account_by_name(models, db, uid, password, account_name, context):
                         account_details = models.execute_kw(
                             db, uid, password,
                             'account.account', 'read',
-                            [account_ids, ['name', 'code']], 
+                            [account_ids, ['name', 'code', 'account_type']], 
                             {'context': context}
                         )
-                        print(f"✅ Keyword match: {account_details[0]['name']} ({account_details[0]['code']})")
-                        return account_ids[0]
+                        account = account_details[0]
+                        print(f"✅ Keyword match: {account['name']} ({account['code']})")
+                        return {
+                            'id': account_ids[0],
+                            'name': account['name'],
+                            'code': account['code'],
+                            'account_type': account['account_type'],
+                            'created': False
+                        }
         
-        print(f"❌ No account found for: '{account_name}'")
-        return None
+        # Account not found, create new one
+        print(f"📝 Creating new account: {account_name}")
+        return create_new_account_with_verification(models, db, uid, password, account_name, context)
         
     except Exception as e:
-        print(f"❌ Error finding account '{account_name}': {e}")
+        print(f"❌ Error finding/creating account '{account_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def create_new_account_with_verification(models, db, uid, password, account_name, context):
+    """
+    Create a new account with verification that it was successfully created
+    """
+    try:
+        # Determine account type and code based on name patterns
+        account_type, account_code = determine_account_type_and_code(models, db, uid, password, account_name, context)
+        
+        # Prepare account data
+        account_data = {
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'reconcile': False,  # Default to False, can be True for receivables/payables
+        }
+        
+        # Set reconcile to True for specific account types
+        if account_type in ['asset_receivable', 'liability_payable']:
+            account_data['reconcile'] = True
+        
+        print(f"📝 Creating account with data: {account_data}")
+        
+        # Create the account with explicit context
+        create_context = context.copy()
+        create_context.update({
+            'check_move_validity': False,  # Skip some validations during creation
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
+        new_account_id = models.execute_kw(
+            db, uid, password,
+            'account.account', 'create',
+            [account_data], 
+            {'context': create_context}
+        )
+        
+        if not new_account_id:
+            print(f"❌ Failed to create account: {account_name}")
+            return None
+        
+        print(f"✅ Account created with ID: {new_account_id}")
+        
+        # Verify the account was created by reading it back
+        max_verification_attempts = 3
+        for attempt in range(max_verification_attempts):
+            try:
+                verification_context = context.copy()
+                account_details = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'read',
+                    [[new_account_id], ['id', 'name', 'code', 'account_type']], 
+                    {'context': verification_context}
+                )
+                
+                if account_details:
+                    account = account_details[0]
+                    print(f"✅ Account verified: {account['name']} (ID: {new_account_id}, Code: {account['code']}, Type: {account['account_type']})")
+                    return {
+                        'id': new_account_id,
+                        'name': account['name'],
+                        'code': account['code'],
+                        'account_type': account['account_type'],
+                        'created': True
+                    }
+                else:
+                    if attempt < max_verification_attempts - 1:
+                        print(f"⚠️  Account verification attempt {attempt + 1} failed, retrying...")
+                        time.sleep(0.3)
+                    else:
+                        print(f"❌ Account verification failed after {max_verification_attempts} attempts")
+                        
+            except Exception as verify_error:
+                if attempt < max_verification_attempts - 1:
+                    print(f"⚠️  Account verification error on attempt {attempt + 1}: {verify_error}, retrying...")
+                    time.sleep(0.3)
+                else:
+                    print(f"❌ Account verification failed with error: {verify_error}")
+        
+        # If verification failed but creation succeeded, return basic info
+        print(f"⚠️  Using account without full verification")
+        return {
+            'id': new_account_id,
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'created': True
+        }
+            
+    except Exception as e:
+        print(f"❌ Error creating account '{account_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def create_journal_entry_flexible_with_retry(models, db, uid, password, journal_id, line_items, data, partner_id, context, max_retries=3):
+    """Create journal entry with retry mechanism for account availability issues"""
+    
+    for attempt in range(max_retries):
+        try:
+            return create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, partner_id, context)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Check if it's an account-related error
+            if any(keyword in error_str for keyword in ['account', 'not found', 'invalid', 'missing']):
+                if attempt < max_retries - 1:
+                    print(f"⚠️  Journal entry creation attempt {attempt + 1} failed (account issue), retrying...")
+                    time.sleep(1)  # Longer wait for account issues
+                    
+                    # Refresh account cache by searching for all used accounts
+                    account_ids = [line['account_id'] for line in line_items]
+                    models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search',
+                        [[('id', 'in', account_ids)]], 
+                        {'context': context}
+                    )
+                    print("✅ Account cache refreshed before retry")
+                    continue
+            
+            # If not an account error or final attempt, re-raise
+            if attempt == max_retries - 1:
+                raise e
+            else:
+                print(f"⚠️  Journal entry creation attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(0.5)
+    
+    return None
+
+# [Rest of the functions remain the same - determine_account_type_and_code, generate_unique_account_code, 
+#  find_or_create_partner, get_journal_details, check_for_duplicate_by_ref, verify_company_exists,
+#  get_default_journal_for_transaction, validate_and_fix_date, create_journal_entry_flexible, 
+#  list_available_accounts]
+
+def determine_account_type_and_code(models, db, uid, password, account_name, context):
+    """
+    Intelligently determine account type and generate unique code based on account name
+    """
+    try:
+        account_name_lower = account_name.lower()
+        
+        # Account type mapping based on keywords
+        type_mapping = {
+            # Assets
+            'asset_current': [
+                'bank', 'cash', 'current account', 'checking', 'savings', 'petty cash',
+                'accounts receivable', 'receivable', 'debtors', 'inventory', 'stock',
+                'prepaid', 'deposits'
+            ],
+            'asset_non_current': [
+                'fixed asset', 'equipment', 'building', 'land', 'machinery', 'vehicle',
+                'furniture', 'computer', 'depreciation'
+            ],
+            # Liabilities
+            'liability_current': [
+                'accounts payable', 'payable', 'creditors', 'accrued', 'wages payable',
+                'tax payable', 'short term loan'
+            ],
+            'liability_non_current': [
+                'long term loan', 'mortgage', 'bonds', 'deferred tax'
+            ],
+            # Equity
+            'equity': [
+                'share capital', 'capital', 'equity', 'retained earnings', 'reserves',
+                'common stock', 'preferred stock', 'owner equity'
+            ],
+            # Income
+            'income': [
+                'revenue', 'sales', 'income', 'service income', 'interest income',
+                'rental income', 'fees', 'commission'
+            ],
+            # Expenses
+            'expense': [
+                'expense', 'cost', 'salary', 'wage', 'rent', 'utilities', 'insurance',
+                'supplies', 'travel', 'marketing', 'advertising', 'office', 'telephone',
+                'professional fees', 'maintenance', 'repair'
+            ]
+        }
+        
+        # Find matching account type
+        detected_type = 'asset_current'  # Default fallback
+        
+        for account_type, keywords in type_mapping.items():
+            for keyword in keywords:
+                if keyword in account_name_lower:
+                    detected_type = account_type
+                    print(f"🔍 Detected account type '{detected_type}' from keyword '{keyword}'")
+                    break
+            if detected_type != 'asset_current':
+                break
+        
+        # Generate unique account code
+        account_code = generate_unique_account_code(models, db, uid, password, account_name, detected_type, context)
+        
+        return detected_type, account_code
+        
+    except Exception as e:
+        print(f"❌ Error determining account type: {e}")
+        return 'asset_current', '999999'  # Safe fallback
+
+def generate_unique_account_code(models, db, uid, password, account_name, account_type, context):
+    """
+    Generate a unique account code based on account type and name
+    """
+    try:
+        # Base code mapping for different account types
+        base_codes = {
+            'asset_current': '1',
+            'asset_non_current': '15',
+            'liability_current': '2',
+            'liability_non_current': '25',
+            'equity': '3',
+            'income': '4',
+            'expense': '5'
+        }
+        
+        base_code = base_codes.get(account_type, '9')
+        
+        # Create a numeric suffix based on account name
+        name_hash = hashlib.md5(account_name.encode()).hexdigest()
+        numeric_suffix = ''.join(filter(str.isdigit, name_hash))[:4]
+        
+        # If no digits in hash, use a default
+        if not numeric_suffix:
+            numeric_suffix = '0001'
+        
+        # Pad to ensure 4 digits
+        numeric_suffix = numeric_suffix.zfill(4)
+        
+        # Combine base code with suffix
+        proposed_code = f"{base_code}{numeric_suffix}"
+        
+        # Check if code already exists and find a unique one
+        attempt = 0
+        while attempt < 100:  # Prevent infinite loop
+            existing_accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('code', '=', proposed_code)]], 
+                {'limit': 1, 'context': context}
+            )
+            
+            if not existing_accounts:
+                print(f"✅ Generated unique account code: {proposed_code}")
+                return proposed_code
+            
+            # Code exists, try with incremented suffix
+            attempt += 1
+            incremented_suffix = str(int(numeric_suffix) + attempt).zfill(4)
+            proposed_code = f"{base_code}{incremented_suffix}"
+        
+        # If all attempts failed, use timestamp-based code
+        timestamp_suffix = str(int(datetime.now().timestamp()))[-4:]
+        proposed_code = f"{base_code}{timestamp_suffix}"
+        
+        print(f"✅ Generated fallback account code: {proposed_code}")
+        return proposed_code
+        
+    except Exception as e:
+        print(f"❌ Error generating account code: {e}")
+        # Ultimate fallback
+        return f"9{str(int(datetime.now().timestamp()))[-5:]}"
+
+def find_or_create_partner(models, db, uid, password, partner_name, context):
+    """
+    Find existing partner by name or create new one
+    Returns partner details including ID
+    """
+    try:
+        print(f"🔍 Looking for partner: '{partner_name}'")
+        
+        # First check if partner_name is actually an ID (integer)
+        try:
+            partner_id = int(partner_name)
+            # If it's an ID, try to fetch the partner details
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [[partner_id], ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            if partner_data:
+                partner = partner_data[0]
+                print(f"✅ Found partner by ID: {partner['name']} (ID: {partner['id']})")
+                return {
+                    'id': partner['id'],
+                    'name': partner['name'],
+                    'email': partner.get('email'),
+                    'phone': partner.get('phone'),
+                    'is_company': partner.get('is_company'),
+                    'vat': partner.get('vat'),
+                    'created': False
+                }
+        except ValueError:
+            # Not an integer, continue with name search
+            pass
+        
+        # Search for existing partner by exact name match
+        partner_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [[('name', '=', partner_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if partner_ids:
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [partner_ids, ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            partner = partner_data[0]
+            print(f"✅ Found existing partner: {partner['name']} (ID: {partner['id']})")
+            return {
+                'id': partner['id'],
+                'name': partner['name'],
+                'email': partner.get('email'),
+                'phone': partner.get('phone'),
+                'is_company': partner.get('is_company'),
+                'vat': partner.get('vat'),
+                'created': False
+            }
+        
+        # Try partial match (case insensitive)
+        partner_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [[('name', 'ilike', partner_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if partner_ids:
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [partner_ids, ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            partner = partner_data[0]
+            print(f"✅ Found partner by partial match: {partner['name']} (ID: {partner['id']})")
+            return {
+                'id': partner['id'],
+                'name': partner['name'],
+                'email': partner.get('email'),
+                'phone': partner.get('phone'),
+                'is_company': partner.get('is_company'),
+                'vat': partner.get('vat'),
+                'created': False
+            }
+        
+        # Partner not found, create new one
+        print(f"📝 Creating new partner: {partner_name}")
+        
+        # Determine if it's a company based on name patterns
+        is_company = any(keyword in partner_name.lower() for keyword in 
+                        ['ltd', 'limited', 'corp', 'corporation', 'inc', 'llc', 'plc', 'sa', 'bv', 'gmbh'])
+        
+        partner_data = {
+            'name': partner_name,
+            'is_company': is_company,
+            'customer_rank': 1,  # Mark as customer
+            'supplier_rank': 1,  # Mark as supplier (can be both)
+        }
+        
+        new_partner_id = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'create',
+            [partner_data], 
+            {'context': context}
+        )
+        
+        if new_partner_id:
+            print(f"✅ Created new partner: {partner_name} (ID: {new_partner_id})")
+            return {
+                'id': new_partner_id,
+                'name': partner_name,
+                'email': None,
+                'phone': None,
+                'is_company': is_company,
+                'vat': None,
+                'created': True
+            }
+        else:
+            print(f"❌ Failed to create partner: {partner_name}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error finding/creating partner '{partner_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def get_journal_details(models, db, uid, password, journal_id, context):
+    """
+    Fetch journal details including code, name, and type
+    """
+    try:
+        journal_data = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'read',
+            [[journal_id], ['id', 'name', 'code', 'type']], 
+            {'context': context}
+        )
+        
+        if not journal_data:
+            print(f"❌ Journal with ID {journal_id} not found")
+            return None
+        
+        journal = journal_data[0]
+        print(f"✅ Journal details retrieved: {journal['name']} ({journal['code']}) - Type: {journal['type']}")
+        
+        return journal
+        
+    except Exception as e:
+        print(f"❌ Error retrieving journal details: {e}")
         return None
 
 def check_for_duplicate_by_ref(models, db, uid, password, ref, company_id, context):
@@ -610,8 +1058,8 @@ def validate_and_fix_date(date_str):
         print(f"⚠️  Invalid date format {date_str} corrected to {corrected_date}")
         return corrected_date
 
-def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, context):
-    """Create journal entry using flexible line items"""
+def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, partner_id, context):
+    """Create journal entry using flexible line items with partner support"""
     try:
         print(f"📝 Creating flexible journal entry...")
         
@@ -620,6 +1068,14 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
         for line_item in line_items:
             line_ids.append((0, 0, line_item))
         
+        # Create enhanced context for journal entry creation
+        journal_context = context.copy()
+        journal_context.update({
+            'check_move_validity': True,  # Enable move validation
+            'skip_invoice_sync': True,    # Skip invoice synchronization if applicable
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
         # Create journal entry
         move_data = {
             'journal_id': journal_id,
@@ -627,15 +1083,22 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
             'ref': data['ref'],
             'narration': data['narration'],
             'line_ids': line_ids,
+            'move_type': 'entry',  # Explicitly set as journal entry
         }
+        
+        # Add partner to the main journal entry if available
+        if partner_id:
+            move_data['partner_id'] = partner_id
+            print(f"📝 Adding partner ID {partner_id} to journal entry")
         
         print(f"📝 Creating move with reference: {data['ref']}")
         print(f"📝 Narration: {data['narration']}")
+        print(f"📝 Line items count: {len(line_items)}")
         
         move_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
-            [move_data], {'context': context}
+            [move_data], {'context': journal_context}
         )
         
         if not move_id:
@@ -643,12 +1106,25 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
         
         print(f"✅ Move created with ID: {move_id}")
         
+        # Verify the move was created properly before posting
+        move_verification = models.execute_kw(
+            db, uid, password,
+            'account.move', 'read',
+            [[move_id], ['id', 'state', 'ref', 'line_ids']], 
+            {'context': journal_context}
+        )
+        
+        if not move_verification or not move_verification[0].get('line_ids'):
+            raise Exception(f"Move {move_id} was not created properly - missing line items")
+        
+        print(f"✅ Move verification passed - {len(move_verification[0]['line_ids'])} lines created")
+        
         # Post the journal entry
         print(f"📝 Posting journal entry...")
         models.execute_kw(
             db, uid, password,
             'account.move', 'action_post',
-            [[move_id]], {'context': context}
+            [[move_id]], {'context': journal_context}
         )
         
         print(f"✅ Journal entry posted successfully")
@@ -685,35 +1161,3 @@ def list_available_accounts(models, db, uid, password, context, account_type=Non
     except Exception as e:
         print(f"❌ Error listing accounts: {e}")
         return []
-
-def create(data):
-    """Alias for main function to maintain compatibility"""
-    return main(data)
-
-# Example usage
-if __name__ == "__main__":
-    sample_data = {
-        "company_id": 13,
-        "date": "2025-07-16",
-        "ref": "BOC Transfer 255492965",
-        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
-        "line_items": [
-            {
-                "name": "Bank of Cyprus",
-                "debit": 15000.00,
-                "credit": 0.00,
-                "partner_id": None
-            },
-            {
-                "name": "Share Capital",
-                "debit": 0.00,
-                "credit": 15000.00,
-                "partner_id": None
-            }
-        ]
-    }
-    
-    result = main(sample_data)
-    print("\n" + "="*50)
-    print("FINAL RESULT:")
-    print(result)
