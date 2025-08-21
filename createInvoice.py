@@ -26,9 +26,13 @@ def main(data):
             {
                 "description": "Product/Service",
                 "quantity": 2,
-                "price_unit": 150.00
+                "price_unit": 150.00,
+                "tax_rate": 19
             }
-        ]
+        ],
+        "subtotal": 300.00,
+        "tax_amount": 57.00,
+        "total_amount": 357.00
     }
     
     Or with single line item:
@@ -58,6 +62,12 @@ def main(data):
             'error': 'Either provide line_items array or description and price_unit'
         }
     
+    # Accept extra fields for amount handling
+    payment_reference = data.get('payment_reference')
+    subtotal = data.get('subtotal')
+    tax_amount = data.get('tax_amount')
+    total_amount = data.get('total_amount')
+    
     # Connection details
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -82,6 +92,24 @@ def main(data):
                 'success': False,
                 'error': 'Odoo authentication failed'
             }
+        
+        # Helper function to find tax by rate
+        def find_tax_by_rate(tax_rate, company_id=None):
+            """Find tax record by rate percentage"""
+            try:
+                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'sale')]
+                if company_id:
+                    domain.append(('company_id', '=', company_id))
+                
+                tax_ids = models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'search',
+                    [domain],
+                    {'limit': 1}
+                )
+                return tax_ids[0] if tax_ids else None
+            except:
+                return None
         
         # Handle customer
         if data.get('customer_id'):
@@ -154,8 +182,10 @@ def main(data):
         }
         
         # Add company_id if provided (for multi-company setup)
+        company_id = None
         if data.get('company_id'):
-            invoice_data['company_id'] = data['company_id']
+            company_id = data['company_id']
+            invoice_data['company_id'] = company_id
         
         # Add due date if provided
         if data.get('due_date'):
@@ -172,6 +202,10 @@ def main(data):
         if data.get('reference'):
             invoice_data['ref'] = data['reference']
         
+        # Add payment_reference if provided
+        if payment_reference and payment_reference != 'none':
+            invoice_data['payment_reference'] = payment_reference
+        
         # Handle line items
         invoice_line_ids = []
         
@@ -187,10 +221,11 @@ def main(data):
                 try:
                     quantity = float(item.get('quantity', 1.0))
                     price_unit = float(item.get('price_unit', 0.0))
+                    tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else None
                 except (ValueError, TypeError):
                     return {
                         'success': False,
-                        'error': 'quantity and price_unit must be valid numbers'
+                        'error': 'quantity, price_unit, and tax_rate must be valid numbers'
                     }
                 
                 line_item = {
@@ -198,6 +233,15 @@ def main(data):
                     'quantity': quantity,
                     'price_unit': price_unit,
                 }
+                
+                # Apply tax if tax_rate is provided
+                if tax_rate is not None and tax_rate > 0:
+                    tax_id = find_tax_by_rate(tax_rate, company_id)
+                    if tax_id:
+                        line_item['tax_ids'] = [(6, 0, [tax_id])]
+                    else:
+                        # Log warning but continue - tax might be calculated differently
+                        print(f"Warning: No tax found for rate {tax_rate}%, continuing without tax")
                 
                 invoice_line_ids.append((0, 0, line_item))
         
@@ -223,7 +267,7 @@ def main(data):
         invoice_data['invoice_line_ids'] = invoice_line_ids
         
         # Create invoice
-        context = {'allowed_company_ids': [data['company_id']]} if data.get('company_id') else {}
+        context = {'allowed_company_ids': [company_id]} if company_id else {}
         invoice_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
@@ -236,6 +280,40 @@ def main(data):
                 'success': False,
                 'error': 'Failed to create invoice in Odoo'
             }
+        
+        # Update with explicit amounts if provided
+        update_data = {}
+        
+        # Set explicit amounts if provided
+        if subtotal is not None:
+            try:
+                update_data['amount_untaxed'] = float(subtotal)
+            except (ValueError, TypeError):
+                pass
+        
+        if tax_amount is not None:
+            try:
+                update_data['amount_tax'] = float(tax_amount)
+            except (ValueError, TypeError):
+                pass
+        
+        if total_amount is not None:
+            try:
+                update_data['amount_total'] = float(total_amount)
+            except (ValueError, TypeError):
+                pass
+        
+        # Update the invoice with explicit amounts if any were provided
+        if update_data:
+            try:
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'write',
+                    [[invoice_id], update_data]
+                )
+            except Exception as e:
+                # If we can't set the amounts directly, continue with posting
+                print(f"Warning: Could not set explicit amounts: {str(e)}")
         
         # POST THE INVOICE - Move from draft to posted state
         try:
@@ -265,12 +343,25 @@ def main(data):
                 'error': f'Invoice created but failed to post: {str(e)}'
             }
         
+        # If posting succeeded but we need to update amounts after posting, do it now
+        if update_data:
+            try:
+                # Try to update amounts even after posting (some Odoo configurations allow this)
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'write',
+                    [[invoice_id], update_data]
+                )
+            except Exception as e:
+                # This is expected in some cases, amounts might be computed automatically
+                pass
+        
         # Get final invoice information after posting
         invoice_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
             [[invoice_id]], 
-            {'fields': ['name', 'amount_total', 'state', 'invoice_date_due']}
+            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
         )[0]
         
         return {
@@ -280,10 +371,14 @@ def main(data):
             'customer_name': customer_name,
             'customer_id': customer_id,
             'total_amount': invoice_info.get('amount_total'),
+            'subtotal': invoice_info.get('amount_untaxed'),
+            'tax_amount': invoice_info.get('amount_tax'),
             'state': invoice_info.get('state'),
             'invoice_date': invoice_date,
             'due_date': invoice_info.get('invoice_date_due'),
-            'company_id': data.get('company_id'),
+            'payment_reference': payment_reference if payment_reference != 'none' else None,
+            'company_id': company_id,
+            'line_items': data.get('line_items'),
             'line_items_count': len(invoice_line_ids),
             'message': 'Customer invoice created and posted successfully'
         }
