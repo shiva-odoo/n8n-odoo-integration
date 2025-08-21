@@ -31,14 +31,19 @@ def main(data):
             {
                 "description": "Office supplies",
                 "quantity": 2,
-                "price_unit": 750.25
+                "price_unit": 750.25,
+                "tax_rate": 19
             },
             {
                 "description": "Software license",
                 "quantity": 1,
-                "price_unit": 500.00
+                "price_unit": 500.00,
+                "tax_rate": 19
             }
-        ]
+        ],
+        "subtotal": 1250.50,
+        "tax_amount": 237.60,
+        "total_amount": 1488.10
     }
     """
     
@@ -101,6 +106,24 @@ def main(data):
             {'fields': ['name']}
         )[0]
         
+        # Helper function to find tax by rate
+        def find_tax_by_rate(tax_rate, company_id=None):
+            """Find tax record by rate percentage"""
+            try:
+                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'purchase')]
+                if company_id:
+                    domain.append(('company_id', '=', company_id))
+                
+                tax_ids = models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'search',
+                    [domain],
+                    {'limit': 1}
+                )
+                return tax_ids[0] if tax_ids else None
+            except:
+                return None
+        
         # Prepare bill data
         invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
         
@@ -124,23 +147,14 @@ def main(data):
             bill_data['ref'] = data['vendor_ref']
 
         # Add company_id if provided (for multi-company setup)
+        company_id = None
         if data.get('company_id'):
-            bill_data['company_id'] = data['company_id']
+            company_id = data['company_id']
+            bill_data['company_id'] = company_id
 
-        # Add payment_reference if provided (Odoo field: payment_reference or custom field)
-        if payment_reference:
+        # Add payment_reference if provided
+        if payment_reference and payment_reference != 'none':
             bill_data['payment_reference'] = payment_reference
-
-        # Add subtotal, tax_amount, total_amount as notes if not native fields
-        notes = []
-        if subtotal is not None:
-            notes.append(f"Subtotal: {subtotal}")
-        if tax_amount is not None:
-            notes.append(f"Tax Amount: {tax_amount}")
-        if total_amount is not None:
-            notes.append(f"Total Amount: {total_amount}")
-        if notes:
-            bill_data['narration'] = '\n'.join(notes)
 
         # Handle line items
         invoice_line_ids = []
@@ -157,20 +171,28 @@ def main(data):
                 try:
                     quantity = float(item.get('quantity', 1.0))
                     price_unit = float(item.get('price_unit', 0.0))
-                    # tax_rate and line_total are parsed for validation but not sent to Odoo
-                    _ = float(item.get('tax_rate', 0.0))
-                    _ = float(item.get('line_total', price_unit * quantity))
+                    tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else None
                 except (ValueError, TypeError):
                     return {
                         'success': False,
-                        'error': 'quantity, price_unit, tax_rate, and line_total must be valid numbers'
+                        'error': 'quantity, price_unit, and tax_rate must be valid numbers'
                     }
-                # Only send valid Odoo fields
+                
                 line_item = {
                     'name': item['description'],
                     'quantity': quantity,
                     'price_unit': price_unit,
                 }
+                
+                # Apply tax if tax_rate is provided
+                if tax_rate is not None and tax_rate > 0:
+                    tax_id = find_tax_by_rate(tax_rate, company_id)
+                    if tax_id:
+                        line_item['tax_ids'] = [(6, 0, [tax_id])]
+                    else:
+                        # Log warning but continue - tax might be calculated differently
+                        print(f"Warning: No tax found for rate {tax_rate}%, continuing without tax")
+                
                 invoice_line_ids.append((0, 0, line_item))
         
         elif data.get('description') and data.get('amount'):
@@ -200,7 +222,7 @@ def main(data):
         bill_data['invoice_line_ids'] = invoice_line_ids
         
         # Create the bill
-        context = {'allowed_company_ids': [data['company_id']]} if data.get('company_id') else {}
+        context = {'allowed_company_ids': [company_id]} if company_id else {}
         bill_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
@@ -213,6 +235,40 @@ def main(data):
                 'success': False,
                 'error': 'Failed to create bill in Odoo'
             }
+        
+        # Update with explicit amounts if provided
+        update_data = {}
+        
+        # Set explicit amounts if provided
+        if subtotal is not None:
+            try:
+                update_data['amount_untaxed'] = float(subtotal)
+            except (ValueError, TypeError):
+                pass
+        
+        if tax_amount is not None:
+            try:
+                update_data['amount_tax'] = float(tax_amount)
+            except (ValueError, TypeError):
+                pass
+        
+        if total_amount is not None:
+            try:
+                update_data['amount_total'] = float(total_amount)
+            except (ValueError, TypeError):
+                pass
+        
+        # Update the bill with explicit amounts if any were provided
+        if update_data:
+            try:
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'write',
+                    [[bill_id], update_data]
+                )
+            except Exception as e:
+                # If we can't set the amounts directly, continue with posting
+                print(f"Warning: Could not set explicit amounts: {str(e)}")
         
         # POST THE BILL - Move from draft to posted state
         try:
@@ -242,12 +298,25 @@ def main(data):
                 'error': f'Bill created but failed to post: {str(e)}'
             }
         
+        # If posting succeeded but we need to update amounts after posting, do it now
+        if update_data:
+            try:
+                # Try to update amounts even after posting (some Odoo configurations allow this)
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'write',
+                    [[bill_id], update_data]
+                )
+            except Exception as e:
+                # This is expected in some cases, amounts might be computed automatically
+                pass
+        
         # Get final bill information after posting
         bill_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
             [[bill_id]], 
-            {'fields': ['name', 'amount_total', 'state']}
+            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state']}
         )[0]
         
         return {
@@ -256,11 +325,11 @@ def main(data):
             'bill_number': bill_info.get('name'),
             'vendor_name': vendor_info['name'],
             'total_amount': bill_info.get('amount_total'),
+            'subtotal': bill_info.get('amount_untaxed'),
+            'tax_amount': bill_info.get('amount_tax'),
             'state': bill_info.get('state'),
             'invoice_date': invoice_date,
-            'payment_reference': payment_reference,
-            'subtotal': subtotal,
-            'tax_amount': tax_amount,
+            'payment_reference': payment_reference if payment_reference != 'none' else None,
             'line_items': data.get('line_items'),
             'message': 'Vendor bill created and posted successfully'
         }
