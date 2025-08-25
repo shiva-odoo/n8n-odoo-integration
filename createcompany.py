@@ -112,15 +112,14 @@ def main(data):
                 }
         
         # Handle currency (if currency_code provided and currency_id field exists)
+        currency_id = None
+        currency_warning = None
         if data.get('currency_code') and 'currency_id' in available_fields:
             currency_id = get_currency_id(models, db, uid, password, data['currency_code'])
             if currency_id:
                 company_data['currency_id'] = currency_id
             else:
-                return {
-                    'success': False,
-                    'error': f'Currency code "{data["currency_code"]}" not found'
-                }
+                currency_warning = f'Currency code "{data["currency_code"]}" not found - company created without specific currency'
         
         # Handle state (if state provided and state_id field exists)
         if data.get('state') and company_data.get('country_id') and 'state_id' in available_fields:
@@ -142,6 +141,12 @@ def main(data):
                 'success': False,
                 'error': 'Failed to create company in Odoo'
             }
+        
+        # Create essential journals for the new company
+        journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
+        if not journals_result['success']:
+            # Company was created but journals failed - we'll report this but not fail completely
+            print(f"Warning: Company created but journal creation failed: {journals_result['error']}")
         
         # Get created company information using only safe/available fields
         safe_read_fields = [
@@ -165,6 +170,17 @@ def main(data):
             'company_name': company_info['name'],
             'message': 'Company created successfully'
         }
+        
+        # Add journal creation status to response
+        if journals_result['success']:
+            response['journals_created'] = journals_result['journals']
+            response['message'] += ' with essential journals'
+        else:
+            response['journal_warning'] = journals_result['error']
+        
+        # Add currency warning if exists
+        if currency_warning:
+            response['currency_warning'] = currency_warning
         
         # Add optional fields to response if they exist
         optional_response_fields = {
@@ -200,6 +216,91 @@ def main(data):
         return {
             'success': False,
             'error': f'Unexpected error: {str(e)}'
+        }
+
+def create_essential_journals(models, db, uid, password, company_id, currency_id=None):
+    """
+    Create essential journals for a new company (Sales, Purchase, Bank)
+    """
+    try:
+        created_journals = []
+        
+        # Define essential journals to create
+        journals_to_create = [
+            {
+                'name': 'Sales',
+                'code': 'SAL',
+                'type': 'sale',
+                'company_id': company_id,
+            },
+            {
+                'name': 'Purchases',
+                'code': 'PUR',
+                'type': 'purchase',
+                'company_id': company_id,
+            },
+            {
+                'name': 'Bank',
+                'code': 'BNK',
+                'type': 'bank',
+                'company_id': company_id,
+            }
+        ]
+        
+        # Add currency if specified
+        if currency_id:
+            for journal in journals_to_create:
+                journal['currency_id'] = currency_id
+        
+        # Create each journal
+        for journal_data in journals_to_create:
+            try:
+                # Check if journal with this code already exists for this company
+                existing = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'search_count',
+                    [[('code', '=', journal_data['code']), ('company_id', '=', company_id)]]
+                )
+                
+                if existing:
+                    print(f"Journal {journal_data['code']} already exists for company {company_id}")
+                    continue
+                
+                journal_id = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'create',
+                    [journal_data]
+                )
+                
+                if journal_id:
+                    created_journals.append({
+                        'id': journal_id,
+                        'name': journal_data['name'],
+                        'code': journal_data['code'],
+                        'type': journal_data['type']
+                    })
+                    print(f"Created journal: {journal_data['name']} (ID: {journal_id})")
+                    
+            except Exception as journal_error:
+                print(f"Failed to create journal {journal_data['name']}: {str(journal_error)}")
+                continue
+        
+        if created_journals:
+            return {
+                'success': True,
+                'journals': created_journals,
+                'message': f'Created {len(created_journals)} journals'
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'No journals were created - they may already exist or there was an error'
+            }
+            
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Failed to create journals: {str(e)}'
         }
 
 def get_available_company_fields(models, db, uid, password):
@@ -352,6 +453,164 @@ def get_company_email_partial(data):
             'email': company.get('email'),
             'company_id': company.get('id'),
             'match_type': 'exact' if exact_match else 'partial'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+def list_company_journals(company_id):
+    """
+    List all journals for a specific company
+    """
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search_read',
+            [[('company_id', '=', company_id)]], 
+            {'fields': ['id', 'name', 'code', 'type'], 'order': 'type, name'}
+        )
+        
+        return {
+            'success': True,
+            'company_id': company_id,
+            'journals': journals,
+            'count': len(journals)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+def create_journals_for_existing_company(company_id):
+    """
+    Create essential journals for an existing company that doesn't have them
+    Useful for fixing companies created before this update
+    """
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Get company info to check if it exists and get currency
+        company_info = models.execute_kw(
+            db, uid, password,
+            'res.company', 'read',
+            [[company_id]], 
+            {'fields': ['id', 'name', 'currency_id']}
+        )
+        
+        if not company_info:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
+        company_info = company_info[0]
+        currency_id = company_info.get('currency_id')[0] if company_info.get('currency_id') else None
+        
+        # Create journals
+        result = create_essential_journals(models, db, uid, password, company_id, currency_id)
+        
+        if result['success']:
+            result['company_name'] = company_info['name']
+            
+        return result
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+def list_available_currencies():
+    """
+    List all available currencies in the Odoo database
+    """
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        currencies = models.execute_kw(
+            db, uid, password,
+            'res.currency', 'search_read',
+            [[('active', '=', True)]], 
+            {'fields': ['id', 'name', 'symbol', 'full_name'], 'order': 'name'}
+        )
+        
+        return {
+            'success': True,
+            'currencies': currencies,
+            'count': len(currencies)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+def list_available_countries():
+    """
+    List all available countries in the Odoo database
+    """
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        countries = models.execute_kw(
+            db, uid, password,
+            'res.country', 'search_read',
+            [[]], 
+            {'fields': ['id', 'name', 'code'], 'order': 'name'}
+        )
+        
+        return {
+            'success': True,
+            'countries': countries,
+            'count': len(countries)
         }
         
     except Exception as e:
