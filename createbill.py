@@ -16,7 +16,8 @@ def main(data):
     Expected data format:
     {
         "vendor_id": 123,
-        "invoice_date": "2025-01-15",  # optional, defaults to today
+        "invoice_date": "2025-01-15",  # optional, defaults to today, null sets to today
+        "due_date": "2025-02-15",      # optional, defaults to today, null sets to today
         "vendor_ref": "INV-001",       # optional
         "description": "Office supplies",
         "amount": 1500.50
@@ -26,6 +27,7 @@ def main(data):
     {
         "vendor_id": 123,
         "invoice_date": "2025-01-15",
+        "due_date": "2025-02-15",
         "vendor_ref": "INV-001",
         "line_items": [
             {
@@ -124,10 +126,14 @@ def main(data):
             except:
                 return None
         
-        # Prepare bill data
-        invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
+        # Handle invoice_date - default to today if not provided or null
+        invoice_date_raw = data.get('invoice_date')
+        if invoice_date_raw is None:
+            invoice_date = datetime.now().strftime('%Y-%m-%d')
+        else:
+            invoice_date = invoice_date_raw
         
-        # Validate date format
+        # Validate invoice_date format
         try:
             datetime.strptime(invoice_date, '%Y-%m-%d')
         except ValueError:
@@ -136,10 +142,28 @@ def main(data):
                 'error': 'invoice_date must be in YYYY-MM-DD format'
             }
         
+        # Handle due_date - default to today if not provided or null
+        due_date_raw = data.get('due_date')
+        if due_date_raw is None:
+            due_date = datetime.now().strftime('%Y-%m-%d')
+        else:
+            due_date = due_date_raw
+        
+        # Validate due_date format
+        try:
+            datetime.strptime(due_date, '%Y-%m-%d')
+        except ValueError:
+            return {
+                'success': False,
+                'error': 'due_date must be in YYYY-MM-DD format'
+            }
+        
+        # Prepare bill data
         bill_data = {
             'move_type': 'in_invoice',
             'partner_id': vendor_id,
             'invoice_date': invoice_date,
+            'invoice_date_due': due_date,
         }
         
         # Add vendor reference if provided
@@ -316,7 +340,7 @@ def main(data):
             db, uid, password,
             'account.move', 'read',
             [[bill_id]], 
-            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state']}
+            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
         )[0]
         
         return {
@@ -329,6 +353,7 @@ def main(data):
             'tax_amount': bill_info.get('amount_tax'),
             'state': bill_info.get('state'),
             'invoice_date': invoice_date,
+            'due_date': bill_info.get('invoice_date_due'),
             'payment_reference': payment_reference if payment_reference != 'none' else None,
             'line_items': data.get('line_items'),
             'message': 'Vendor bill created and posted successfully'
