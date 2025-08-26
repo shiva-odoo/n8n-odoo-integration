@@ -93,6 +93,64 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
+        # Set up company context
+        company_id = data.get('company_id')
+        if company_id:
+            context = {'allowed_company_ids': [company_id], 'default_company_id': company_id}
+        else:
+            # Get default company if not specified
+            company_ids = models.execute_kw(
+                db, uid, password,
+                'res.company', 'search',
+                [[('id', '>', 0)]],
+                {'limit': 1}
+            )
+            company_id = company_ids[0] if company_ids else None
+            context = {'default_company_id': company_id} if company_id else {}
+        
+        # Get default sales journal for the company
+        journal_ids = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search',
+            [[('type', '=', 'sale'), ('company_id', '=', company_id)]],
+            {'limit': 1, 'context': context}
+        )
+        
+        if not journal_ids:
+            return {
+                'success': False,
+                'error': f'No sales journal found for company ID {company_id}'
+            }
+        
+        journal_id = journal_ids[0]
+        
+        # Get default income account for the company
+        income_account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[
+                ('account_type', 'in', ['income', 'income_other']),  # Try both income account types
+                ('company_id', '=', company_id),
+                ('deprecated', '=', False)
+            ]],
+            {'limit': 1, 'context': context}
+        )
+        
+        if not income_account_ids:
+            # Fallback to any account that can be used for income
+            income_account_ids = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[
+                    ('account_type', 'like', 'income'),
+                    ('company_id', '=', company_id),
+                    ('deprecated', '=', False)
+                ]],
+                {'limit': 1, 'context': context}
+            )
+        
+        default_income_account = income_account_ids[0] if income_account_ids else None
+        
         # Helper function to find tax by rate
         def find_tax_by_rate(tax_rate, company_id=None):
             """Find tax record by rate percentage"""
@@ -105,7 +163,7 @@ def main(data):
                     db, uid, password,
                     'account.tax', 'search',
                     [domain],
-                    {'limit': 1}
+                    {'limit': 1, 'context': context}
                 )
                 return tax_ids[0] if tax_ids else None
             except:
@@ -119,7 +177,8 @@ def main(data):
             customer_exists = models.execute_kw(
                 db, uid, password,
                 'res.partner', 'search_count',
-                [[('id', '=', customer_id), ('customer_rank', '>', 0)]]
+                [[('id', '=', customer_id), ('customer_rank', '>', 0)]],
+                {'context': context}
             )
             
             if not customer_exists:
@@ -133,7 +192,7 @@ def main(data):
                 db, uid, password,
                 'res.partner', 'read',
                 [[customer_id]], 
-                {'fields': ['name']}
+                {'fields': ['name'], 'context': context}
             )[0]
             customer_name = customer_info['name']
             
@@ -149,10 +208,14 @@ def main(data):
             if data.get('customer_email'):
                 customer_data['email'] = data['customer_email']
             
+            if company_id:
+                customer_data['company_id'] = company_id
+            
             customer_id = models.execute_kw(
                 db, uid, password,
                 'res.partner', 'create',
-                [customer_data]
+                [customer_data],
+                {'context': context}
             )
             
             if not customer_id:
@@ -175,19 +238,16 @@ def main(data):
                 'error': 'invoice_date must be in YYYY-MM-DD format'
             }
         
+        # Prepare invoice data with all required fields
         invoice_data = {
             'move_type': 'out_invoice',  # Customer invoice
             'partner_id': customer_id,
             'invoice_date': invoice_date,
+            'journal_id': journal_id,
+            'company_id': company_id,
         }
         
-        # Add company_id if provided (for multi-company setup)
-        company_id = None
-        if data.get('company_id'):
-            company_id = data['company_id']
-            invoice_data['company_id'] = company_id
-        
-        # Add due date if provided
+        # Add due date if provided, otherwise set to invoice_date + 30 days
         if data.get('due_date'):
             try:
                 datetime.strptime(data['due_date'], '%Y-%m-%d')
@@ -197,6 +257,12 @@ def main(data):
                     'success': False,
                     'error': 'due_date must be in YYYY-MM-DD format'
                 }
+        else:
+            # Set due date to 30 days after invoice date
+            invoice_dt = datetime.strptime(invoice_date, '%Y-%m-%d')
+            from datetime import timedelta
+            due_dt = invoice_dt + timedelta(days=30)
+            invoice_data['invoice_date_due'] = due_dt.strftime('%Y-%m-%d')
         
         # Add reference if provided
         if data.get('reference'):
@@ -234,6 +300,10 @@ def main(data):
                     'price_unit': price_unit,
                 }
                 
+                # Set account_id for the line item (crucial for journal entry creation)
+                if default_income_account:
+                    line_item['account_id'] = default_income_account
+                
                 # Apply tax if tax_rate is provided
                 if tax_rate is not None and tax_rate > 0:
                     tax_id = find_tax_by_rate(tax_rate, company_id)
@@ -262,12 +332,15 @@ def main(data):
                 'price_unit': price_unit,
             }
             
+            # Set account_id for the line item
+            if default_income_account:
+                line_item['account_id'] = default_income_account
+            
             invoice_line_ids.append((0, 0, line_item))
         
         invoice_data['invoice_line_ids'] = invoice_line_ids
         
-        # Create invoice
-        context = {'allowed_company_ids': [company_id]} if company_id else {}
+        # Create invoice with proper context
         invoice_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
@@ -281,7 +354,7 @@ def main(data):
                 'error': 'Failed to create invoice in Odoo'
             }
         
-        # Update with explicit amounts if provided
+        # Update with explicit amounts if provided (before posting)
         update_data = {}
         
         # Set explicit amounts if provided
@@ -303,24 +376,34 @@ def main(data):
             except (ValueError, TypeError):
                 pass
         
-        # Update the invoice with explicit amounts if any were provided
+        # Update the invoice with explicit amounts if any were provided (before posting)
         if update_data:
             try:
                 models.execute_kw(
                     db, uid, password,
                     'account.move', 'write',
-                    [[invoice_id], update_data]
+                    [[invoice_id], update_data],
+                    {'context': context}
                 )
             except Exception as e:
-                # If we can't set the amounts directly, continue with posting
-                print(f"Warning: Could not set explicit amounts: {str(e)}")
+                # If we can't set the amounts directly, continue
+                print(f"Warning: Could not set explicit amounts before posting: {str(e)}")
         
         # POST THE INVOICE - Move from draft to posted state
         try:
+            # First, ensure all required fields are computed
+            models.execute_kw(
+                db, uid, password,
+                'account.move', '_recompute_dynamic_lines',
+                [[invoice_id]],
+                {'context': context}
+            )
+            
             post_result = models.execute_kw(
                 db, uid, password,
                 'account.move', 'action_post',
-                [[invoice_id]]
+                [[invoice_id]],
+                {'context': context}
             )
             
             # Verify the invoice was posted successfully
@@ -328,7 +411,7 @@ def main(data):
                 db, uid, password,
                 'account.move', 'read',
                 [[invoice_id]], 
-                {'fields': ['state']}
+                {'fields': ['state'], 'context': context}
             )[0]['state']
             
             if invoice_state != 'posted':
@@ -338,30 +421,32 @@ def main(data):
                 }
                 
         except xmlrpc.client.Fault as e:
+            # Get more details about the error
+            error_msg = str(e)
+            
+            # Try to get the invoice details for debugging
+            try:
+                invoice_details = models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'read',
+                    [[invoice_id]], 
+                    {'fields': ['name', 'state', 'journal_id', 'company_id', 'invoice_date', 'invoice_date_due'], 'context': context}
+                )[0]
+                error_msg += f". Invoice details: {invoice_details}"
+            except:
+                pass
+            
             return {
                 'success': False,
-                'error': f'Invoice created but failed to post: {str(e)}'
+                'error': f'Invoice created but failed to post: {error_msg}'
             }
-        
-        # If posting succeeded but we need to update amounts after posting, do it now
-        if update_data:
-            try:
-                # Try to update amounts even after posting (some Odoo configurations allow this)
-                models.execute_kw(
-                    db, uid, password,
-                    'account.move', 'write',
-                    [[invoice_id], update_data]
-                )
-            except Exception as e:
-                # This is expected in some cases, amounts might be computed automatically
-                pass
         
         # Get final invoice information after posting
         invoice_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
             [[invoice_id]], 
-            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
+            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due'], 'context': context}
         )[0]
         
         return {
