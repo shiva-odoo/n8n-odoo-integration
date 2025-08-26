@@ -163,7 +163,7 @@ def mark_entry_as_paid(data):
                 "description": data.get('description', 'No description provided'),
                 "partner": data.get('partner', 'Unknown'),
                 "date": date,
-                "account_name":account_name
+                "account_name":account_name,
                 "company": actual_company_name,
                 "previous_payment_state": journal_entry.get('payment_state', 'unknown'),
                 "new_payment_state": 'paid',
