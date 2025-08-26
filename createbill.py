@@ -9,6 +9,17 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def normalize_date(date_value):
+    """
+    Normalize date values - if null, "null", "none", empty string, or None, return today's date
+    Otherwise return the date value as-is
+    """
+    if (date_value is None or 
+        date_value == "" or 
+        str(date_value).lower() in ["null", "none"]):
+        return datetime.now().strftime('%Y-%m-%d')
+    return date_value
+
 def check_duplicate_bill(models, db, uid, password, vendor_id, invoice_date, total_amount, vendor_ref=None):
     """
     Check if a bill with the same vendor, date, total amount, and reference already exists
@@ -84,6 +95,7 @@ def main(data):
     {
         "vendor_id": 123,
         "invoice_date": "2025-01-15",  # optional, defaults to today
+        "due_date": "2025-02-15",      # optional, defaults to today if null/empty
         "vendor_ref": "INV-001",       # optional
         "description": "Office supplies",
         "amount": 1500.50
@@ -93,6 +105,7 @@ def main(data):
     {
         "vendor_id": 123,
         "invoice_date": "2025-01-15",
+        "due_date": "2025-02-15",
         "vendor_ref": "INV-001",
         "line_items": [
             {
@@ -173,16 +186,25 @@ def main(data):
             {'fields': ['name']}
         )[0]
         
-        # Prepare invoice date
-        invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
+        # Normalize and prepare dates
+        invoice_date = normalize_date(data.get('invoice_date'))
+        due_date = normalize_date(data.get('due_date'))
         
-        # Validate date format
+        # Validate date formats
         try:
             datetime.strptime(invoice_date, '%Y-%m-%d')
         except ValueError:
             return {
                 'success': False,
                 'error': 'invoice_date must be in YYYY-MM-DD format'
+            }
+        
+        try:
+            datetime.strptime(due_date, '%Y-%m-%d')
+        except ValueError:
+            return {
+                'success': False,
+                'error': 'due_date must be in YYYY-MM-DD format'
             }
         
         # Calculate expected total amount
@@ -234,6 +256,7 @@ def main(data):
             'move_type': 'in_invoice',
             'partner_id': vendor_id,
             'invoice_date': invoice_date,
+            'invoice_date_due': due_date,  # Add due date to bill data
         }
         
         # Add vendor reference if provided
@@ -410,7 +433,7 @@ def main(data):
             db, uid, password,
             'account.move', 'read',
             [[bill_id]], 
-            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state']}
+            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
         )[0]
         
         return {
@@ -423,6 +446,7 @@ def main(data):
             'tax_amount': bill_info.get('amount_tax'),
             'state': bill_info.get('state'),
             'invoice_date': invoice_date,
+            'due_date': due_date,
             'payment_reference': payment_reference if payment_reference != 'none' else None,
             'line_items': data.get('line_items'),
             'message': 'Vendor bill created and posted successfully'

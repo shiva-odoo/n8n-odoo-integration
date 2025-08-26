@@ -9,6 +9,17 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def normalize_date(date_value):
+    """
+    Normalize date values - if null, "null", "none", empty string, or None, return today's date
+    Otherwise return the date value as-is
+    """
+    if (date_value is None or 
+        date_value == "" or 
+        str(date_value).lower() in ["null", "none"]):
+        return datetime.now().strftime('%Y-%m-%d')
+    return date_value
+
 def check_duplicate_invoice(models, db, uid, password, customer_id, invoice_date, total_amount, reference=None):
     """
     Check if an invoice with the same customer, date, total amount, and reference already exists
@@ -90,7 +101,7 @@ def main(data):
         "customer_email": "contact@new.com",    # optional, for new customer
         "company_id": 1,                        # optional, for multi-company setup
         "invoice_date": "2025-01-15",          # optional, defaults to today
-        "due_date": "2025-02-15",              # optional
+        "due_date": "2025-02-15",              # optional, defaults to today if null/empty
         "reference": "Customer reference",      # optional
         "line_items": [                         # required
             {
@@ -233,16 +244,25 @@ def main(data):
             
             customer_name = data['customer_name']
         
-        # Prepare invoice date
-        invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
+        # Normalize and prepare dates
+        invoice_date = normalize_date(data.get('invoice_date'))
+        due_date = normalize_date(data.get('due_date'))
         
-        # Validate date format
+        # Validate date formats
         try:
             datetime.strptime(invoice_date, '%Y-%m-%d')
         except ValueError:
             return {
                 'success': False,
                 'error': 'invoice_date must be in YYYY-MM-DD format'
+            }
+        
+        try:
+            datetime.strptime(due_date, '%Y-%m-%d')
+        except ValueError:
+            return {
+                'success': False,
+                'error': 'due_date must be in YYYY-MM-DD format'
             }
         
         # Calculate expected total amount
@@ -277,6 +297,7 @@ def main(data):
             'move_type': 'out_invoice',  # Customer invoice
             'partner_id': customer_id,
             'invoice_date': invoice_date,
+            'invoice_date_due': due_date,  # Add due date to invoice data
         }
         
         # Add company_id if provided (for multi-company setup)
@@ -284,17 +305,6 @@ def main(data):
         if data.get('company_id'):
             company_id = data['company_id']
             invoice_data['company_id'] = company_id
-        
-        # Add due date if provided
-        if data.get('due_date'):
-            try:
-                datetime.strptime(data['due_date'], '%Y-%m-%d')
-                invoice_data['invoice_date_due'] = data['due_date']
-            except ValueError:
-                return {
-                    'success': False,
-                    'error': 'due_date must be in YYYY-MM-DD format'
-                }
         
         # Add reference if provided
         if data.get('reference'):
@@ -473,7 +483,7 @@ def main(data):
             'tax_amount': invoice_info.get('amount_tax'),
             'state': invoice_info.get('state'),
             'invoice_date': invoice_date,
-            'due_date': invoice_info.get('invoice_date_due'),
+            'due_date': due_date,
             'payment_reference': payment_reference if payment_reference != 'none' else None,
             'company_id': company_id,
             'line_items': data.get('line_items'),
