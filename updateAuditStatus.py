@@ -71,6 +71,8 @@ def mark_entry_as_paid(data):
         reference = data['reference']
         amount = data['amount']
         company_name = data['company_name']
+        date= data['date']
+        account_name = ['account_name']
         
         # Load Odoo credentials from environment
         url = os.getenv("ODOO_URL")
@@ -160,6 +162,8 @@ def mark_entry_as_paid(data):
                 "amount": journal_entry['amount_total'],
                 "description": data.get('description', 'No description provided'),
                 "partner": data.get('partner', 'Unknown'),
+                "date": date,
+                "account_name":account_name
                 "company": actual_company_name,
                 "previous_payment_state": journal_entry.get('payment_state', 'unknown'),
                 "new_payment_state": 'paid',
@@ -199,6 +203,8 @@ def handle_bank_suspense_transaction(data):
         amount = data['amount']
         reference = data['reference']
         company_name = data.get('company_name')
+        date= data['date']
+        account_name = ['account_name']
         
         # Load Odoo credentials
         url = os.getenv("ODOO_URL")
@@ -294,7 +300,9 @@ def handle_bank_suspense_transaction(data):
             "description": data.get('description', ""),
             "reference": reference,
             "partner": data.get('partner', partner_name),
-            "company": actual_company_name
+            "company": actual_company_name,
+            "date": date,
+            "account_name":account_name
         }
 
     except xmlrpc.client.Fault as fault:
