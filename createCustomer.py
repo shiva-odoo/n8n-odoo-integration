@@ -8,6 +8,60 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def check_customer_exists_comprehensive(models, db, uid, password, data, company_id=None):
+    """
+    Comprehensive check if customer already exists using multiple criteria
+    Returns customer_id if found, None otherwise
+    """
+    try:
+        base_domain = [('customer_rank', '>', 0)]
+        
+        # Add company context to avoid cross-company matches
+        if company_id:
+            base_domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        
+        # Priority order for matching:
+        # 1. Email + Name combination (most reliable for customers)
+        # 2. Email only
+        # 3. Exact name match
+        
+        search_criteria = []
+        
+        # 1. Check by email + name combination if both provided
+        if data.get('email') and data.get('name'):
+            email_name_domain = base_domain + [
+                ('email', '=', data['email']),
+                ('name', '=', data['name'])
+            ]
+            search_criteria.append(email_name_domain)
+        
+        # 2. Check by email only if provided (but no name match yet)
+        elif data.get('email'):
+            email_domain = base_domain + [('email', '=', data['email'])]
+            search_criteria.append(email_domain)
+        
+        # 3. Check by exact name match as fallback
+        if data.get('name'):
+            name_domain = base_domain + [('name', '=', data['name'])]
+            search_criteria.append(name_domain)
+        
+        # Search using each criteria in priority order
+        for domain in search_criteria:
+            customer_ids = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'search',
+                [domain], {'limit': 1}
+            )
+            
+            if customer_ids:
+                return customer_ids[0]
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error checking for customer duplicates: {str(e)}")
+        return None
+
 def main(data):
     """
     Create customer from HTTP request data
@@ -59,11 +113,9 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
-        # FIXED: Check if customer already exists WITH company context
-        existing_customer_id = check_customer_exists(
-            models, db, uid, password,
-            name=data['name'],
-            company_id=data.get('company_id')
+        # Check if customer already exists using comprehensive method
+        existing_customer_id = check_customer_exists_comprehensive(
+            models, db, uid, password, data, data.get('company_id')
         )
         
         if existing_customer_id:
@@ -72,7 +124,7 @@ def main(data):
                 db, uid, password,
                 'res.partner', 'read',
                 [[existing_customer_id]], 
-                {'fields': ['id', 'name', 'email', 'phone']}
+                {'fields': ['id', 'name', 'email', 'phone', 'street', 'city', 'country_id', 'is_company']}
             )[0]
             
             return {
@@ -82,8 +134,14 @@ def main(data):
                 'company_id': data.get('company_id'),
                 'email': customer_info.get('email'),
                 'phone': customer_info.get('phone'),
-                'message': 'Customer already exists',
+                'street': customer_info.get('street'),
+                'city': customer_info.get('city'),
+                'country': customer_info.get('country_id', [None, 'N/A'])[1] if customer_info.get('country_id') else 'N/A',
+                'is_company': customer_info.get('is_company'),
+                'message': 'Customer already exists - no duplicate created',
                 'existing': True,
+                'customer_details': customer_info,
+                # Pass through any additional fields that might be used for invoice creation
                 "invoice_date": data.get('invoice_date'),
                 "due_date": data.get('due_date'),
                 "reference": data.get('reference'),
@@ -94,7 +152,7 @@ def main(data):
                 "line_items": data.get('line_items', [])
             }
         
-        # Prepare customer data
+        # Prepare customer data for creation
         customer_data = {
             'name': data['name'],
             'is_company': data.get('is_company', True),
@@ -153,11 +211,12 @@ def main(data):
             'phone': customer_info.get('phone'),
             'street': customer_info.get('street'),
             'city': customer_info.get('city'),
-            'country': customer_info.get('country_id', [None, 'N/A'])[1],
+            'country': customer_info.get('country_id', [None, 'N/A'])[1] if customer_info.get('country_id') else 'N/A',
             'is_company': customer_info.get('is_company'),
             'message': 'Customer created successfully',
             'existing': False,
             'customer_details': customer_info,
+            # Pass through any additional fields that might be used for invoice creation
             "invoice_date": data.get('invoice_date'),
             "due_date": data.get('due_date'),
             "reference": data.get('reference'),
@@ -180,7 +239,7 @@ def main(data):
         }
 
 def check_customer_exists(models, db, uid, password, name=None, email=None, company_id=None):
-    """Check if customer already exists - considers company context"""
+    """Legacy function - kept for backward compatibility"""
     try:
         domain = [('customer_rank', '>', 0)]
         

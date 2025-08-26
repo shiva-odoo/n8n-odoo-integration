@@ -10,6 +10,65 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def check_vendor_exists_comprehensive(models, db, uid, password, data, company_id=None):
+    """
+    Comprehensive check if vendor already exists using multiple criteria
+    Returns vendor_id if found, None otherwise
+    """
+    try:
+        base_domain = [('is_company', '=', True), ('supplier_rank', '>', 0)]
+        
+        # Add company context to avoid cross-company matches
+        if company_id:
+            base_domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        
+        # Priority order for matching:
+        # 1. VAT number (most reliable)
+        # 2. Email + Name combination
+        # 3. Exact name match
+        
+        search_criteria = []
+        
+        # 1. Check by VAT if provided
+        if data.get('vat'):
+            vat_domain = base_domain + [('vat', '=', data['vat'])]
+            search_criteria.append(vat_domain)
+        
+        # 2. Check by email + name combination if both provided
+        if data.get('email') and data.get('name'):
+            email_name_domain = base_domain + [
+                ('email', '=', data['email']),
+                ('name', '=', data['name'])
+            ]
+            search_criteria.append(email_name_domain)
+        
+        # 3. Check by email only if provided (but no name match)
+        elif data.get('email'):
+            email_domain = base_domain + [('email', '=', data['email'])]
+            search_criteria.append(email_domain)
+        
+        # 4. Check by exact name match as fallback
+        if data.get('name'):
+            name_domain = base_domain + [('name', '=', data['name'])]
+            search_criteria.append(name_domain)
+        
+        # Search using each criteria in priority order
+        for domain in search_criteria:
+            vendor_ids = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'search',
+                [domain], {'limit': 1}
+            )
+            
+            if vendor_ids:
+                return vendor_ids[0]
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error checking for vendor duplicates: {str(e)}")
+        return None
+
 def main(data):
     """
     Create vendor from HTTP request data
@@ -63,24 +122,24 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
-        # FIXED: Check if vendor already exists WITH company context
-        existing_vendor = check_vendor_exists(
-            models, db, uid, password,
-            vat=data.get('vat'),
-            name=data.get('name'),
-            email=data.get('email'),
-            company_id=data.get('company_id')  # Now passes company_id
+        # Check if vendor already exists using comprehensive method
+        existing_vendor = check_vendor_exists_comprehensive(
+            models, db, uid, password, data, data.get('company_id')
         )
         
         if existing_vendor:
+            # Get vendor details
             vendor_info = get_vendor_info(models, db, uid, password, existing_vendor)
+            
             return {
                 'success': True,
                 'vendor_id': existing_vendor,
                 'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
                 'company_id': data.get('company_id'),
-                'message': 'Vendor already exists',
+                'message': 'Vendor already exists - no duplicate created',
                 'existing': True,
+                'vendor_details': vendor_info,
+                # Pass through any additional fields that might be used for bill creation
                 "invoice_date": data.get('invoice_date'),
                 "due_date": data.get('due_date'),
                 "payment_reference": data.get('payment_reference'),
@@ -92,7 +151,7 @@ def main(data):
                 "line_items": data.get('line_items', [])
             }
         
-        # Create vendor
+        # Create vendor if no duplicate found
         if is_basic_vendor(data):
             vendor_id = create_vendor_basic(models, db, uid, password, data)
         else:
@@ -115,6 +174,7 @@ def main(data):
             'message': 'Vendor created successfully',
             'existing': False,
             'vendor_details': vendor_info,
+            # Pass through any additional fields that might be used for bill creation
             "invoice_date": data.get('invoice_date'),
             "due_date": data.get('due_date'),
             "payment_reference": data.get('payment_reference'),
@@ -147,7 +207,7 @@ def is_basic_vendor(data):
     return not any(data.get(field) for field in comprehensive_fields)
 
 def check_vendor_exists(models, db, uid, password, vat=None, name=None, email=None, company_id=None):
-    """Check if vendor already exists - now considers company context"""
+    """Legacy function - kept for backward compatibility"""
     try:
         domain = [('is_company', '=', True), ('supplier_rank', '>', 0)]
         

@@ -9,6 +9,73 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def check_duplicate_bill(models, db, uid, password, vendor_id, invoice_date, total_amount, vendor_ref=None):
+    """
+    Check if a bill with the same vendor, date, total amount, and reference already exists
+    
+    Returns:
+        - None if no duplicate found
+        - Bill data if duplicate found
+    """
+    try:
+        # Build search criteria
+        search_domain = [
+            ('move_type', '=', 'in_invoice'),  # Vendor bills only
+            ('partner_id', '=', vendor_id),
+            ('invoice_date', '=', invoice_date),
+            ('state', '!=', 'cancel'),  # Exclude cancelled bills
+        ]
+        
+        # Add reference to search criteria if provided
+        if vendor_ref:
+            search_domain.append(('ref', '=', vendor_ref))
+        else:
+            # If no reference provided, search for bills without reference
+            search_domain.append(('ref', '=', False))
+        
+        # Search for existing bills
+        existing_bills = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [search_domain],
+            {'fields': ['id', 'name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'ref']}
+        )
+        
+        # Check if any bill matches the total amount (with small tolerance for rounding)
+        for bill in existing_bills:
+            if abs(float(bill['amount_total']) - float(total_amount)) < 0.01:
+                return bill
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error checking for duplicates: {str(e)}")
+        return None
+
+def calculate_total_amount(data):
+    """
+    Calculate the expected total amount from the data
+    """
+    if 'total_amount' in data:
+        return float(data['total_amount'])
+    elif 'line_items' in data and data['line_items']:
+        # Calculate from line items
+        total = 0.0
+        for item in data['line_items']:
+            quantity = float(item.get('quantity', 1.0))
+            price_unit = float(item.get('price_unit', 0.0))
+            tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else 0.0
+            
+            line_subtotal = quantity * price_unit
+            line_tax = line_subtotal * (tax_rate / 100.0)
+            total += line_subtotal + line_tax
+        
+        return total
+    elif 'amount' in data:
+        return float(data['amount'])
+    else:
+        return 0.0
+
 def main(data):
     """
     Create vendor bill from HTTP request data
@@ -16,8 +83,7 @@ def main(data):
     Expected data format:
     {
         "vendor_id": 123,
-        "invoice_date": "2025-01-15",  # optional, defaults to today, null sets to today
-        "due_date": "2025-02-15",      # optional, defaults to today, null sets to today
+        "invoice_date": "2025-01-15",  # optional, defaults to today
         "vendor_ref": "INV-001",       # optional
         "description": "Office supplies",
         "amount": 1500.50
@@ -27,7 +93,6 @@ def main(data):
     {
         "vendor_id": 123,
         "invoice_date": "2025-01-15",
-        "due_date": "2025-02-15",
         "vendor_ref": "INV-001",
         "line_items": [
             {
@@ -86,28 +151,12 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
-        # Set up company context
-        company_id = data.get('company_id')
-        if company_id:
-            context = {'allowed_company_ids': [company_id], 'default_company_id': company_id}
-        else:
-            # Get default company if not specified
-            company_ids = models.execute_kw(
-                db, uid, password,
-                'res.company', 'search',
-                [[('id', '>', 0)]],
-                {'limit': 1}
-            )
-            company_id = company_ids[0] if company_ids else None
-            context = {'default_company_id': company_id} if company_id else {}
-        
-        # Verify vendor exists and is a supplier
+        # Verify vendor exists
         vendor_id = data['vendor_id']
         vendor_exists = models.execute_kw(
             db, uid, password,
             'res.partner', 'search_count',
-            [[('id', '=', vendor_id), ('supplier_rank', '>', 0)]],
-            {'context': context}
+            [[('id', '=', vendor_id), ('supplier_rank', '>', 0)]]
         )
         
         if not vendor_exists:
@@ -121,116 +170,13 @@ def main(data):
             db, uid, password,
             'res.partner', 'read',
             [[vendor_id]], 
-            {'fields': ['name'], 'context': context}
+            {'fields': ['name']}
         )[0]
         
-        # Get default purchase journal for the company (try with company filter first, then without)
-        journal_ids = []
-        if company_id:
-            try:
-                journal_ids = models.execute_kw(
-                    db, uid, password,
-                    'account.journal', 'search',
-                    [[('type', '=', 'purchase'), ('company_id', '=', company_id)]],
-                    {'limit': 1, 'context': context}
-                )
-            except:
-                # If company_id filter fails, try without it
-                pass
+        # Prepare invoice date
+        invoice_date = data.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
         
-        if not journal_ids:
-            # Fallback: search without company filter
-            journal_ids = models.execute_kw(
-                db, uid, password,
-                'account.journal', 'search',
-                [[('type', '=', 'purchase')]],
-                {'limit': 1, 'context': context}
-            )
-        
-        if not journal_ids:
-            return {
-                'success': False,
-                'error': f'No purchase journal found'
-            }
-        
-        journal_id = journal_ids[0]
-        
-        # Get default expense account (without company_id filter as it may not exist in this version)
-        expense_account_ids = models.execute_kw(
-            db, uid, password,
-            'account.account', 'search',
-            [[
-                ('account_type', 'in', ['expense', 'asset_current']),  # Try both expense and current asset accounts
-                ('deprecated', '=', False)
-            ]],
-            {'limit': 1, 'context': context}
-        )
-        
-        if not expense_account_ids:
-            # Fallback to any account that can be used for expenses
-            expense_account_ids = models.execute_kw(
-                db, uid, password,
-                'account.account', 'search',
-                [[
-                    ('account_type', 'like', 'expense'),
-                    ('deprecated', '=', False)
-                ]],
-                {'limit': 1, 'context': context}
-            )
-        
-        if not expense_account_ids:
-            # Final fallback - try to find any expense-related account
-            expense_account_ids = models.execute_kw(
-                db, uid, password,
-                'account.account', 'search',
-                [[
-                    ('code', 'like', '5%'),  # Many expense accounts start with 5
-                    ('deprecated', '=', False)
-                ]],
-                {'limit': 1, 'context': context}
-            )
-        
-        default_expense_account = expense_account_ids[0] if expense_account_ids else None
-        
-        # Helper function to find tax by rate
-        def find_tax_by_rate(tax_rate, company_id=None):
-            """Find tax record by rate percentage"""
-            try:
-                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'purchase')]
-                # Try with company_id first if provided, but don't fail if field doesn't exist
-                if company_id:
-                    try:
-                        tax_ids = models.execute_kw(
-                            db, uid, password,
-                            'account.tax', 'search',
-                            [domain + [('company_id', '=', company_id)]],
-                            {'limit': 1, 'context': context}
-                        )
-                        if tax_ids:
-                            return tax_ids[0]
-                    except:
-                        # company_id field might not exist, try without it
-                        pass
-                
-                # Search without company filter
-                tax_ids = models.execute_kw(
-                    db, uid, password,
-                    'account.tax', 'search',
-                    [domain],
-                    {'limit': 1, 'context': context}
-                )
-                return tax_ids[0] if tax_ids else None
-            except:
-                return None
-        
-        # Handle invoice_date - default to today if not provided or null
-        invoice_date_raw = data.get('invoice_date')
-        if invoice_date_raw is None:
-            invoice_date = datetime.now().strftime('%Y-%m-%d')
-        else:
-            invoice_date = invoice_date_raw
-        
-        # Validate invoice_date format
+        # Validate date format
         try:
             datetime.strptime(invoice_date, '%Y-%m-%d')
         except ValueError:
@@ -239,39 +185,66 @@ def main(data):
                 'error': 'invoice_date must be in YYYY-MM-DD format'
             }
         
-        # Handle due_date - default to invoice_date + 30 days if not provided
-        due_date_raw = data.get('due_date')
-        if due_date_raw is None:
-            # Set due date to 30 days after invoice date
-            invoice_dt = datetime.strptime(invoice_date, '%Y-%m-%d')
-            from datetime import timedelta
-            due_dt = invoice_dt + timedelta(days=30)
-            due_date = due_dt.strftime('%Y-%m-%d')
-        else:
-            due_date = due_date_raw
+        # Calculate expected total amount
+        expected_total = calculate_total_amount(data)
         
-        # Validate due_date format
-        try:
-            datetime.strptime(due_date, '%Y-%m-%d')
-        except ValueError:
+        # Check for duplicate bill
+        vendor_ref = data.get('vendor_ref')
+        existing_bill = check_duplicate_bill(
+            models, db, uid, password, 
+            vendor_id, invoice_date, expected_total, vendor_ref
+        )
+        
+        if existing_bill:
+            # Return existing bill details instead of creating a duplicate
             return {
-                'success': False,
-                'error': 'due_date must be in YYYY-MM-DD format'
+                'success': True,
+                'bill_id': existing_bill['id'],
+                'bill_number': existing_bill['name'],
+                'vendor_name': vendor_info['name'],
+                'total_amount': existing_bill['amount_total'],
+                'subtotal': existing_bill['amount_untaxed'],
+                'tax_amount': existing_bill['amount_tax'],
+                'state': existing_bill['state'],
+                'invoice_date': invoice_date,
+                'vendor_ref': existing_bill.get('ref'),
+                'message': 'Bill already exists - no duplicate created'
             }
         
-        # Prepare bill data with all required fields
+        # Helper function to find tax by rate
+        def find_tax_by_rate(tax_rate, company_id=None):
+            """Find tax record by rate percentage"""
+            try:
+                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'purchase')]
+                if company_id:
+                    domain.append(('company_id', '=', company_id))
+                
+                tax_ids = models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'search',
+                    [domain],
+                    {'limit': 1}
+                )
+                return tax_ids[0] if tax_ids else None
+            except:
+                return None
+        
+        # Prepare bill data
         bill_data = {
             'move_type': 'in_invoice',
             'partner_id': vendor_id,
             'invoice_date': invoice_date,
-            'invoice_date_due': due_date,
-            'journal_id': journal_id,
-            'company_id': company_id,
         }
         
         # Add vendor reference if provided
         if data.get('vendor_ref'):
             bill_data['ref'] = data['vendor_ref']
+
+        # Add company_id if provided (for multi-company setup)
+        company_id = None
+        if data.get('company_id'):
+            company_id = data['company_id']
+            bill_data['company_id'] = company_id
 
         # Add payment_reference if provided
         if payment_reference and payment_reference != 'none':
@@ -305,11 +278,6 @@ def main(data):
                     'price_unit': price_unit,
                 }
                 
-                # Set account_id for the line item if available (crucial for journal entry creation)
-                if default_expense_account:
-                    line_item['account_id'] = default_expense_account
-                # If no default account found, let Odoo use its own defaults
-                
                 # Apply tax if tax_rate is provided
                 if tax_rate is not None and tax_rate > 0:
                     tax_id = find_tax_by_rate(tax_rate, company_id)
@@ -337,11 +305,6 @@ def main(data):
                 'price_unit': amount,
             }
             
-            # Set account_id for the line item if available
-            if default_expense_account:
-                line_item['account_id'] = default_expense_account
-            # If no default account found, let Odoo use its own defaults
-            
             invoice_line_ids.append((0, 0, line_item))
         
         else:
@@ -352,7 +315,8 @@ def main(data):
         
         bill_data['invoice_line_ids'] = invoice_line_ids
         
-        # Create the bill with proper context
+        # Create the bill
+        context = {'allowed_company_ids': [company_id]} if company_id else {}
         bill_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
@@ -366,7 +330,7 @@ def main(data):
                 'error': 'Failed to create bill in Odoo'
             }
         
-        # Update with explicit amounts if provided (before posting)
+        # Update with explicit amounts if provided
         update_data = {}
         
         # Set explicit amounts if provided
@@ -388,34 +352,24 @@ def main(data):
             except (ValueError, TypeError):
                 pass
         
-        # Update the bill with explicit amounts if any were provided (before posting)
+        # Update the bill with explicit amounts if any were provided
         if update_data:
             try:
                 models.execute_kw(
                     db, uid, password,
                     'account.move', 'write',
-                    [[bill_id], update_data],
-                    {'context': context}
+                    [[bill_id], update_data]
                 )
             except Exception as e:
-                # If we can't set the amounts directly, continue
-                print(f"Warning: Could not set explicit amounts before posting: {str(e)}")
+                # If we can't set the amounts directly, continue with posting
+                print(f"Warning: Could not set explicit amounts: {str(e)}")
         
         # POST THE BILL - Move from draft to posted state
         try:
-            # First, ensure all required fields are computed
-            models.execute_kw(
-                db, uid, password,
-                'account.move', '_recompute_dynamic_lines',
-                [[bill_id]],
-                {'context': context}
-            )
-            
             post_result = models.execute_kw(
                 db, uid, password,
                 'account.move', 'action_post',
-                [[bill_id]],
-                {'context': context}
+                [[bill_id]]
             )
             
             # Verify the bill was posted successfully
@@ -423,7 +377,7 @@ def main(data):
                 db, uid, password,
                 'account.move', 'read',
                 [[bill_id]], 
-                {'fields': ['state'], 'context': context}
+                {'fields': ['state']}
             )[0]['state']
             
             if bill_state != 'posted':
@@ -433,32 +387,30 @@ def main(data):
                 }
                 
         except xmlrpc.client.Fault as e:
-            # Get more details about the error
-            error_msg = str(e)
-            
-            # Try to get the bill details for debugging
-            try:
-                bill_details = models.execute_kw(
-                    db, uid, password,
-                    'account.move', 'read',
-                    [[bill_id]], 
-                    {'fields': ['name', 'state', 'journal_id', 'company_id', 'invoice_date', 'invoice_date_due'], 'context': context}
-                )[0]
-                error_msg += f". Bill details: {bill_details}"
-            except:
-                pass
-            
             return {
                 'success': False,
-                'error': f'Bill created but failed to post: {error_msg}'
+                'error': f'Bill created but failed to post: {str(e)}'
             }
+        
+        # If posting succeeded but we need to update amounts after posting, do it now
+        if update_data:
+            try:
+                # Try to update amounts even after posting (some Odoo configurations allow this)
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'write',
+                    [[bill_id], update_data]
+                )
+            except Exception as e:
+                # This is expected in some cases, amounts might be computed automatically
+                pass
         
         # Get final bill information after posting
         bill_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
             [[bill_id]], 
-            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due'], 'context': context}
+            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state']}
         )[0]
         
         return {
@@ -471,7 +423,6 @@ def main(data):
             'tax_amount': bill_info.get('amount_tax'),
             'state': bill_info.get('state'),
             'invoice_date': invoice_date,
-            'due_date': bill_info.get('invoice_date_due'),
             'payment_reference': payment_reference if payment_reference != 'none' else None,
             'line_items': data.get('line_items'),
             'message': 'Vendor bill created and posted successfully'
