@@ -62,17 +62,17 @@ def mark_entry_as_paid(data):
     Uses correct field names for account.move model in Odoo.
     
     Args:
-        data (dict): Contains reference, amount, company_name
+        data (dict): Contains reference, amount, company_name, date, account_name
     
     Returns:
-        tuple: (success_bool, result_dict)
+        dict: Result dictionary with success/error information
     """
     try:
         reference = data['reference']
         amount = data['amount']
         company_name = data['company_name']
-        date= data['date']
-        account_name = ['account_name']
+        date = data['date']
+        account_name = data['account_name']  # Fixed: was ['account_name']
         
         # Load Odoo credentials from environment
         url = os.getenv("ODOO_URL")
@@ -113,7 +113,7 @@ def mark_entry_as_paid(data):
 
         # Search for the journal entry with correct field names
         domain = [
-            ('ref', 'ilike', reference),           # ref field for bank references like 255713924
+            ('ref', 'ilike', reference),           # ref field for bank references
             ('amount_total', '=', amount),         # amount_total not 'total'
             ('company_id', '=', company_id)        # company_id not 'company_name'
         ]
@@ -163,7 +163,7 @@ def mark_entry_as_paid(data):
                 "description": data.get('description', 'No description provided'),
                 "partner": data.get('partner', 'Unknown'),
                 "date": date,
-                "account_name":account_name,
+                "account_name": account_name,  # Fixed: now properly extracts from data
                 "company": actual_company_name,
                 "previous_payment_state": journal_entry.get('payment_state', 'unknown'),
                 "new_payment_state": 'paid',
@@ -173,10 +173,9 @@ def mark_entry_as_paid(data):
             return {"error": "Failed to update payment status"}
 
     except xmlrpc.client.Fault as fault:
-        return False, {"error": f"XML-RPC Fault: {fault.faultString}"}
+        return {"error": f"XML-RPC Fault: {fault.faultString}"}  # Fixed: consistent return format
     except Exception as e:
-        return False, {"error": f"Unexpected error: {str(e)}"}
-
+        return {"error": f"Unexpected error: {str(e)}"}  # Fixed: consistent return format
 
 
 def handle_bank_suspense_transaction(data):
@@ -203,8 +202,8 @@ def handle_bank_suspense_transaction(data):
         amount = data['amount']
         reference = data['reference']
         company_name = data.get('company_name')
-        date= data['date']
-        account_name = ['account_name']
+        date = data['date']
+        account_name = data['account_name']  # Fixed: was ['account_name']
         
         # Load Odoo credentials
         url = os.getenv("ODOO_URL")
@@ -293,7 +292,6 @@ def handle_bank_suspense_transaction(data):
         # Create description based on reference and suspense status
         status = "already processed" if suspense_check['is_using_suspense'] else "processed"
 
-
         # Return simplified format
         return {
             "amount": amount,
@@ -302,7 +300,7 @@ def handle_bank_suspense_transaction(data):
             "partner": data.get('partner', partner_name),
             "company": actual_company_name,
             "date": date,
-            "account_name":account_name
+            "account_name": account_name  # Fixed: now properly extracts from data
         }
 
     except xmlrpc.client.Fault as fault:
