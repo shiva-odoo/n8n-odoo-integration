@@ -124,29 +124,43 @@ def main(data):
             {'fields': ['name'], 'context': context}
         )[0]
         
-        # Get default purchase journal for the company
-        journal_ids = models.execute_kw(
-            db, uid, password,
-            'account.journal', 'search',
-            [[('type', '=', 'purchase'), ('company_id', '=', company_id)]],
-            {'limit': 1, 'context': context}
-        )
+        # Get default purchase journal for the company (try with company filter first, then without)
+        journal_ids = []
+        if company_id:
+            try:
+                journal_ids = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'search',
+                    [[('type', '=', 'purchase'), ('company_id', '=', company_id)]],
+                    {'limit': 1, 'context': context}
+                )
+            except:
+                # If company_id filter fails, try without it
+                pass
+        
+        if not journal_ids:
+            # Fallback: search without company filter
+            journal_ids = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search',
+                [[('type', '=', 'purchase')]],
+                {'limit': 1, 'context': context}
+            )
         
         if not journal_ids:
             return {
                 'success': False,
-                'error': f'No purchase journal found for company ID {company_id}'
+                'error': f'No purchase journal found'
             }
         
         journal_id = journal_ids[0]
         
-        # Get default expense account for the company
+        # Get default expense account (without company_id filter as it may not exist in this version)
         expense_account_ids = models.execute_kw(
             db, uid, password,
             'account.account', 'search',
             [[
                 ('account_type', 'in', ['expense', 'asset_current']),  # Try both expense and current asset accounts
-                ('company_id', '=', company_id),
                 ('deprecated', '=', False)
             ]],
             {'limit': 1, 'context': context}
@@ -159,7 +173,18 @@ def main(data):
                 'account.account', 'search',
                 [[
                     ('account_type', 'like', 'expense'),
-                    ('company_id', '=', company_id),
+                    ('deprecated', '=', False)
+                ]],
+                {'limit': 1, 'context': context}
+            )
+        
+        if not expense_account_ids:
+            # Final fallback - try to find any expense-related account
+            expense_account_ids = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[
+                    ('code', 'like', '5%'),  # Many expense accounts start with 5
                     ('deprecated', '=', False)
                 ]],
                 {'limit': 1, 'context': context}
@@ -172,9 +197,22 @@ def main(data):
             """Find tax record by rate percentage"""
             try:
                 domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'purchase')]
+                # Try with company_id first if provided, but don't fail if field doesn't exist
                 if company_id:
-                    domain.append(('company_id', '=', company_id))
+                    try:
+                        tax_ids = models.execute_kw(
+                            db, uid, password,
+                            'account.tax', 'search',
+                            [domain + [('company_id', '=', company_id)]],
+                            {'limit': 1, 'context': context}
+                        )
+                        if tax_ids:
+                            return tax_ids[0]
+                    except:
+                        # company_id field might not exist, try without it
+                        pass
                 
+                # Search without company filter
                 tax_ids = models.execute_kw(
                     db, uid, password,
                     'account.tax', 'search',
@@ -267,9 +305,10 @@ def main(data):
                     'price_unit': price_unit,
                 }
                 
-                # Set account_id for the line item (crucial for journal entry creation)
+                # Set account_id for the line item if available (crucial for journal entry creation)
                 if default_expense_account:
                     line_item['account_id'] = default_expense_account
+                # If no default account found, let Odoo use its own defaults
                 
                 # Apply tax if tax_rate is provided
                 if tax_rate is not None and tax_rate > 0:
@@ -298,9 +337,10 @@ def main(data):
                 'price_unit': amount,
             }
             
-            # Set account_id for the line item
+            # Set account_id for the line item if available
             if default_expense_account:
                 line_item['account_id'] = default_expense_account
+            # If no default account found, let Odoo use its own defaults
             
             invoice_line_ids.append((0, 0, line_item))
         

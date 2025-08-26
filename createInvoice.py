@@ -108,29 +108,43 @@ def main(data):
             company_id = company_ids[0] if company_ids else None
             context = {'default_company_id': company_id} if company_id else {}
         
-        # Get default sales journal for the company
-        journal_ids = models.execute_kw(
-            db, uid, password,
-            'account.journal', 'search',
-            [[('type', '=', 'sale'), ('company_id', '=', company_id)]],
-            {'limit': 1, 'context': context}
-        )
+        # Get default sales journal for the company (try with company filter first, then without)
+        journal_ids = []
+        if company_id:
+            try:
+                journal_ids = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'search',
+                    [[('type', '=', 'sale'), ('company_id', '=', company_id)]],
+                    {'limit': 1, 'context': context}
+                )
+            except:
+                # If company_id filter fails, try without it
+                pass
+        
+        if not journal_ids:
+            # Fallback: search without company filter
+            journal_ids = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search',
+                [[('type', '=', 'sale')]],
+                {'limit': 1, 'context': context}
+            )
         
         if not journal_ids:
             return {
                 'success': False,
-                'error': f'No sales journal found for company ID {company_id}'
+                'error': f'No sales journal found'
             }
         
         journal_id = journal_ids[0]
         
-        # Get default income account for the company
+        # Get default income account (without company_id filter as it may not exist in this version)
         income_account_ids = models.execute_kw(
             db, uid, password,
             'account.account', 'search',
             [[
                 ('account_type', 'in', ['income', 'income_other']),  # Try both income account types
-                ('company_id', '=', company_id),
                 ('deprecated', '=', False)
             ]],
             {'limit': 1, 'context': context}
@@ -143,7 +157,18 @@ def main(data):
                 'account.account', 'search',
                 [[
                     ('account_type', 'like', 'income'),
-                    ('company_id', '=', company_id),
+                    ('deprecated', '=', False)
+                ]],
+                {'limit': 1, 'context': context}
+            )
+        
+        if not income_account_ids:
+            # Final fallback - try to find any income-related account
+            income_account_ids = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[
+                    ('code', 'like', '4%'),  # Many income accounts start with 4
                     ('deprecated', '=', False)
                 ]],
                 {'limit': 1, 'context': context}
@@ -300,9 +325,10 @@ def main(data):
                     'price_unit': price_unit,
                 }
                 
-                # Set account_id for the line item (crucial for journal entry creation)
+                # Set account_id for the line item if available (crucial for journal entry creation)
                 if default_income_account:
                     line_item['account_id'] = default_income_account
+                # If no default account found, let Odoo use its own defaults
                 
                 # Apply tax if tax_rate is provided
                 if tax_rate is not None and tax_rate > 0:
@@ -332,9 +358,10 @@ def main(data):
                 'price_unit': price_unit,
             }
             
-            # Set account_id for the line item
+            # Set account_id for the line item if available
             if default_income_account:
                 line_item['account_id'] = default_income_account
+            # If no default account found, let Odoo use its own defaults
             
             invoice_line_ids.append((0, 0, line_item))
         
