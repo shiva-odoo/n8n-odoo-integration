@@ -1,5 +1,7 @@
 import xmlrpc.client
 import os
+import time
+
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
     try:
@@ -52,7 +54,7 @@ def main(data):
         # Connect to Odoo
         common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
         models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
-        
+
         # Authenticate
         uid = common.authenticate(db, username, password, {})
         if not uid:
@@ -60,29 +62,64 @@ def main(data):
                 'success': False,
                 'error': 'Odoo authentication failed'
             }
-        
+
         # Check if company already exists
         existing_company = models.execute_kw(
             db, uid, password,
             'res.company', 'search_count',
             [[('name', '=', data['name'])]]
         )
-        
+
         if existing_company:
             return {
                 'success': False,
                 'error': f'Company with name "{data["name"]}" already exists'
             }
-        
-        # Get available fields for res.company model to avoid field errors
+
         available_fields = get_available_company_fields(models, db, uid, password)
-        
-        # Prepare company data with only available fields
-        company_data = {
-            'name': data['name'],
+        company_data = {'name': data['name']}
+        field_mapping = {
+            'email': data.get('email'),
+            'phone': data.get('phone'),
+            'website': data.get('website'),
+            'vat': data.get('vat'),
+            'company_registry': data.get('company_registry'),
+            'street': data.get('street'),
+            'city': data.get('city'),
+            'zip': data.get('zip'),
+            'state': data.get('state')
         }
-        
-        # Add optional fields only if they exist in this Odoo version
+        for field, value in field_mapping.items():
+            if value and field in available_fields:
+                company_data[field] = value
+
+        # Handle country (if country_code provided and country_id field exists)
+        if data.get('country_code') and 'country_id' in available_fields:
+            country_id = get_country_id(models, db, uid, password, data['country_code'])
+            if country_id:
+                company_data['country_id'] = country_id
+            else:
+                return {
+                    'success': False,
+                    'error': f'Country code "{data["country_code"]}" not found'
+                }
+
+        # Handle currency (if currency_code provided and currency_id field exists)
+        currency_id = None
+        currency_warning = None
+        if data.get('currency_code') and 'currency_id' in available_fields:
+            currency_id = get_currency_id(models, db, uid, password, data['currency_code'])
+            if currency_id:
+                company_data['currency_id'] = currency_id
+            else:
+                currency_warning = f'Currency code "{data["currency_code"]}" not found - company created without specific currency'
+
+        # Handle state (if state provided and state_id field exists)
+        if data.get('state') and company_data.get('country_id') and 'state_id' in available_fields:
+            state_id = get_state_id(models, db, uid, password, data['state'], company_data['country_id'])
+            if state_id:
+                company_data['state_id'] = state_id
+                company_data.pop('state', None)
         field_mapping = {
             'email': data.get('email'),
             'phone': data.get('phone'),
@@ -135,37 +172,34 @@ def main(data):
             'res.company', 'create',
             [company_data]
         )
-        
+
         if not company_id:
             return {
                 'success': False,
                 'error': 'Failed to create company in Odoo'
             }
-        
-        # Set up complete accounting structure for the new company
-        accounting_setup_result = setup_company_accounting(models, db, uid, password, company_id, currency_id)
-        
-        if not accounting_setup_result['success']:
-            # Company was created but accounting setup failed
-            print(f"Warning: Company created but accounting setup failed: {accounting_setup_result['error']}")
-        
-        # Set up company properties for default accounts - CRITICAL for partner creation
-        properties_result = setup_company_properties(models, db, uid, password, company_id, accounting_setup_result.get('account_ids', {}))
-        if not properties_result['success']:
-            print(f"Warning: Company properties setup failed: {properties_result['error']}")
-        
+
+        # Initiate Chart of Accounts installation (this will continue in background)
+        chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, data.get('country_code'))
+        print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
+
+        # Create essential journals immediately
+        journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
+        if journals_result['success']:
+            print("Essential journals created successfully")
+        else:
+            print(f"Journal creation status: {journals_result.get('error', 'In progress')}")
+
         # Get created company information using only safe/available fields
         safe_read_fields = [
             'name', 'email', 'phone', 'website', 'vat', 'company_registry',
             'currency_id', 'country_id', 'street', 'city', 'zip'
         ]
-        # Filter to only fields that actually exist
         read_fields = [field for field in safe_read_fields if field in available_fields]
-        
         company_info = models.execute_kw(
             db, uid, password,
             'res.company', 'read',
-            [[company_id]], 
+            [[company_id]],
             {'fields': read_fields}
         )[0]
         
@@ -177,18 +211,12 @@ def main(data):
             'message': 'Company created successfully'
         }
         
-        # Add accounting setup status to response
-        if accounting_setup_result['success']:
-            response['accounting_setup'] = accounting_setup_result
-            response['message'] += ' with complete accounting setup'
+        # Add journal creation status to response
+        if journals_result['success']:
+            response['journals_created'] = journals_result['journals']
+            response['message'] += ' with essential journals'
         else:
-            response['accounting_warning'] = accounting_setup_result['error']
-        
-        # Add properties setup status
-        if properties_result['success']:
-            response['properties_setup'] = properties_result
-        else:
-            response['properties_warning'] = properties_result['error']
+            response['journal_warning'] = journals_result['error']
         
         # Add currency warning if exists
         if currency_warning:
@@ -230,366 +258,42 @@ def main(data):
             'error': f'Unexpected error: {str(e)}'
         }
 
-def setup_company_accounting(models, db, uid, password, company_id, currency_id=None):
+def create_essential_journals(models, db, uid, password, company_id, currency_id=None):
     """
-    Set up complete accounting structure for a new company including:
-    - Basic chart of accounts with proper account types
-    - Default accounts configuration
-    - Essential journals with proper accounts
-    - Fiscal settings
-    """
-    try:
-        setup_results = {
-            'accounts_created': [],
-            'journals_created': [],
-            'company_defaults_set': False,
-            'warnings': []
-        }
-        
-        # Step 1: Create essential accounts with improved structure
-        accounts_result = create_essential_accounts(models, db, uid, password, company_id, currency_id)
-        if accounts_result['success']:
-            setup_results['accounts_created'] = accounts_result['accounts']
-        else:
-            setup_results['warnings'].append(f"Account creation: {accounts_result['error']}")
-        
-        # Step 2: Set company default accounts - CRITICAL for operations
-        if accounts_result['success'] and accounts_result['account_ids']:
-            defaults_result = set_company_default_accounts(models, db, uid, password, company_id, accounts_result['account_ids'])
-            setup_results['company_defaults_set'] = defaults_result['success']
-            if not defaults_result['success']:
-                setup_results['warnings'].append(f"Default accounts: {defaults_result['error']}")
-        
-        # Step 3: Create journals with proper account configuration
-        journals_result = create_complete_journals(models, db, uid, password, company_id, currency_id, accounts_result.get('account_ids', {}))
-        if journals_result['success']:
-            setup_results['journals_created'] = journals_result['journals']
-        else:
-            setup_results['warnings'].append(f"Journal creation: {journals_result['error']}")
-        
-        # Step 4: Set up basic fiscal configuration
-        fiscal_result = setup_basic_fiscal_config(models, db, uid, password, company_id)
-        if not fiscal_result['success']:
-            setup_results['warnings'].append(f"Fiscal config: {fiscal_result['error']}")
-        
-        # Step 5: Apply fiscal localization if country is set
-        localization_result = apply_fiscal_localization(models, db, uid, password, company_id)
-        if not localization_result['success']:
-            setup_results['warnings'].append(f"Fiscal localization: {localization_result['error']}")
-        
-        # Determine overall success
-        success = (accounts_result['success'] and 
-                  setup_results['company_defaults_set'] and 
-                  journals_result['success'])
-        
-        return {
-            'success': success,
-            'details': setup_results,
-            'account_ids': accounts_result.get('account_ids', {}),
-            'message': 'Complete accounting setup completed' if success else 'Partial accounting setup completed with warnings'
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to set up accounting: {str(e)}'
-        }
-
-def create_essential_accounts(models, db, uid, password, company_id, currency_id=None):
-    """
-    Create essential accounts needed for basic operations with improved structure
-    """
-    try:
-        created_accounts = []
-        account_ids = {}
-        
-        # Define essential accounts to create with proper account types
-        accounts_to_create = [
-            {
-                'code': '1100',
-                'name': 'Account Receivable',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'asset_receivable'),
-                'reconcile': True,
-                'company_id': company_id,
-            },
-            {
-                'code': '2100',
-                'name': 'Account Payable',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'liability_payable'),
-                'reconcile': True,
-                'company_id': company_id,
-            },
-            {
-                'code': '4000',
-                'name': 'Product Sales',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'income'),
-                'company_id': company_id,
-            },
-            {
-                'code': '5000',
-                'name': 'Product Purchases',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'expense'),
-                'company_id': company_id,
-            },
-            {
-                'code': '1000',
-                'name': 'Bank Current Account',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'asset_current'),
-                'reconcile': True,  # Bank accounts should be reconcilable
-                'company_id': company_id,
-            },
-            # Additional essential accounts for better accounting structure
-            {
-                'code': '1300',
-                'name': 'Current Assets',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'asset_current'),
-                'company_id': company_id,
-            },
-            {
-                'code': '3000',
-                'name': 'Owner\'s Equity',
-                'user_type_id': get_account_type_id(models, db, uid, password, 'equity'),
-                'company_id': company_id,
-            }
-        ]
-        
-        # Add currency if specified
-        if currency_id:
-            for account in accounts_to_create:
-                account['currency_id'] = currency_id
-        
-        # Create each account
-        for account_data in accounts_to_create:
-            try:
-                # Check if account with this code already exists for this company
-                existing = models.execute_kw(
-                    db, uid, password,
-                    'account.account', 'search_count',
-                    [[('code', '=', account_data['code']), ('company_id', '=', company_id)]]
-                )
-                
-                if existing:
-                    # Get existing account ID
-                    existing_ids = models.execute_kw(
-                        db, uid, password,
-                        'account.account', 'search',
-                        [[('code', '=', account_data['code']), ('company_id', '=', company_id)]], {'limit': 1}
-                    )
-                    if existing_ids:
-                        account_ids[account_data['name']] = existing_ids[0]
-                    continue
-                
-                account_id = models.execute_kw(
-                    db, uid, password,
-                    'account.account', 'create',
-                    [account_data]
-                )
-                
-                if account_id:
-                    created_accounts.append({
-                        'id': account_id,
-                        'name': account_data['name'],
-                        'code': account_data['code']
-                    })
-                    account_ids[account_data['name']] = account_id
-                    print(f"Created account: {account_data['name']} (ID: {account_id})")
-                    
-            except Exception as account_error:
-                print(f"Failed to create account {account_data['name']}: {str(account_error)}")
-                continue
-        
-        return {
-            'success': len(account_ids) >= 2,  # At least receivable and payable
-            'accounts': created_accounts,
-            'account_ids': account_ids,
-            'message': f'Created/found {len(account_ids)} essential accounts'
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to create accounts: {str(e)}'
-        }
-
-def set_company_default_accounts(models, db, uid, password, company_id, account_ids):
-    """
-    Set default accounts for the company (receivable, payable, etc.)
-    This is CRITICAL for invoice and bill operations
-    """
-    try:
-        update_data = {}
-        
-        # Set default receivable account
-        if 'Account Receivable' in account_ids:
-            update_data['account_default_receivable_id'] = account_ids['Account Receivable']
-        
-        # Set default payable account
-        if 'Account Payable' in account_ids:
-            update_data['account_default_payable_id'] = account_ids['Account Payable']
-        
-        # Set additional default accounts if available
-        if 'Product Sales' in account_ids:
-            update_data['income_default_account_id'] = account_ids['Product Sales']
-        
-        if 'Product Purchases' in account_ids:
-            update_data['expense_default_account_id'] = account_ids['Product Purchases']
-        
-        if update_data:
-            models.execute_kw(
-                db, uid, password,
-                'res.company', 'write',
-                [[company_id], update_data]
-            )
-            
-            return {
-                'success': True,
-                'message': f'Set {len(update_data)} default accounts for company'
-            }
-        else:
-            return {
-                'success': False,
-                'error': 'No default accounts could be set - missing receivable or payable accounts'
-            }
-            
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to set default accounts: {str(e)}'
-        }
-
-def setup_company_properties(models, db, uid, password, company_id, account_ids):
-    """
-    Set up company properties for default receivable and payable accounts.
-    This is CRITICAL for partner (customer/vendor) creation to work without errors.
-    """
-    try:
-        properties_created = []
-        
-        # Define properties to create
-        properties_data = []
-        
-        if 'Account Receivable' in account_ids:
-            properties_data.append({
-                'name': 'property_account_receivable_id',
-                'fields_id': get_field_id(models, db, uid, password, 'res.partner', 'property_account_receivable_id'),
-                'company_id': company_id,
-                'type': 'many2one',
-                'value_reference': f'account.account,{account_ids["Account Receivable"]}',
-            })
-        
-        if 'Account Payable' in account_ids:
-            properties_data.append({
-                'name': 'property_account_payable_id', 
-                'fields_id': get_field_id(models, db, uid, password, 'res.partner', 'property_account_payable_id'),
-                'company_id': company_id,
-                'type': 'many2one',
-                'value_reference': f'account.account,{account_ids["Account Payable"]}',
-            })
-        
-        # Create each property
-        for prop_data in properties_data:
-            try:
-                # Check if property already exists
-                existing = models.execute_kw(
-                    db, uid, password,
-                    'ir.property', 'search_count',
-                    [[('name', '=', prop_data['name']), ('company_id', '=', company_id), ('res_id', '=', False)]]
-                )
-                
-                if existing:
-                    # Update existing property
-                    existing_ids = models.execute_kw(
-                        db, uid, password,
-                        'ir.property', 'search',
-                        [[('name', '=', prop_data['name']), ('company_id', '=', company_id), ('res_id', '=', False)]]
-                    )
-                    if existing_ids:
-                        models.execute_kw(
-                            db, uid, password,
-                            'ir.property', 'write',
-                            [existing_ids, {'value_reference': prop_data['value_reference']}]
-                        )
-                        properties_created.append(f"Updated {prop_data['name']}")
-                else:
-                    # Create new property
-                    prop_id = models.execute_kw(
-                        db, uid, password,
-                        'ir.property', 'create',
-                        [prop_data]
-                    )
-                    if prop_id:
-                        properties_created.append(f"Created {prop_data['name']}")
-                        
-            except Exception as prop_error:
-                print(f"Failed to create/update property {prop_data['name']}: {str(prop_error)}")
-                continue
-        
-        return {
-            'success': len(properties_created) > 0,
-            'properties': properties_created,
-            'message': f'Set up {len(properties_created)} company properties'
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to set up company properties: {str(e)}'
-        }
-
-def get_field_id(models, db, uid, password, model_name, field_name):
-    """Get field ID for ir.property creation"""
-    try:
-        field_ids = models.execute_kw(
-            db, uid, password,
-            'ir.model.fields', 'search',
-            [[('model', '=', model_name), ('name', '=', field_name)]], {'limit': 1}
-        )
-        return field_ids[0] if field_ids else None
-    except Exception:
-        return None
-
-def create_complete_journals(models, db, uid, password, company_id, currency_id=None, account_ids=None):
-    """
-    Create essential journals with proper default accounts configured
+    Create essential journals for a new company (Sales, Purchase, Bank, Cash, Miscellaneous)
     """
     try:
         created_journals = []
-        account_ids = account_ids or {}
-        
-        # Define essential journals with their default accounts
         journals_to_create = [
             {
-                'name': 'Customer Invoices',
-                'code': 'INV',
+                'name': 'Sales',
+                'code': 'SAL',
                 'type': 'sale',
                 'company_id': company_id,
-                'default_account_id': account_ids.get('Product Sales'),
             },
             {
-                'name': 'Vendor Bills',
-                'code': 'BILL',
-                'type': 'purchase', 
+                'name': 'Purchases',
+                'code': 'PUR',
+                'type': 'purchase',
                 'company_id': company_id,
-                'default_account_id': account_ids.get('Product Purchases'),
             },
             {
                 'name': 'Bank',
-                'code': 'BNK1',
+                'code': 'BNK',
                 'type': 'bank',
                 'company_id': company_id,
-                'default_account_id': account_ids.get('Bank Current Account'),
             },
             {
                 'name': 'Cash',
-                'code': 'CSH1',
+                'code': 'CSH',
                 'type': 'cash',
                 'company_id': company_id,
-                'default_account_id': account_ids.get('Bank Current Account'),
             },
             {
                 'name': 'Miscellaneous Operations',
                 'code': 'MISC',
                 'type': 'general',
+                'company_id': company_id,
                 'company_id': company_id,
             }
         ]
@@ -602,10 +306,6 @@ def create_complete_journals(models, db, uid, password, company_id, currency_id=
         # Create each journal
         for journal_data in journals_to_create:
             try:
-                # Remove default_account_id if it's None to avoid errors
-                if journal_data.get('default_account_id') is None:
-                    journal_data.pop('default_account_id', None)
-                
                 # Check if journal with this code already exists for this company
                 existing = models.execute_kw(
                     db, uid, password,
@@ -636,141 +336,84 @@ def create_complete_journals(models, db, uid, password, company_id, currency_id=
                 print(f"Failed to create journal {journal_data['name']}: {str(journal_error)}")
                 continue
         
-        return {
-            'success': len(created_journals) > 0,
-            'journals': created_journals,
-            'message': f'Created {len(created_journals)} journals'
-        }
-        
+        if created_journals:
+            return {
+                'success': True,
+                'journals': created_journals,
+                'message': f'Created {len(created_journals)} journals'
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'No journals were created - they may already exist or there was an error'
+            }
+            
     except Exception as e:
         return {
             'success': False,
             'error': f'Failed to create journals: {str(e)}'
         }
 
-def setup_basic_fiscal_config(models, db, uid, password, company_id):
+def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code=None):
     """
-    Set up basic fiscal configuration for the company
+    Initiate chart of accounts installation for the company.
+    The actual installation will continue in the background.
     """
     try:
-        # Set basic fiscal year settings
-        fiscal_data = {
-            'fiscalyear_last_day': 31,
-            'fiscalyear_last_month': '12',  # December
-        }
+        # Quick check if accounts already exist
+        account_count = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search_count',
+            [[('company_id', '=', company_id)]]
+        )
         
-        # Try to update fiscal settings - this might not be available in all versions
+        if account_count > 0:
+            return {'success': True, 'message': 'Chart of accounts already exists', 'accounts_found': account_count}
+
+        # Find chart template
+        domain = []
+        if country_code:
+            domain = [('country_id.code', '=', country_code.upper())]
+        templates = models.execute_kw(
+            db, uid, password,
+            'account.chart.template', 'search_read',
+            [domain], {'fields': ['id', 'name'], 'limit': 1}
+        )
+        if not templates:
+            # fallback: get any template
+            templates = models.execute_kw(
+                db, uid, password,
+                'account.chart.template', 'search_read',
+                [[]], {'fields': ['id', 'name'], 'limit': 1}
+            )
+        if not templates:
+            return {'success': False, 'error': 'No chart of accounts template found'}
+
+        template = templates[0]
+        # Attempt to initiate chart of accounts installation
         try:
+            # Try the most reliable method first
             models.execute_kw(
                 db, uid, password,
-                'res.company', 'write',
-                [[company_id], fiscal_data]
+                'account.chart.template', 'try_loading',
+                [[template['id']]], 
+                {'company_id': company_id, 'code_digits': 6}
             )
-        except:
-            pass  # Not critical if this fails
-        
-        return {
-            'success': True,
-            'message': 'Basic fiscal configuration set'
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to set fiscal configuration: {str(e)}'
-        }
-
-def apply_fiscal_localization(models, db, uid, password, company_id):
-    """
-    Apply fiscal localization based on company country
-    """
-    try:
-        # Get company information to determine country
-        company_info = models.execute_kw(
-            db, uid, password,
-            'res.company', 'read',
-            [[company_id]], 
-            {'fields': ['country_id']}
-        )
-        
-        if not company_info or not company_info[0].get('country_id'):
-            return {
-                'success': False,
-                'error': 'No country set for company - fiscal localization skipped'
-            }
-        
-        # This is a placeholder for fiscal localization logic
-        # In practice, you might need to install specific localization modules
-        # or configure country-specific settings
-        
-        return {
-            'success': True,
-            'message': 'Fiscal localization configuration applied'
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to apply fiscal localization: {str(e)}'
-        }
-
-def get_account_type_id(models, db, uid, password, account_type_xmlid):
-    """
-    Get account type ID from XML ID or type name with improved mapping
-    """
-    try:
-        # Try to get by XML ID first (more reliable)
-        xml_id_mappings = {
-            'asset_receivable': 'account.data_account_type_receivable',
-            'liability_payable': 'account.data_account_type_payable', 
-            'income': 'account.data_account_type_revenue',
-            'expense': 'account.data_account_type_expenses',
-            'asset_current': 'account.data_account_type_current_assets',
-            'equity': 'account.data_account_type_equity'
-        }
-        
-        if account_type_xmlid in xml_id_mappings:
+            return {'success': True, 'message': f'Chart of accounts installation initiated with template: {template["name"]}'}
+        except Exception as e1:
             try:
-                type_data = models.execute_kw(
+                # Fallback to simpler method
+                models.execute_kw(
                     db, uid, password,
-                    'ir.model.data', 'get_object_reference',
-                    [xml_id_mappings[account_type_xmlid].split('.')[0], xml_id_mappings[account_type_xmlid].split('.')[1]]
+                    'account.chart.template', 'load_for_current_company',
+                    [[template['id']]]
                 )
-                return type_data[1]
-            except:
-                pass
-        
-        # Fallback: search by type name patterns
-        type_name_patterns = {
-            'asset_receivable': ['Receivable', 'receivable'],
-            'liability_payable': ['Payable', 'payable'],
-            'income': ['Income', 'Revenue', 'income', 'revenue'],
-            'expense': ['Expense', 'expenses', 'expense'],
-            'asset_current': ['Current Assets', 'current', 'asset'],
-            'equity': ['Equity', 'equity']
-        }
-        
-        if account_type_xmlid in type_name_patterns:
-            for pattern in type_name_patterns[account_type_xmlid]:
-                type_ids = models.execute_kw(
-                    db, uid, password,
-                    'account.account.type', 'search',
-                    [[('name', 'ilike', pattern)]], {'limit': 1}
-                )
-                if type_ids:
-                    return type_ids[0]
-        
-        # Final fallback: get any type (better than failing)
-        type_ids = models.execute_kw(
-            db, uid, password,
-            'account.account.type', 'search',
-            [[]], {'limit': 1}
-        )
-        return type_ids[0] if type_ids else 1
-        
+                return {'success': True, 'message': f'Chart of accounts installation initiated with alternate method'}
+            except Exception as e2:
+                print(f"Warning: Chart of accounts installation may need manual intervention: {str(e2)}")
+                return {'success': True, 'message': 'Company created, chart of accounts may need manual setup'}
     except Exception as e:
-        print(f"Error getting account type for {account_type_xmlid}: {e}")
-        return 1  # Fallback to ID 1
+        return {'success': False, 'error': str(e)}
 
 def get_available_company_fields(models, db, uid, password):
     """Get list of available fields for res.company model"""
@@ -967,9 +610,10 @@ def list_company_journals(company_id):
             'error': str(e)
         }
 
-def fix_existing_company_accounting(company_id):
+def create_journals_for_existing_company(company_id):
     """
-    Fix accounting setup for an existing company that was created without proper setup
+    Create essential journals for an existing company that doesn't have them
+    Useful for fixing companies created before this update
     """
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -1001,12 +645,11 @@ def fix_existing_company_accounting(company_id):
         company_info = company_info[0]
         currency_id = company_info.get('currency_id')[0] if company_info.get('currency_id') else None
         
-        # Set up complete accounting structure
-        result = setup_company_accounting(models, db, uid, password, company_id, currency_id)
+        # Create journals
+        result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         
         if result['success']:
             result['company_name'] = company_info['name']
-            result['message'] = f'Fixed accounting setup for company: {company_info["name"]}'
             
         return result
         
@@ -1086,55 +729,4 @@ def list_available_countries():
         return {
             'success': False,
             'error': str(e)
-        }
-
-def create_test_customer(company_id, customer_name="Test Customer"):
-    """
-    Create a test customer to validate that the company setup is working correctly
-    """
-    url = os.getenv("ODOO_URL")
-    db = os.getenv("ODOO_DB")
-    username = os.getenv("ODOO_USERNAME")
-    password = os.getenv("ODOO_API_KEY")
-    
-    try:
-        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
-        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
-        
-        uid = common.authenticate(db, username, password, {})
-        if not uid:
-            return {'success': False, 'error': 'Authentication failed'}
-        
-        # Create customer data
-        customer_data = {
-            'name': customer_name,
-            'is_company': False,
-            'customer_rank': 1,
-            'company_id': company_id,
-        }
-        
-        # Create customer
-        customer_id = models.execute_kw(
-            db, uid, password,
-            'res.partner', 'create',
-            [customer_data]
-        )
-        
-        if customer_id:
-            return {
-                'success': True,
-                'customer_id': customer_id,
-                'customer_name': customer_name,
-                'message': 'Test customer created successfully - company accounting setup is working'
-            }
-        else:
-            return {
-                'success': False,
-                'error': 'Failed to create test customer'
-            }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Test customer creation failed: {str(e)}'
         }
