@@ -148,6 +148,11 @@ def main(data):
         print("Waiting for Chart of Accounts installation to complete...")
         chart_ready = wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120)
         
+        # If the advanced method fails, try the simple fallback
+        if not chart_ready['success'] and 'company_id' in str(chart_ready.get('message', '')):
+            print("Falling back to simplified chart checking method...")
+            chart_ready = wait_for_chart_of_accounts_simple(models, db, uid, password, company_id)
+        
         if not chart_ready['success']:
             print(f"Warning: {chart_ready['message']}")
             # Continue anyway, but note that some journals might not be created
@@ -253,39 +258,83 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
     
     print(f"Waiting for Chart of Accounts installation (max {max_wait_time} seconds)...")
     
+    # First, check what fields are available on account.account
+    try:
+        account_fields = models.execute_kw(
+            db, uid, password,
+            'account.account', 'fields_get',
+            [[]], {'attributes': ['string', 'type']}
+        )
+        has_company_id = 'company_id' in account_fields
+        print(f"Account model has company_id field: {has_company_id}")
+    except Exception as e:
+        print(f"Could not check account fields: {e}")
+        has_company_id = False
+    
     while time.time() - start_time < max_wait_time:
         try:
-            # Check if accounts exist for this company
-            account_count = models.execute_kw(
-                db, uid, password,
-                'account.account', 'search_count',
-                [[('company_id', '=', company_id)]]
-            )
-            
-            print(f"Found {account_count} accounts for company {company_id}")
-            
-            if account_count >= min_accounts_required:
-                # Additional check: verify we have essential account types
-                essential_account_types = ['asset_receivable', 'liability_payable', 'income', 'expense']
-                accounts_with_types = models.execute_kw(
+            # Check if accounts exist - use different approaches based on field availability
+            if has_company_id:
+                # Use company_id filter if available
+                account_count = models.execute_kw(
                     db, uid, password,
-                    'account.account', 'search_read',
-                    [[('company_id', '=', company_id), ('account_type', 'in', essential_account_types)]],
-                    {'fields': ['id', 'account_type'], 'limit': len(essential_account_types)}
+                    'account.account', 'search_count',
+                    [[('company_id', '=', company_id)]]
+                )
+            else:
+                # Fallback: get all accounts and filter manually or use different approach
+                # First try to get accounts without company filter
+                all_accounts = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search_count',
+                    [[]]
                 )
                 
-                found_types = set(acc['account_type'] for acc in accounts_with_types)
-                missing_types = set(essential_account_types) - found_types
-                
-                if not missing_types:
+                if all_accounts > min_accounts_required:
+                    account_count = all_accounts
+                    print(f"Found {all_accounts} total accounts (company filtering not available)")
+                else:
+                    account_count = 0
+            
+            print(f"Found {account_count} accounts")
+            
+            if account_count >= min_accounts_required:
+                # Try to check essential account types if possible
+                try:
+                    if has_company_id:
+                        essential_account_types = ['asset_receivable', 'liability_payable', 'income', 'expense']
+                        accounts_with_types = models.execute_kw(
+                            db, uid, password,
+                            'account.account', 'search_read',
+                            [[('company_id', '=', company_id), ('account_type', 'in', essential_account_types)]],
+                            {'fields': ['id', 'account_type'], 'limit': len(essential_account_types)}
+                        )
+                        
+                        found_types = set(acc['account_type'] for acc in accounts_with_types)
+                        missing_types = set(essential_account_types) - found_types
+                        
+                        if missing_types:
+                            print(f"Waiting for essential account types: {missing_types}")
+                            time.sleep(check_interval)
+                            continue
+                    
+                    # Success - accounts are ready
                     elapsed_time = int(time.time() - start_time)
                     return {
                         'success': True,
                         'message': f'Chart of Accounts ready with {account_count} accounts (took {elapsed_time}s)',
                         'accounts_count': account_count
                     }
-                else:
-                    print(f"Waiting for essential account types: {missing_types}")
+                    
+                except Exception as type_check_error:
+                    print(f"Could not check account types: {type_check_error}")
+                    # If we can't check types but have enough accounts, consider it ready
+                    elapsed_time = int(time.time() - start_time)
+                    return {
+                        'success': True,
+                        'message': f'Chart of Accounts ready with {account_count} accounts (took {elapsed_time}s)',
+                        'accounts_count': account_count
+                    }
             
             # Wait before next check
             time.sleep(check_interval)
@@ -297,11 +346,18 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
     # Timeout reached
     elapsed_time = int(time.time() - start_time)
     try:
-        final_account_count = models.execute_kw(
-            db, uid, password,
-            'account.account', 'search_count',
-            [[('company_id', '=', company_id)]]
-        )
+        if has_company_id:
+            final_account_count = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_count',
+                [[('company_id', '=', company_id)]]
+            )
+        else:
+            final_account_count = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_count',
+                [[]]
+            )
     except:
         final_account_count = 0
     
@@ -481,7 +537,57 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
+def wait_for_chart_of_accounts_simple(models, db, uid, password, company_id, max_wait_time=60):
+    """
+    Simplified version that just waits a fixed time and checks basic account existence
+    """
+    print(f"Using simplified chart of accounts check for company {company_id}...")
+    
+    # Wait a reasonable time for chart installation to begin
+    time.sleep(10)
+    
+    try:
+        # Try to get any accounts at all
+        account_count = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search_count',
+            [[]]
+        )
+        
+        if account_count > 0:
+            return {
+                'success': True,
+                'message': f'Found {account_count} accounts in system - proceeding with journal creation',
+                'accounts_count': account_count
+            }
+        else:
+            return {
+                'success': False,
+                'message': 'No accounts found - chart of accounts may need manual setup',
+                'accounts_count': 0
+            }
+            
+    except Exception as e:
+        print(f"Simple account check failed: {e}")
+        return {
+            'success': True,
+            'message': 'Could not verify accounts - proceeding anyway',
+            'accounts_count': 0
+        }
+
 def get_available_company_fields(models, db, uid, password):
+    """Get list of available fields for res.company model"""
+    try:
+        fields_info = models.execute_kw(
+            db, uid, password,
+            'res.company', 'fields_get',
+            [[]], {'attributes': ['string', 'type']}
+        )
+        return list(fields_info.keys())
+    except Exception as e:
+        print(f"Error getting fields: {e}")
+        # Return basic fields that should exist in most Odoo versions
+        return ['name', 'email', 'phone', 'website', 'vat', 'street', 'city', 'zip', 'country_id', 'currency_id']
     """Get list of available fields for res.company model"""
     try:
         fields_info = models.execute_kw(
