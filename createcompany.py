@@ -78,6 +78,7 @@ def main(data):
 
         available_fields = get_available_company_fields(models, db, uid, password)
         company_data = {'name': data['name']}
+        
         field_mapping = {
             'email': data.get('email'),
             'phone': data.get('phone'),
@@ -89,54 +90,12 @@ def main(data):
             'zip': data.get('zip'),
             'state': data.get('state')
         }
-        for field, value in field_mapping.items():
-            if value and field in available_fields:
-                company_data[field] = value
-
-        # Handle country (if country_code provided and country_id field exists)
-        if data.get('country_code') and 'country_id' in available_fields:
-            country_id = get_country_id(models, db, uid, password, data['country_code'])
-            if country_id:
-                company_data['country_id'] = country_id
-            else:
-                return {
-                    'success': False,
-                    'error': f'Country code "{data["country_code"]}" not found'
-                }
-
-        # Handle currency (if currency_code provided and currency_id field exists)
-        currency_id = None
-        currency_warning = None
-        if data.get('currency_code') and 'currency_id' in available_fields:
-            currency_id = get_currency_id(models, db, uid, password, data['currency_code'])
-            if currency_id:
-                company_data['currency_id'] = currency_id
-            else:
-                currency_warning = f'Currency code "{data["currency_code"]}" not found - company created without specific currency'
-
-        # Handle state (if state provided and state_id field exists)
-        if data.get('state') and company_data.get('country_id') and 'state_id' in available_fields:
-            state_id = get_state_id(models, db, uid, password, data['state'], company_data['country_id'])
-            if state_id:
-                company_data['state_id'] = state_id
-                company_data.pop('state', None)
-        field_mapping = {
-            'email': data.get('email'),
-            'phone': data.get('phone'),
-            'website': data.get('website'),
-            'vat': data.get('vat'),                    # Tax ID
-            'company_registry': data.get('company_registry'),  # Company ID
-            'street': data.get('street'),
-            'city': data.get('city'),
-            'zip': data.get('zip'),
-            'state': data.get('state')
-        }
         
         # Only add fields that exist and have values
         for field, value in field_mapping.items():
             if value and field in available_fields:
                 company_data[field] = value
-        
+
         # Handle country (if country_code provided and country_id field exists)
         if data.get('country_code') and 'country_id' in available_fields:
             country_id = get_country_id(models, db, uid, password, data['country_code'])
@@ -147,7 +106,7 @@ def main(data):
                     'success': False,
                     'error': f'Country code "{data["country_code"]}" not found'
                 }
-        
+
         # Handle currency (if currency_code provided and currency_id field exists)
         currency_id = None
         currency_warning = None
@@ -157,7 +116,7 @@ def main(data):
                 company_data['currency_id'] = currency_id
             else:
                 currency_warning = f'Currency code "{data["currency_code"]}" not found - company created without specific currency'
-        
+
         # Handle state (if state provided and state_id field exists)
         if data.get('state') and company_data.get('country_id') and 'state_id' in available_fields:
             state_id = get_state_id(models, db, uid, password, data['state'], company_data['country_id'])
@@ -179,16 +138,28 @@ def main(data):
                 'error': 'Failed to create company in Odoo'
             }
 
-        # Initiate Chart of Accounts installation (this will continue in background)
+        print(f"Company created successfully with ID: {company_id}")
+
+        # Initiate Chart of Accounts installation
         chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, data.get('country_code'))
         print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
 
-        # Create essential journals immediately
+        # Wait for Chart of Accounts to be ready before creating journals
+        print("Waiting for Chart of Accounts installation to complete...")
+        chart_ready = wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120)
+        
+        if not chart_ready['success']:
+            print(f"Warning: {chart_ready['message']}")
+            # Continue anyway, but note that some journals might not be created
+        else:
+            print("Chart of Accounts is ready!")
+
+        # Create essential journals after Chart of Accounts is ready
         journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         if journals_result['success']:
-            print("Essential journals created successfully")
+            print(f"Successfully created {len(journals_result['journals'])} journals")
         else:
-            print(f"Journal creation status: {journals_result.get('error', 'In progress')}")
+            print(f"Journal creation issue: {journals_result.get('error', 'Unknown error')}")
 
         # Get created company information using only safe/available fields
         safe_read_fields = [
@@ -211,10 +182,13 @@ def main(data):
             'message': 'Company created successfully'
         }
         
+        # Add chart of accounts status
+        response['chart_of_accounts_status'] = chart_ready['message']
+        
         # Add journal creation status to response
         if journals_result['success']:
             response['journals_created'] = journals_result['journals']
-            response['message'] += ' with essential journals'
+            response['message'] += f' with {len(journals_result["journals"])} essential journals'
         else:
             response['journal_warning'] = journals_result['error']
         
@@ -258,6 +232,94 @@ def main(data):
             'error': f'Unexpected error: {str(e)}'
         }
 
+def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120, check_interval=5):
+    """
+    Wait for Chart of Accounts to be installed by checking if accounts exist
+    
+    Args:
+        models: Odoo models proxy
+        db: Database name
+        uid: User ID
+        password: API password
+        company_id: Company ID to check
+        max_wait_time: Maximum time to wait in seconds (default: 120)
+        check_interval: Time between checks in seconds (default: 5)
+    
+    Returns:
+        dict: Success status and message
+    """
+    start_time = time.time()
+    min_accounts_required = 10  # Minimum number of accounts that should exist in a proper chart
+    
+    print(f"Waiting for Chart of Accounts installation (max {max_wait_time} seconds)...")
+    
+    while time.time() - start_time < max_wait_time:
+        try:
+            # Check if accounts exist for this company
+            account_count = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_count',
+                [[('company_id', '=', company_id)]]
+            )
+            
+            print(f"Found {account_count} accounts for company {company_id}")
+            
+            if account_count >= min_accounts_required:
+                # Additional check: verify we have essential account types
+                essential_account_types = ['asset_receivable', 'liability_payable', 'income', 'expense']
+                accounts_with_types = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search_read',
+                    [[('company_id', '=', company_id), ('account_type', 'in', essential_account_types)]],
+                    {'fields': ['id', 'account_type'], 'limit': len(essential_account_types)}
+                )
+                
+                found_types = set(acc['account_type'] for acc in accounts_with_types)
+                missing_types = set(essential_account_types) - found_types
+                
+                if not missing_types:
+                    elapsed_time = int(time.time() - start_time)
+                    return {
+                        'success': True,
+                        'message': f'Chart of Accounts ready with {account_count} accounts (took {elapsed_time}s)',
+                        'accounts_count': account_count
+                    }
+                else:
+                    print(f"Waiting for essential account types: {missing_types}")
+            
+            # Wait before next check
+            time.sleep(check_interval)
+            
+        except Exception as e:
+            print(f"Error checking accounts: {str(e)}")
+            time.sleep(check_interval)
+    
+    # Timeout reached
+    elapsed_time = int(time.time() - start_time)
+    try:
+        final_account_count = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search_count',
+            [[('company_id', '=', company_id)]]
+        )
+    except:
+        final_account_count = 0
+    
+    if final_account_count > 0:
+        return {
+            'success': True,
+            'message': f'Chart of Accounts partially ready with {final_account_count} accounts after {elapsed_time}s (may still be installing)',
+            'accounts_count': final_account_count,
+            'timeout_reached': True
+        }
+    else:
+        return {
+            'success': False,
+            'message': f'Chart of Accounts not ready after {elapsed_time}s - manual setup may be required',
+            'accounts_count': 0,
+            'timeout_reached': True
+        }
+
 def create_essential_journals(models, db, uid, password, company_id, currency_id=None):
     """
     Create essential journals for a new company (Sales, Purchase, Bank, Cash, Miscellaneous)
@@ -294,7 +356,6 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'MISC',
                 'type': 'general',
                 'company_id': company_id,
-                'company_id': company_id,
             }
         ]
         
@@ -330,10 +391,13 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                         'code': journal_data['code'],
                         'type': journal_data['type']
                     })
-                    print(f"Created journal: {journal_data['name']} (ID: {journal_id})")
+                    print(f"Created journal: {journal_data['name']} ({journal_data['code']}) - ID: {journal_id}")
                     
             except Exception as journal_error:
                 print(f"Failed to create journal {journal_data['name']}: {str(journal_error)}")
+                # For sales/purchase journals, this might be due to missing accounts
+                if journal_data['type'] in ['sale', 'purchase']:
+                    print(f"  -> This is likely due to Chart of Accounts not being fully ready")
                 continue
         
         if created_journals:
@@ -345,7 +409,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
         else:
             return {
                 'success': False,
-                'error': 'No journals were created - they may already exist or there was an error'
+                'error': 'No journals were created - they may already exist or Chart of Accounts is not ready'
             }
             
     except Exception as e:
@@ -390,6 +454,8 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
             return {'success': False, 'error': 'No chart of accounts template found'}
 
         template = templates[0]
+        print(f"Using chart template: {template['name']} (ID: {template['id']})")
+        
         # Attempt to initiate chart of accounts installation
         try:
             # Try the most reliable method first
@@ -645,11 +711,22 @@ def create_journals_for_existing_company(company_id):
         company_info = company_info[0]
         currency_id = company_info.get('currency_id')[0] if company_info.get('currency_id') else None
         
+        # Wait for Chart of Accounts to be ready
+        print(f"Checking Chart of Accounts for company {company_id}...")
+        chart_ready = wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=60)
+        
+        if not chart_ready['success']:
+            return {
+                'success': False,
+                'error': f'Chart of Accounts not ready: {chart_ready["message"]}'
+            }
+        
         # Create journals
         result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         
         if result['success']:
             result['company_name'] = company_info['name']
+            result['chart_status'] = chart_ready['message']
             
         return result
         
