@@ -367,23 +367,47 @@ def main(data):
                 'price_unit': subtotal,  # Use exact subtotal as price_unit
             }
             
-            # Only try to apply tax if we have a tax amount AND can find exact matching rate
+            # ALWAYS apply tax to ensure tax amount shows up - use multiple fallback strategies
             tax_applied = False
             if tax_amount > 0 and subtotal > 0:
                 effective_tax_rate = round((tax_amount / subtotal) * 100, 2)
-                tax_id = find_tax_by_rate(effective_tax_rate, company_id)
                 
+                # Strategy 1: Try exact tax rate
+                tax_id = find_tax_by_rate(effective_tax_rate, company_id)
                 if tax_id:
-                    # Test if this tax rate will give us the exact amount we want
-                    test_tax = subtotal * (effective_tax_rate / 100.0)
-                    if abs(test_tax - tax_amount) < 0.01:  # Within 1 cent
+                    line_item['tax_ids'] = [(6, 0, [tax_id])]
+                    tax_applied = True
+                    print(f"Applied exact {effective_tax_rate}% tax rate")
+                
+                # Strategy 2: Try closest common tax rates if exact not found
+                if not tax_applied:
+                    common_rates = [19, 20, 21, 23, 24, 25, 18, 17, 16, 15, 10, 5]  # Common tax rates
+                    closest_rate = min(common_rates, key=lambda x: abs(x - effective_tax_rate))
+                    
+                    tax_id = find_tax_by_rate(closest_rate, company_id)
+                    if tax_id:
                         line_item['tax_ids'] = [(6, 0, [tax_id])]
                         tax_applied = True
-                        print(f"Applied exact {effective_tax_rate}% tax rate")
+                        print(f"Applied closest available tax rate {closest_rate}% (target was {effective_tax_rate}%)")
+                
+                # Strategy 3: Try any available purchase tax if still no tax applied
+                if not tax_applied:
+                    try:
+                        any_tax_ids = models.execute_kw(
+                            db, uid, password,
+                            'account.tax', 'search',
+                            [[('type_tax_use', '=', 'purchase'), ('amount', '>', 0)]],
+                            {'limit': 1}
+                        )
+                        if any_tax_ids:
+                            line_item['tax_ids'] = [(6, 0, [any_tax_ids[0]])]
+                            tax_applied = True
+                            print(f"Applied fallback tax (any available purchase tax)")
+                    except:
+                        pass
             
-            # If no exact tax match, create line without tax - we'll override amounts manually
             if not tax_applied and tax_amount > 0:
-                print(f"No exact tax rate found - will use manual amount override to ensure correct totals")
+                print(f"WARNING: Could not apply any tax - manual override may not work reliably")
             
             invoice_line_ids.append((0, 0, line_item))
         
