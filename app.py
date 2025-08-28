@@ -24,7 +24,7 @@ try:
     import createtransaction
     import getDetailsByCompany
     import updateAuditStatus
-    import openaipdf
+    import openaipdf as pdf_processor
 
     
 except ImportError as e:
@@ -636,7 +636,7 @@ def openaipdf_function():
         # Extract filename from headers or use default
         filename = request.headers.get('X-Filename', 'uploaded.pdf')
         
-        result = openaipdf.main({
+        result = pdf_processor.main({
             'pdf_content': pdf_content,
             'filename': filename
         })
