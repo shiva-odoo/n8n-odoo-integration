@@ -273,7 +273,7 @@ def main(data):
         if payment_reference and payment_reference != 'none':
             bill_data['payment_reference'] = payment_reference
 
-        # Handle line items
+        # Handle line items - FIXED VERSION
         invoice_line_ids = []
         
         if 'line_items' in data and data['line_items']:
@@ -287,7 +287,26 @@ def main(data):
                 
                 try:
                     quantity = float(item.get('quantity', 1.0))
-                    price_unit = float(item.get('price_unit', 0.0))
+                    
+                    # FIXED: Calculate correct tax-excluded price_unit
+                    # If subtotal is provided globally and there's only one line item, use subtotal/quantity
+                    if len(data['line_items']) == 1 and data.get('subtotal') is not None:
+                        # Use the global subtotal to calculate the correct tax-excluded price
+                        price_unit = float(data['subtotal']) / quantity
+                    else:
+                        # For multiple line items, use the provided price_unit (assuming it's tax-excluded)
+                        # Or calculate from line_total if available
+                        if item.get('line_total') and item.get('tax_rate'):
+                            # If line_total is provided, calculate tax-excluded price
+                            line_total_with_tax = float(item['line_total'])
+                            tax_rate = float(item['tax_rate'])
+                            # Calculate tax-excluded amount: total / (1 + tax_rate/100)
+                            line_total_without_tax = line_total_with_tax / (1 + tax_rate/100)
+                            price_unit = line_total_without_tax / quantity
+                        else:
+                            # Fallback to provided price_unit
+                            price_unit = float(item.get('price_unit', 0.0))
+                    
                     tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else None
                 except (ValueError, TypeError):
                     return {
@@ -298,7 +317,7 @@ def main(data):
                 line_item = {
                     'name': item['description'],
                     'quantity': quantity,
-                    'price_unit': price_unit,
+                    'price_unit': price_unit,  # Now using the correct tax-excluded price
                 }
                 
                 # Apply tax if tax_rate is provided
@@ -315,7 +334,11 @@ def main(data):
         elif data.get('description') and data.get('amount'):
             # Single line item (backward compatibility)
             try:
-                amount = float(data['amount'])
+                # FIXED: Use subtotal if available, otherwise use amount
+                if data.get('subtotal') is not None:
+                    amount = float(data['subtotal'])  # Use tax-excluded amount
+                else:
+                    amount = float(data['amount'])
             except (ValueError, TypeError):
                 return {
                     'success': False,
