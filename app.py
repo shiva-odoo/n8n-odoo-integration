@@ -624,7 +624,7 @@ def create_company():
         return jsonify({'success': False, 'error': str(e)}), 500
     
 @app.route('/api/openaipdf', methods=['POST'])
-def openaipdf():
+def openaipdf_function():
     """openaipdf - handles binary PDF data from n8n"""
     try:
         # Get binary data from n8n

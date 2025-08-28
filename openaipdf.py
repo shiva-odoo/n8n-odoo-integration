@@ -1,3 +1,9 @@
+from flask import request, jsonify
+import io
+import PyPDF2
+import os
+from werkzeug.utils import secure_filename
+
 def main(data):
     """Main function to process PDF binary data"""
     pdf_content = data.get('pdf_content')
