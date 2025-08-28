@@ -300,15 +300,19 @@ def main(data):
         
         # Handle line items based on chosen approach
         invoice_line_ids = []
+        used_description = None  # Track the description that was actually used
         
         if use_individual_items and 'line_items' in data and data['line_items']:
             # INDIVIDUAL LINE ITEMS APPROACH
+            descriptions = []
             for item in data['line_items']:
                 if not item.get('description'):
                     return {
                         'success': False,
                         'error': 'Each line item must have a description'
                     }
+                
+                descriptions.append(item['description'])
                 
                 try:
                     quantity = float(item.get('quantity', 1.0))
@@ -336,6 +340,9 @@ def main(data):
                         print(f"Warning: No tax found for rate {tax_rate}%, continuing without tax")
                 
                 invoice_line_ids.append((0, 0, line_item))
+            
+            # For individual items, create combined description from all items
+            used_description = "; ".join(descriptions)
         
         elif (not use_individual_items and provided_subtotal is not None and 
               provided_total_amount is not None):
@@ -347,6 +354,8 @@ def main(data):
                 description = data['description']
             else:
                 description = "Telecommunications services"
+            
+            used_description = description  # Track the consolidated description
             
             # Create single line item with subtotal as price_unit (tax-excluded amount)
             subtotal = float(provided_subtotal)
@@ -391,6 +400,8 @@ def main(data):
                     'success': False,
                     'error': 'amount must be a valid number'
                 }
+            
+            used_description = data['description']  # Track the single description
             
             line_item = {
                 'name': data['description'],
@@ -519,6 +530,7 @@ def main(data):
             'due_date': due_date,
             'payment_reference': payment_reference if payment_reference != 'none' else None,
             'line_items': data.get('line_items') if use_individual_items else None,
+            'description': used_description,
             'processing_method': 'individual_items' if use_individual_items else 'consolidated',
             'message': 'Vendor bill created and posted successfully'
         }
