@@ -300,7 +300,7 @@ def main(data):
         
         # Handle line items based on chosen approach
         invoice_line_ids = []
-        used_description = None  # Track the description that was actually used
+        used_description = "Various services"  # Default description, will be updated based on approach
         
         if use_individual_items and 'line_items' in data and data['line_items']:
             # INDIVIDUAL LINE ITEMS APPROACH
@@ -357,58 +357,18 @@ def main(data):
             
             used_description = description  # Track the consolidated description
             
-            # Create single line item with subtotal as price_unit (tax-excluded amount)
+            # Create single line item with subtotal as price_unit - NO TAX APPLIED
+            # We'll set the tax amount manually to ensure exact amounts
             subtotal = float(provided_subtotal)
-            tax_amount = float(provided_tax_amount) if provided_tax_amount is not None else 0
             
             line_item = {
                 'name': description,
                 'quantity': 1.0,
                 'price_unit': subtotal,  # Use exact subtotal as price_unit
+                # Deliberately NOT applying any tax_ids - we'll override amounts manually
             }
             
-            # ALWAYS apply tax to ensure tax amount shows up - use multiple fallback strategies
-            tax_applied = False
-            if tax_amount > 0 and subtotal > 0:
-                effective_tax_rate = round((tax_amount / subtotal) * 100, 2)
-                
-                # Strategy 1: Try exact tax rate
-                tax_id = find_tax_by_rate(effective_tax_rate, company_id)
-                if tax_id:
-                    line_item['tax_ids'] = [(6, 0, [tax_id])]
-                    tax_applied = True
-                    print(f"Applied exact {effective_tax_rate}% tax rate")
-                
-                # Strategy 2: Try closest common tax rates if exact not found
-                if not tax_applied:
-                    common_rates = [19, 20, 21, 23, 24, 25, 18, 17, 16, 15, 10, 5]  # Common tax rates
-                    closest_rate = min(common_rates, key=lambda x: abs(x - effective_tax_rate))
-                    
-                    tax_id = find_tax_by_rate(closest_rate, company_id)
-                    if tax_id:
-                        line_item['tax_ids'] = [(6, 0, [tax_id])]
-                        tax_applied = True
-                        print(f"Applied closest available tax rate {closest_rate}% (target was {effective_tax_rate}%)")
-                
-                # Strategy 3: Try any available purchase tax if still no tax applied
-                if not tax_applied:
-                    try:
-                        any_tax_ids = models.execute_kw(
-                            db, uid, password,
-                            'account.tax', 'search',
-                            [[('type_tax_use', '=', 'purchase'), ('amount', '>', 0)]],
-                            {'limit': 1}
-                        )
-                        if any_tax_ids:
-                            line_item['tax_ids'] = [(6, 0, [any_tax_ids[0]])]
-                            tax_applied = True
-                            print(f"Applied fallback tax (any available purchase tax)")
-                    except:
-                        pass
-            
-            if not tax_applied and tax_amount > 0:
-                print(f"WARNING: Could not apply any tax - manual override may not work reliably")
-            
+            print(f"Consolidated approach: Creating single line item without tax (will override amounts manually)")
             invoice_line_ids.append((0, 0, line_item))
         
         elif data.get('description') and data.get('amount'):
