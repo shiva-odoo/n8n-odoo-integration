@@ -63,6 +63,55 @@ def check_duplicate_bill(models, db, uid, password, vendor_id, invoice_date, tot
         print(f"Error checking for duplicates: {str(e)}")
         return None
 
+def calculate_line_items_totals(line_items):
+    """
+    Calculate subtotal, tax, and total from line items
+    Returns (subtotal, tax_amount, total)
+    """
+    subtotal = 0.0
+    tax_amount = 0.0
+    
+    for item in line_items:
+        try:
+            quantity = float(item.get('quantity', 1.0))
+            price_unit = float(item.get('price_unit', 0.0))
+            tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else 0.0
+            
+            line_subtotal = quantity * price_unit
+            line_tax = line_subtotal * (tax_rate / 100.0)
+            
+            subtotal += line_subtotal
+            tax_amount += line_tax
+        except (ValueError, TypeError):
+            continue
+    
+    total = subtotal + tax_amount
+    return subtotal, tax_amount, total
+
+def create_combined_description(line_items):
+    """
+    Create a combined description from multiple line items
+    """
+    if not line_items or len(line_items) == 0:
+        return "Various services"
+    
+    if len(line_items) == 1:
+        return line_items[0].get('description', 'Service')
+    
+    # For multiple items, create a summary
+    descriptions = []
+    for item in line_items[:3]:  # Show first 3 items
+        desc = item.get('description', 'Service')
+        if len(desc) > 50:  # Truncate long descriptions
+            desc = desc[:47] + "..."
+        descriptions.append(desc)
+    
+    result = "; ".join(descriptions)
+    if len(line_items) > 3:
+        result += f" (and {len(line_items) - 3} more)"
+    
+    return result
+
 def calculate_total_amount(data):
     """
     Calculate the expected total amount from the data
@@ -70,17 +119,7 @@ def calculate_total_amount(data):
     if 'total_amount' in data:
         return float(data['total_amount'])
     elif 'line_items' in data and data['line_items']:
-        # Calculate from line items
-        total = 0.0
-        for item in data['line_items']:
-            quantity = float(item.get('quantity', 1.0))
-            price_unit = float(item.get('price_unit', 0.0))
-            tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else 0.0
-            
-            line_subtotal = quantity * price_unit
-            line_tax = line_subtotal * (tax_rate / 100.0)
-            total += line_subtotal + line_tax
-        
+        _, _, total = calculate_line_items_totals(data['line_items'])
         return total
     elif 'amount' in data:
         return float(data['amount'])
@@ -89,42 +128,9 @@ def calculate_total_amount(data):
 
 def main(data):
     """
-    Create vendor bill from HTTP request data
-    
-    Expected data format:
-    {
-        "vendor_id": 123,
-        "invoice_date": "2025-01-15",  # optional, defaults to today
-        "due_date": "2025-02-15",      # optional, defaults to today if null/empty
-        "vendor_ref": "INV-001",       # optional
-        "description": "Office supplies",
-        "amount": 1500.50
-    }
-    
-    Or with multiple line items:
-    {
-        "vendor_id": 123,
-        "invoice_date": "2025-01-15",
-        "due_date": "2025-02-15",
-        "vendor_ref": "INV-001",
-        "line_items": [
-            {
-                "description": "Office supplies",
-                "quantity": 2,
-                "price_unit": 750.25,
-                "tax_rate": 19
-            },
-            {
-                "description": "Software license",
-                "quantity": 1,
-                "price_unit": 500.00,
-                "tax_rate": 19
-            }
-        ],
-        "subtotal": 1250.50,
-        "tax_amount": 237.60,
-        "total_amount": 1488.10
-    }
+    Create vendor bill from HTTP request data with hybrid approach:
+    - Try individual line items first
+    - Fall back to consolidated approach if totals don't match
     """
     
     # Validate required fields
@@ -133,11 +139,12 @@ def main(data):
             'success': False,
             'error': 'vendor_id is required'
         }
+    
     # Accept extra fields
     payment_reference = data.get('payment_reference')
-    subtotal = data.get('subtotal')
-    tax_amount = data.get('tax_amount')
-    total_amount = data.get('total_amount')
+    provided_subtotal = data.get('subtotal')
+    provided_tax_amount = data.get('tax_amount')
+    provided_total_amount = data.get('total_amount')
     
     # Odoo connection details  
     url = os.getenv("ODOO_URL")
@@ -256,7 +263,7 @@ def main(data):
             'move_type': 'in_invoice',
             'partner_id': vendor_id,
             'invoice_date': invoice_date,
-            'invoice_date_due': due_date,  # Add due date to bill data
+            'invoice_date_due': due_date,
         }
         
         # Add vendor reference if provided
@@ -273,11 +280,29 @@ def main(data):
         if payment_reference and payment_reference != 'none':
             bill_data['payment_reference'] = payment_reference
 
-        # Handle line items
+        # HYBRID APPROACH: Check if line items match provided totals
+        use_individual_items = True
+        tolerance = 0.50  # Allow 50 cents tolerance for rounding differences
+        
+        if ('line_items' in data and data['line_items'] and 
+            provided_subtotal is not None and provided_total_amount is not None):
+            
+            # Calculate what the totals would be from line items
+            calc_subtotal, calc_tax, calc_total = calculate_line_items_totals(data['line_items'])
+            
+            # Check if calculated totals match provided totals within tolerance
+            subtotal_diff = abs(calc_subtotal - float(provided_subtotal))
+            total_diff = abs(calc_total - float(provided_total_amount))
+            
+            if subtotal_diff > tolerance or total_diff > tolerance:
+                print(f"Line item totals don't match provided amounts (diff: subtotal={subtotal_diff:.2f}, total={total_diff:.2f}). Using consolidated approach.")
+                use_individual_items = False
+        
+        # Handle line items based on chosen approach
         invoice_line_ids = []
         
-        if 'line_items' in data and data['line_items']:
-            # Multiple line items
+        if use_individual_items and 'line_items' in data and data['line_items']:
+            # INDIVIDUAL LINE ITEMS APPROACH
             for item in data['line_items']:
                 if not item.get('description'):
                     return {
@@ -312,10 +337,55 @@ def main(data):
                 
                 invoice_line_ids.append((0, 0, line_item))
         
+        elif (not use_individual_items and provided_subtotal is not None and 
+              provided_total_amount is not None):
+            # CONSOLIDATED APPROACH - Single line item that SATISFIES exact amounts
+            
+            if data.get('line_items'):
+                description = create_combined_description(data['line_items'])
+            elif data.get('description'):
+                description = data['description']
+            else:
+                description = "Telecommunications services"
+            
+            # Create single line item with subtotal as price_unit (tax-excluded amount)
+            subtotal = float(provided_subtotal)
+            tax_amount = float(provided_tax_amount) if provided_tax_amount is not None else 0
+            
+            line_item = {
+                'name': description,
+                'quantity': 1.0,
+                'price_unit': subtotal,  # Use exact subtotal as price_unit
+            }
+            
+            # Only try to apply tax if we have a tax amount AND can find exact matching rate
+            tax_applied = False
+            if tax_amount > 0 and subtotal > 0:
+                effective_tax_rate = round((tax_amount / subtotal) * 100, 2)
+                tax_id = find_tax_by_rate(effective_tax_rate, company_id)
+                
+                if tax_id:
+                    # Test if this tax rate will give us the exact amount we want
+                    test_tax = subtotal * (effective_tax_rate / 100.0)
+                    if abs(test_tax - tax_amount) < 0.01:  # Within 1 cent
+                        line_item['tax_ids'] = [(6, 0, [tax_id])]
+                        tax_applied = True
+                        print(f"Applied exact {effective_tax_rate}% tax rate")
+            
+            # If no exact tax match, create line without tax - we'll override amounts manually
+            if not tax_applied and tax_amount > 0:
+                print(f"No exact tax rate found - will use manual amount override to ensure correct totals")
+            
+            invoice_line_ids.append((0, 0, line_item))
+        
         elif data.get('description') and data.get('amount'):
-            # Single line item (backward compatibility)
+            # BACKWARD COMPATIBILITY - Single line item
             try:
-                amount = float(data['amount'])
+                # Use subtotal if available, otherwise use amount
+                if provided_subtotal is not None:
+                    amount = float(provided_subtotal)
+                else:
+                    amount = float(data['amount'])
             except (ValueError, TypeError):
                 return {
                     'success': False,
@@ -353,39 +423,26 @@ def main(data):
                 'error': 'Failed to create bill in Odoo'
             }
         
-        # Update with explicit amounts if provided
-        update_data = {}
-        
-        # Set explicit amounts if provided
-        if subtotal is not None:
+        # For consolidated approach, ALWAYS set exact amounts to ensure they match input
+        if not use_individual_items and provided_subtotal is not None and provided_total_amount is not None:
             try:
-                update_data['amount_untaxed'] = float(subtotal)
-            except (ValueError, TypeError):
-                pass
-        
-        if tax_amount is not None:
-            try:
-                update_data['amount_tax'] = float(tax_amount)
-            except (ValueError, TypeError):
-                pass
-        
-        if total_amount is not None:
-            try:
-                update_data['amount_total'] = float(total_amount)
-            except (ValueError, TypeError):
-                pass
-        
-        # Update the bill with explicit amounts if any were provided
-        if update_data:
-            try:
+                update_data = {
+                    'amount_untaxed': float(provided_subtotal),
+                    'amount_total': float(provided_total_amount)
+                }
+                if provided_tax_amount is not None:
+                    update_data['amount_tax'] = float(provided_tax_amount)
+                
+                # Multiple attempts to set amounts - before and after posting
                 models.execute_kw(
                     db, uid, password,
                     'account.move', 'write',
                     [[bill_id], update_data]
                 )
+                print(f"Set exact amounts: subtotal={provided_subtotal}, tax={provided_tax_amount}, total={provided_total_amount}")
             except Exception as e:
-                # If we can't set the amounts directly, continue with posting
-                print(f"Warning: Could not set explicit amounts: {str(e)}")
+                print(f"Warning: Could not set explicit amounts before posting: {str(e)}")
+                # Continue - we'll try again after posting
         
         # POST THE BILL - Move from draft to posted state
         try:
@@ -415,18 +472,31 @@ def main(data):
                 'error': f'Bill created but failed to post: {str(e)}'
             }
         
-        # If posting succeeded but we need to update amounts after posting, do it now
-        if update_data:
-            try:
-                # Try to update amounts even after posting (some Odoo configurations allow this)
-                models.execute_kw(
-                    db, uid, password,
-                    'account.move', 'write',
-                    [[bill_id], update_data]
-                )
-            except Exception as e:
-                # This is expected in some cases, amounts might be computed automatically
-                pass
+        # For consolidated approach, FORCE exact amounts after posting to guarantee correctness
+        if not use_individual_items and provided_subtotal is not None and provided_total_amount is not None:
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    update_data = {
+                        'amount_untaxed': float(provided_subtotal),
+                        'amount_total': float(provided_total_amount)
+                    }
+                    if provided_tax_amount is not None:
+                        update_data['amount_tax'] = float(provided_tax_amount)
+                    
+                    models.execute_kw(
+                        db, uid, password,
+                        'account.move', 'write',
+                        [[bill_id], update_data]
+                    )
+                    print(f"Successfully enforced exact amounts on attempt {attempt + 1}")
+                    break
+                except Exception as e:
+                    if attempt == max_attempts - 1:
+                        print(f"Warning: Could not enforce exact amounts after {max_attempts} attempts: {str(e)}")
+                    else:
+                        print(f"Attempt {attempt + 1} to set amounts failed, retrying...")
+                        continue
         
         # Get final bill information after posting
         bill_info = models.execute_kw(
@@ -448,7 +518,8 @@ def main(data):
             'invoice_date': invoice_date,
             'due_date': due_date,
             'payment_reference': payment_reference if payment_reference != 'none' else None,
-            'line_items': data.get('line_items'),
+            'line_items': data.get('line_items') if use_individual_items else None,
+            'processing_method': 'individual_items' if use_individual_items else 'consolidated',
             'message': 'Vendor bill created and posted successfully'
         }
         
