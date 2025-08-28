@@ -1,32 +1,10 @@
-from flask import request, jsonify
-import io
-import PyPDF2
-import os
-from werkzeug.utils import secure_filename
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() == 'pdf'
-
 def main(data):
-    """Main function to process PDF file"""
-    file = data.get('file')
+    """Main function to process PDF binary data"""
+    pdf_content = data.get('pdf_content')
+    filename = data.get('filename', 'uploaded.pdf')
     
-    if not file:
-        return {'success': False, 'error': 'No file provided'}
-    
-    # Check if file was selected
-    if file.filename == '':
-        return {'success': False, 'error': 'No file selected'}
-    
-    # Validate file type (more robust check)
-    if not allowed_file(file.filename):
-        return {'success': False, 'error': 'Only PDF files allowed'}
-    
-    # Read file content
-    pdf_content = file.read()
-    
-    # Reset file pointer for potential re-reading
-    file.seek(0)
+    if not pdf_content:
+        return {'success': False, 'error': 'No file data provided'}
     
     # Process PDF (example: extract text)
     try:
@@ -44,8 +22,8 @@ def main(data):
         os.makedirs(upload_folder, exist_ok=True)
         
         # Secure the filename
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(upload_folder, filename)
+        safe_filename = secure_filename(filename)
+        filepath = os.path.join(upload_folder, safe_filename)
         
         with open(filepath, "wb") as f:
             f.write(pdf_content)
@@ -55,7 +33,7 @@ def main(data):
     return {
         'success': True,
         'data': {
-            "filename": file.filename,
+            "filename": filename,
             "size": len(pdf_content),
             "text_preview": text[:500],  # First 500 chars
             "pages": len(pdf_reader.pages),

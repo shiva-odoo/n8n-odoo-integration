@@ -625,11 +625,27 @@ def create_company():
     
 @app.route('/api/openaipdf', methods=['POST'])
 def openaipdf():
-    """openaipdf"""
+    """openaipdf - handles binary PDF data from n8n"""
     try:
-        data = request.files['file'] or {}
-        result = openaipdf.main({'file': data})
-        return jsonify(result)
+        # Get binary data from n8n
+        pdf_content = request.get_data()
+        
+        if not pdf_content:
+            return jsonify({'success': False, 'error': 'No file data received'}), 400
+        
+        # Extract filename from headers or use default
+        filename = request.headers.get('X-Filename', 'uploaded.pdf')
+        
+        result = openaipdf.main({
+            'pdf_content': pdf_content,
+            'filename': filename
+        })
+        
+        if result['success']:
+            return jsonify(result['data'])
+        else:
+            return jsonify(result), 400
+            
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
