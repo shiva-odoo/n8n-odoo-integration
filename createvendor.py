@@ -69,6 +69,16 @@ def check_vendor_exists_comprehensive(models, db, uid, password, data, company_i
         print(f"Error checking for vendor duplicates: {str(e)}")
         return None
 
+def is_valid_value(value):
+    """
+    Check if a value is valid (not None, not empty string, not "none", not "null")
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.lower() not in ['none', 'null', '']
+    return bool(value)
+
 def main(data):
     """
     Create vendor from HTTP request data
@@ -122,9 +132,21 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
+        # Handle company_id conversion from string to int if needed
+        company_id = None
+        if data.get('company_id'):
+            try:
+                company_id = int(data['company_id'])
+                data['company_id'] = company_id  # Update the data dict for later use
+            except (ValueError, TypeError):
+                return {
+                    'success': False,
+                    'error': 'company_id must be a valid integer'
+                }
+        
         # Check if vendor already exists using comprehensive method
         existing_vendor = check_vendor_exists_comprehensive(
-            models, db, uid, password, data, data.get('company_id')
+            models, db, uid, password, data, company_id
         )
         
         if existing_vendor:
@@ -135,7 +157,7 @@ def main(data):
                 'success': True,
                 'vendor_id': existing_vendor,
                 'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
-                'company_id': data.get('company_id'),
+                'company_id': company_id,
                 'message': 'Vendor already exists - no duplicate created',
                 'existing': True,
                 'vendor_details': vendor_info,
@@ -170,7 +192,7 @@ def main(data):
             'success': True,
             'vendor_id': vendor_id,
             'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
-            'company_id': data.get('company_id'),
+            'company_id': company_id,
             'message': 'Vendor created successfully',
             'existing': False,
             'vendor_details': vendor_info,
@@ -204,7 +226,7 @@ def create(data):
 def is_basic_vendor(data):
     """Determine if this should be a basic or comprehensive vendor"""
     comprehensive_fields = ['vat', 'street', 'city', 'country_code', 'payment_terms', 'currency_code']
-    return not any(data.get(field) for field in comprehensive_fields)
+    return not any(is_valid_value(data.get(field)) for field in comprehensive_fields)
 
 def check_vendor_exists(models, db, uid, password, vat=None, name=None, email=None, company_id=None):
     """Legacy function - kept for backward compatibility"""
@@ -250,12 +272,12 @@ def create_vendor_basic(models, db, uid, password, data):
         'customer_rank': 0,
     }
     
-    # Add optional basic fields
-    if data.get('email'):
+    # Add optional basic fields, but only if they have valid values
+    if is_valid_value(data.get('email')):
         vendor_data['email'] = data['email']
-    if data.get('phone'):
+    if is_valid_value(data.get('phone')):
         vendor_data['phone'] = data['phone']
-    if data.get('website'):
+    if is_valid_value(data.get('website')):
         vendor_data['website'] = data['website']
 
     # Add company_id if provided (for multi-company setup)
@@ -283,10 +305,10 @@ def create_vendor_comprehensive(models, db, uid, password, data):
         'customer_rank': 0,
     }
     
-    # Add optional fields
+    # Add optional fields, but only if they have valid values (not "none", "null", empty, etc.)
     optional_fields = ['vat', 'email', 'phone', 'website', 'street', 'city', 'zip']
     for field in optional_fields:
-        if data.get(field):
+        if is_valid_value(data.get(field)):
             vendor_data[field] = data[field]
 
     # Add company_id if provided (for multi-company setup)

@@ -62,6 +62,16 @@ def check_customer_exists_comprehensive(models, db, uid, password, data, company
         print(f"Error checking for customer duplicates: {str(e)}")
         return None
 
+def is_valid_value(value):
+    """
+    Check if a value is valid (not None, not empty string, not "none", not "null")
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.lower() not in ['none', 'null', '']
+    return bool(value)
+
 def main(data):
     """
     Create customer from HTTP request data
@@ -113,9 +123,20 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
+        # Handle company_id conversion from string to int if needed
+        company_id = None
+        if data.get('company_id'):
+            try:
+                company_id = int(data['company_id'])
+            except (ValueError, TypeError):
+                return {
+                    'success': False,
+                    'error': 'company_id must be a valid integer'
+                }
+        
         # Check if customer already exists using comprehensive method
         existing_customer_id = check_customer_exists_comprehensive(
-            models, db, uid, password, data, data.get('company_id')
+            models, db, uid, password, data, company_id
         )
         
         if existing_customer_id:
@@ -131,7 +152,7 @@ def main(data):
                 'success': True,
                 'customer_id': customer_info['id'],
                 'customer_name': customer_info['name'],
-                'company_id': data.get('company_id'),
+                'company_id': company_id,
                 'email': customer_info.get('email'),
                 'phone': customer_info.get('phone'),
                 'street': customer_info.get('street'),
@@ -161,13 +182,13 @@ def main(data):
         }
         
         # Add company_id if provided (for multi-company setup)
-        if data.get('company_id'):
-            customer_data['company_id'] = data['company_id']
+        if company_id:
+            customer_data['company_id'] = company_id
         
-        # Add optional fields
+        # Add optional fields, but only if they have valid values (not "none", "null", empty, etc.)
         optional_fields = ['email', 'phone', 'website', 'street', 'city', 'zip']
         for field in optional_fields:
-            if data.get(field):
+            if is_valid_value(data.get(field)):
                 customer_data[field] = data[field]
         
         # Handle country
@@ -206,7 +227,7 @@ def main(data):
             'success': True,
             'customer_id': customer_id,
             'customer_name': customer_info['name'],
-            'company_id': data.get('company_id'),
+            'company_id': company_id,
             'email': customer_info.get('email'),
             'phone': customer_info.get('phone'),
             'street': customer_info.get('street'),
