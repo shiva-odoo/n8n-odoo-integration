@@ -627,8 +627,8 @@ def create_company():
 def openaipdf():
     """openaipdf"""
     try:
-        data = request.json or {}
-        result = openaipdf.main(data)
+        data = request.files['file'] or {}
+        result = openaipdf.main({'file': data})
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
