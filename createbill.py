@@ -126,11 +126,132 @@ def calculate_total_amount(data):
     else:
         return 0.0
 
+def force_exact_amounts_consolidated(models, db, uid, password, bill_id, subtotal, tax_amount, total_amount):
+    """
+    Force exact amounts for consolidated bills using direct SQL or line manipulation
+    This ensures the amounts in Odoo exactly match the input regardless of computed field recalculation
+    """
+    max_attempts = 5
+    
+    for attempt in range(max_attempts):
+        try:
+            # Method 1: Try to update the invoice line directly to force correct amounts
+            # Get the invoice lines
+            line_ids = models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'search',
+                [[('move_id', '=', bill_id), ('exclude_from_invoice_tab', '=', False)]]
+            )
+            
+            if line_ids:
+                # Update the line to have exact price_unit that results in correct subtotal
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move.line', 'write',
+                    [line_ids, {'price_unit': float(subtotal)}]
+                )
+                
+                # Force recompute to see if this works
+                models.execute_kw(
+                    db, uid, password,
+                    'account.move', '_recompute_dynamic_lines',
+                    [[bill_id]]
+                )
+            
+            # Method 2: Direct field update on the move (this might work for some Odoo setups)
+            update_data = {
+                'amount_untaxed': float(subtotal),
+                'amount_total': float(total_amount)
+            }
+            if tax_amount is not None:
+                update_data['amount_tax'] = float(tax_amount)
+            
+            models.execute_kw(
+                db, uid, password,
+                'account.move', 'write',
+                [[bill_id], update_data]
+            )
+            
+            # Verify the amounts were set correctly
+            bill_amounts = models.execute_kw(
+                db, uid, password,
+                'account.move', 'read',
+                [[bill_id]], 
+                {'fields': ['amount_untaxed', 'amount_tax', 'amount_total']}
+            )[0]
+            
+            # Check if amounts are within acceptable tolerance (1 cent)
+            untaxed_diff = abs(float(bill_amounts['amount_untaxed']) - float(subtotal))
+            total_diff = abs(float(bill_amounts['amount_total']) - float(total_amount))
+            tax_diff = abs(float(bill_amounts['amount_tax']) - float(tax_amount)) if tax_amount else 0
+            
+            if untaxed_diff < 0.01 and total_diff < 0.01 and tax_diff < 0.01:
+                print(f"Successfully set exact amounts on attempt {attempt + 1}")
+                print(f"Final amounts: untaxed={bill_amounts['amount_untaxed']}, tax={bill_amounts['amount_tax']}, total={bill_amounts['amount_total']}")
+                return True
+            else:
+                print(f"Attempt {attempt + 1}: Amounts still don't match exactly (untaxed_diff={untaxed_diff:.4f}, tax_diff={tax_diff:.4f}, total_diff={total_diff:.4f})")
+        
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_attempts - 1:
+                print(f"Warning: Could not force exact amounts after {max_attempts} attempts")
+                return False
+    
+    return False
+
+def create_tax_line_for_exact_amount(models, db, uid, password, bill_id, tax_amount, company_id=None):
+    """
+    Create a separate tax line to ensure exact tax amount
+    This is used when we need precise tax control in consolidated bills
+    """
+    try:
+        # Create a manual tax line item 
+        tax_line_data = {
+            'move_id': bill_id,
+            'name': 'Tax Adjustment',
+            'account_id': None,  # Will be set automatically based on default tax account
+            'debit': 0.0,
+            'credit': 0.0,
+            'balance': float(tax_amount),
+            'exclude_from_invoice_tab': True,  # This makes it not show as a product line
+        }
+        
+        # Get default tax expense account
+        if company_id:
+            tax_account_search = [('company_id', '=', company_id), ('user_type_id.name', 'ilike', 'tax')]
+        else:
+            tax_account_search = [('user_type_id.name', 'ilike', 'tax')]
+        
+        tax_account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [tax_account_search],
+            {'limit': 1}
+        )
+        
+        if tax_account_ids:
+            tax_line_data['account_id'] = tax_account_ids[0]
+            
+            # Create the tax line
+            models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'create',
+                [tax_line_data]
+            )
+            return True
+    except Exception as e:
+        print(f"Could not create manual tax line: {str(e)}")
+        return False
+    
+    return False
+
 def main(data):
     """
     Create vendor bill from HTTP request data with hybrid approach:
     - Try individual line items first
     - Fall back to consolidated approach if totals don't match
+    - ENSURE EXACT AMOUNTS for consolidated approach
     """
     
     # Validate required fields
@@ -346,7 +467,7 @@ def main(data):
         
         elif (not use_individual_items and provided_subtotal is not None and 
               provided_total_amount is not None):
-            # CONSOLIDATED APPROACH - Single line item that SATISFIES exact amounts
+            # IMPROVED CONSOLIDATED APPROACH - GUARANTEE exact amounts
             
             if data.get('line_items'):
                 description = create_combined_description(data['line_items'])
@@ -355,21 +476,64 @@ def main(data):
             else:
                 description = "Telecommunications services"
             
-            used_description = description  # Track the consolidated description
+            used_description = description
             
-            # Create single line item with subtotal as price_unit - NO TAX APPLIED
-            # We'll set the tax amount manually to ensure exact amounts
             subtotal = float(provided_subtotal)
+            tax_amount = float(provided_tax_amount) if provided_tax_amount else 0.0
+            total_amount = float(provided_total_amount)
             
-            line_item = {
-                'name': description,
-                'quantity': 1.0,
-                'price_unit': subtotal,  # Use exact subtotal as price_unit
-                # Deliberately NOT applying any tax_ids - we'll override amounts manually
-            }
+            # Strategy: Create line items that will naturally result in exact amounts
+            if tax_amount > 0:
+                # Create two line items: one for the service, one for tax
+                
+                # Main service line (no tax applied)
+                service_line = {
+                    'name': description,
+                    'quantity': 1.0,
+                    'price_unit': subtotal,
+                    # No tax_ids - this is the pre-tax amount
+                }
+                invoice_line_ids.append((0, 0, service_line))
+                
+                # Tax line item (treated as separate expense)
+                tax_line = {
+                    'name': f"Tax - {description}",
+                    'quantity': 1.0,
+                    'price_unit': tax_amount,
+                    # Find appropriate tax expense account or use default expense account
+                }
+                
+                # Try to get a tax expense account
+                try:
+                    account_search_domain = [('code', 'like', '2%')]  # Common tax account pattern
+                    if company_id:
+                        account_search_domain.append(('company_id', '=', company_id))
+                    
+                    tax_accounts = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search',
+                        [account_search_domain],
+                        {'limit': 1}
+                    )
+                    
+                    if tax_accounts:
+                        tax_line['account_id'] = tax_accounts[0]
+                except:
+                    pass  # Will use default account
+                
+                invoice_line_ids.append((0, 0, tax_line))
+                
+                print(f"Consolidated approach: Created service line (${subtotal}) + tax line (${tax_amount}) = ${total_amount}")
             
-            print(f"Consolidated approach: Creating single line item without tax (will override amounts manually)")
-            invoice_line_ids.append((0, 0, line_item))
+            else:
+                # No tax, single line item with exact total as price
+                line_item = {
+                    'name': description,
+                    'quantity': 1.0,
+                    'price_unit': total_amount,  # Use total since no tax
+                }
+                invoice_line_ids.append((0, 0, line_item))
+                print(f"Consolidated approach: Created single line item for ${total_amount} (no tax)")
         
         elif data.get('description') and data.get('amount'):
             # BACKWARD COMPATIBILITY - Single line item
@@ -418,27 +582,6 @@ def main(data):
                 'error': 'Failed to create bill in Odoo'
             }
         
-        # For consolidated approach, ALWAYS set exact amounts to ensure they match input
-        if not use_individual_items and provided_subtotal is not None and provided_total_amount is not None:
-            try:
-                update_data = {
-                    'amount_untaxed': float(provided_subtotal),
-                    'amount_total': float(provided_total_amount)
-                }
-                if provided_tax_amount is not None:
-                    update_data['amount_tax'] = float(provided_tax_amount)
-                
-                # Multiple attempts to set amounts - before and after posting
-                models.execute_kw(
-                    db, uid, password,
-                    'account.move', 'write',
-                    [[bill_id], update_data]
-                )
-                print(f"Set exact amounts: subtotal={provided_subtotal}, tax={provided_tax_amount}, total={provided_total_amount}")
-            except Exception as e:
-                print(f"Warning: Could not set explicit amounts before posting: {str(e)}")
-                # Continue - we'll try again after posting
-        
         # POST THE BILL - Move from draft to posted state
         try:
             post_result = models.execute_kw(
@@ -467,39 +610,50 @@ def main(data):
                 'error': f'Bill created but failed to post: {str(e)}'
             }
         
-        # For consolidated approach, FORCE exact amounts after posting to guarantee correctness
-        if not use_individual_items and provided_subtotal is not None and provided_total_amount is not None:
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                try:
-                    update_data = {
-                        'amount_untaxed': float(provided_subtotal),
-                        'amount_total': float(provided_total_amount)
-                    }
-                    if provided_tax_amount is not None:
-                        update_data['amount_tax'] = float(provided_tax_amount)
-                    
-                    models.execute_kw(
-                        db, uid, password,
-                        'account.move', 'write',
-                        [[bill_id], update_data]
-                    )
-                    print(f"Successfully enforced exact amounts on attempt {attempt + 1}")
-                    break
-                except Exception as e:
-                    if attempt == max_attempts - 1:
-                        print(f"Warning: Could not enforce exact amounts after {max_attempts} attempts: {str(e)}")
-                    else:
-                        print(f"Attempt {attempt + 1} to set amounts failed, retrying...")
-                        continue
+        # For consolidated approach with exact amounts requirement, apply additional enforcement
+        amounts_set_successfully = True
+        if (not use_individual_items and provided_subtotal is not None and 
+            provided_total_amount is not None):
+            
+            print("Consolidated approach detected - enforcing exact amounts...")
+            amounts_set_successfully = force_exact_amounts_consolidated(
+                models, db, uid, password, bill_id, 
+                provided_subtotal, provided_tax_amount, provided_total_amount
+            )
+            
+            if not amounts_set_successfully:
+                print("Warning: Could not guarantee exact amounts match input")
         
-        # Get final bill information after posting
+        # Get final bill information after posting and amount adjustments
         bill_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
             [[bill_id]], 
             {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
         )[0]
+        
+        # Additional validation for consolidated approach
+        warning_message = None
+        if (not use_individual_items and provided_subtotal is not None and 
+            provided_total_amount is not None):
+            
+            # Check final amounts against input
+            final_subtotal = float(bill_info['amount_untaxed'])
+            final_total = float(bill_info['amount_total'])
+            final_tax = float(bill_info['amount_tax'])
+            
+            subtotal_diff = abs(final_subtotal - float(provided_subtotal))
+            total_diff = abs(final_total - float(provided_total_amount))
+            
+            if subtotal_diff > 0.01 or total_diff > 0.01:
+                warning_message = f"Warning: Final amounts may not exactly match input (subtotal diff: ${subtotal_diff:.2f}, total diff: ${total_diff:.2f})"
+                print(warning_message)
+        
+        success_message = 'Vendor bill created and posted successfully'
+        if warning_message:
+            success_message += f". {warning_message}"
+        elif not use_individual_items:
+            success_message += " using consolidated approach with exact amounts"
         
         return {
             'success': True,
@@ -516,7 +670,8 @@ def main(data):
             'line_items': data.get('line_items') if use_individual_items else None,
             'description': used_description,
             'processing_method': 'individual_items' if use_individual_items else 'consolidated',
-            'message': 'Vendor bill created and posted successfully'
+            'amounts_match_input': amounts_set_successfully if not use_individual_items else True,
+            'message': success_message
         }
         
     except xmlrpc.client.Fault as e:
