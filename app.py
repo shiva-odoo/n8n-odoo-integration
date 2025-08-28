@@ -24,6 +24,7 @@ try:
     import createtransaction
     import getDetailsByCompany
     import updateAuditStatus
+    import openaipdf
 
     
 except ImportError as e:
@@ -618,6 +619,16 @@ def create_company():
     try:
         data = request.json or {}
         result = createcompany.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/openaipdf', methods=['POST'])
+def openaipdf():
+    """openaipdf"""
+    try:
+        data = request.json or {}
+        result = openaipdf.main(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
