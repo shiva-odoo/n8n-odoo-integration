@@ -25,11 +25,14 @@ try:
     import getDetailsByCompany
     import updateAuditStatus
     import openaipdf as pdf_processor
-    import upload
+    
 
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
+
+import upload
+
 
 app = Flask(__name__)
 
