@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import json
+from flask_cors import CORS
 
 # Import all your modules
 try:
@@ -35,6 +36,7 @@ import upload
 
 
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}}) 
 
 # Home endpoint with comprehensive API documentation
 
