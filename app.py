@@ -25,6 +25,7 @@ try:
     import getDetailsByCompany
     import updateAuditStatus
     import openaipdf as pdf_processor
+    import upload
 
     
 except ImportError as e:
@@ -1093,6 +1094,17 @@ def update_audit_status():
             "success": False,
             "error": str(e)
         }), 500
+    
+
+@app.route("/upload", methods=["POST"])
+def upload_files():
+    """Upload files and forward to n8n"""
+    try:
+        result = upload.main(request.form, request.files.getlist("files"))
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 
