@@ -1096,7 +1096,7 @@ def update_audit_status():
         }), 500
     
 
-@app.route("/upload", methods=["POST"])
+@app.route("/api/upload", methods=["POST"])
 def upload_files():
     """Upload files and forward to n8n"""
     try:
