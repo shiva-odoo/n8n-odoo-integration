@@ -4,6 +4,7 @@ import jwt
 import json
 from datetime import datetime, timedelta
 from botocore.exceptions import ClientError
+from decimal import Decimal
 import os
 
 # JWT Configuration
@@ -14,6 +15,21 @@ JWT_EXPIRY_MINUTES = 30
 # DynamoDB setup
 dynamodb = boto3.resource('dynamodb', region_name='eu-north-1')  # Change region as needed
 users_table = dynamodb.Table('users')
+
+def convert_decimal(obj):
+    """Convert DynamoDB Decimal objects to regular Python numbers"""
+    if isinstance(obj, dict):
+        return {k: convert_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimal(v) for v in obj]
+    elif isinstance(obj, Decimal):
+        # Convert to int if it's a whole number, otherwise float
+        if obj % 1 == 0:
+            return int(obj)
+        else:
+            return float(obj)
+    else:
+        return obj
 
 def hash_password(password):
     """Hash a password using bcrypt"""
@@ -70,6 +86,9 @@ def authenticate_user(username, password):
             }
         
         user = response['Item']
+        
+        # Convert Decimal objects before processing
+        user = convert_decimal(user)
         
         # Check if user account is active
         if user.get('status', 'active') != 'active':
@@ -195,6 +214,9 @@ def refresh_token(current_token):
             }
         
         user = response['Item']
+        
+        # Convert Decimal objects before processing
+        user = convert_decimal(user)
         
         # Generate new token
         new_token = generate_jwt(user)
