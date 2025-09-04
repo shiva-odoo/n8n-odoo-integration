@@ -1384,17 +1384,7 @@ def forbidden(error):
 
 
 
-import validatecompany
-@app.route("/api/company/validate", methods=["POST"])
-def validate_company_function():
-    
-    """Upload files and forward to n8n (now requires authentication)"""
-    try:
-        data = request.json
-        result = validatecompany.main(data)
-        return result
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+
 
 
 
