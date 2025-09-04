@@ -1257,6 +1257,8 @@ def get_onboarding_details(submission_id):
             "error": "Failed to retrieve onboarding details"
         }), 500
 
+# Replace the existing approve route in your app.py with this updated version:
+
 @app.route("/api/admin/companies/<submission_id>/approve", methods=["PUT"])
 @jwt_required
 @admin_required
@@ -1265,8 +1267,10 @@ def approve_onboarding_submission(submission_id):
     try:
         current_user = get_current_user()
         admin_username = current_user['username']
+        admin_email = current_user['email']  # Get admin email from JWT
         
-        result = admin.approve_company(submission_id, admin_username)
+        # Pass admin email to the approve function
+        result = admin.approve_company(submission_id, admin_username, admin_email)
         
         if result["success"]:
             return jsonify(result), 200

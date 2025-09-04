@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from botocore.exceptions import ClientError
 from auth import create_user_account
+import createcompany
 import requests
 import secrets
 import string
@@ -131,8 +132,81 @@ def generate_username_password(company_name):
     
     return username, password
 
-def approve_company(submission_id, approved_by_username):
-    """Approve a company and create user account"""
+def format_company_data_for_business_system(company):
+    """Format onboarding company data for business system creation"""
+    company_data = {
+        "name": company.get('company_name'),  # required
+        "email": company.get('rep_email'),    # optional - use rep email as company email
+        "phone": None,                        # optional - not collected in onboarding
+        "website": None,                      # optional - not collected in onboarding
+        "vat": company.get('vat_no'),         # optional - VAT number
+        "company_registry": company.get('registration_no'),  # optional - registration number
+        "street": None,                       # optional - not collected in onboarding
+        "city": None,                         # optional - not collected in onboarding
+        "zip": None,                          # optional - not collected in onboarding
+        "state": None,                        # optional - not collected in onboarding
+        "country_code": "IN",                 # optional - default to India
+        "currency_code": "INR"                # optional - default to Indian Rupee
+    }
+    
+    return company_data
+
+def send_admin_failure_notification(admin_email, company, error_message, submission_id):
+    """Send failure notification to admin via n8n webhook"""
+    try:
+        webhook_url = "https://kyrasteldeveloper.app.n8n.cloud/webhook/admin-company-fail"
+        
+        payload = {
+            'admin_email': admin_email,
+            'error_details': error_message,
+            'submission_id': submission_id,
+            'company_name': company.get('company_name'),
+            'rep_email': company.get('rep_email'),
+            'registration_no': company.get('registration_no'),
+            'failed_at': datetime.utcnow().isoformat(),
+            'failure_type': 'odoo_company_creation'
+        }
+        
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        print(f"📧 Admin failure notification sent: {response.status_code}")
+        
+        return response.status_code == 200
+        
+    except Exception as e:
+        print(f"❌ Error sending admin failure notification: {e}")
+        return False
+
+def send_user_failure_notification(company, error_message):
+    """Send failure notification to company via n8n webhook"""
+    try:
+        webhook_url = "https://kyrasteldeveloper.app.n8n.cloud/webhook/user-company-fail"
+        
+        payload = {
+            'company_email': company.get('rep_email'),
+            'company_name': company.get('company_name'),
+            'rep_name': company.get('rep_name'),
+            'registration_no': company.get('registration_no'),
+            'vat_no': company.get('vat_no'),
+            'submission_id': company.get('submission_id'),
+            'error_summary': 'Company creation in our system failed',
+            'technical_details': error_message,
+            'failed_at': datetime.utcnow().isoformat(),
+            'next_steps': 'Our team has been notified and will review your application'
+        }
+        
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        print(f"📧 User failure notification sent to {company.get('rep_email')}: {response.status_code}")
+        
+        return response.status_code == 200
+        
+    except Exception as e:
+        print(f"❌ Error sending user failure notification: {e}")
+        return False
+
+def approve_company(submission_id, approved_by_username, admin_email):
+    """Approve a company - PRIORITY: Create Odoo company first, then proceed with other tasks"""
+    original_status = None
+    
     try:
         # Get company details
         company_result = get_company_details(submission_id)
@@ -140,6 +214,7 @@ def approve_company(submission_id, approved_by_username):
             return company_result
         
         company = company_result["company"]
+        original_status = company['status']  # Store original status for rollback
         
         # Check if already manually approved or rejected
         if company['status'] == 'manual_approved':
@@ -161,10 +236,72 @@ def approve_company(submission_id, approved_by_username):
                 "error": f"Cannot approve company with status: {company['status']}"
             }
         
+        # PRIORITY STEP 1: Create company in Odoo FIRST
+        business_company_data = format_company_data_for_business_system(company)
+        
+        print(f"🏢 PRIORITY: Creating company in Odoo first: {business_company_data}")
+        
+        try:
+            business_company_result = createcompany.main(business_company_data)
+            print(f"📊 Odoo company creation result: {business_company_result}")
+            
+            # Check if Odoo company creation failed
+            if not business_company_result.get("success"):
+                error_message = business_company_result.get("error", "Unknown Odoo creation error")
+                print(f"❌ CRITICAL: Odoo company creation failed: {error_message}")
+                
+                # Revert status back to pending
+                onboarding_table.update_item(
+                    Key={'submission_id': submission_id},
+                    UpdateExpression='SET #status = :status',
+                    ExpressionAttributeNames={'#status': 'status'},
+                    ExpressionAttributeValues={':status': 'pending'}
+                )
+                
+                # Send failure notifications
+                send_admin_failure_notification(admin_email, company, error_message, submission_id)
+                send_user_failure_notification(company, error_message)
+                
+                return {
+                    "success": False,
+                    "error": f"Odoo company creation failed: {error_message}",
+                    "odoo_error": True,
+                    "notifications_sent": True
+                }
+                
+        except Exception as odoo_error:
+            error_message = str(odoo_error)
+            print(f"❌ CRITICAL: Odoo company creation exception: {error_message}")
+            
+            # Revert status back to pending
+            onboarding_table.update_item(
+                Key={'submission_id': submission_id},
+                UpdateExpression='SET #status = :status',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={':status': 'pending'}
+            )
+            
+            # Send failure notifications
+            send_admin_failure_notification(admin_email, company, error_message, submission_id)
+            send_user_failure_notification(company, error_message)
+            
+            return {
+                "success": False,
+                "error": f"Odoo company creation failed: {error_message}",
+                "odoo_error": True,
+                "notifications_sent": True
+            }
+        
+        # If we get here, Odoo company creation was successful
+        business_company_id = business_company_result.get("company_id")
+        print(f"✅ SUCCESS: Odoo company created with ID: {business_company_id}")
+        
+        # Now proceed with the other 3 tasks since Odoo creation succeeded
+        
         # Generate username and password
         username, password = generate_username_password(company['company_name'])
         
-        # Create user account
+        # Step 2: Create user account in users table
         user_data = {
             'username': username,
             'password': password,
@@ -179,18 +316,17 @@ def approve_company(submission_id, approved_by_username):
             }
         }
         
-        # Create user account
         user_creation = create_user_account(user_data)
         if not user_creation["success"]:
             return {
                 "success": False,
-                "error": "Failed to create user account"
+                "error": "Failed to create user account after Odoo creation"
             }
         
-        # Update onboarding submission status to manual_approved
+        # Step 3: Update onboarding submission status to manual_approved
         onboarding_table.update_item(
             Key={'submission_id': submission_id},
-            UpdateExpression='SET #status = :status, approved_at = :approved_at, approved_by = :approved_by, username = :username',
+            UpdateExpression='SET #status = :status, approved_at = :approved_at, approved_by = :approved_by, username = :username, business_company_id = :business_company_id',
             ExpressionAttributeNames={
                 '#status': 'status'
             },
@@ -198,20 +334,24 @@ def approve_company(submission_id, approved_by_username):
                 ':status': 'manual_approved',
                 ':approved_at': datetime.utcnow().isoformat(),
                 ':approved_by': approved_by_username,
-                ':username': username
+                ':username': username,
+                ':business_company_id': business_company_id
             }
         )
         
-        # Send email with credentials via n8n
+        # Step 4: Send email with credentials via n8n
         send_credentials_email(company['rep_email'], company['company_name'], username, password)
         
-        print(f"✅ Company {company['company_name']} approved by {approved_by_username}")
+        print(f"✅ Company {company['company_name']} fully approved by {approved_by_username}")
         
         return {
             "success": True,
             "message": "Company approved successfully",
             "username": username,
-            "email_sent": True
+            "email_sent": True,
+            "user_account_created": True,
+            "business_company_created": True,
+            "business_company_id": business_company_id
         }
         
     except ClientError as e:
