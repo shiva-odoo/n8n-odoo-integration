@@ -33,6 +33,7 @@ except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
 
 import upload
+import onboarding
 
 
 app = Flask(__name__)
@@ -1106,6 +1107,16 @@ def upload_files():
     """Upload files and forward to n8n"""
     try:
         result = upload.main(request.form, request.files.getlist("files"))
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+    
+@app.route("/api/onboarding", methods=["POST"])
+def onboard_company():
+    """Handle company onboarding form submission and forward to n8n"""
+    try:
+        result = onboarding.main(request.form, request.files.getlist("files"))
         status_code = 200 if result.get("status") == "success" else 400
         return jsonify(result), status_code
     except Exception as e:
