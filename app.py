@@ -38,6 +38,7 @@ import auth
 import admin
 from middleware import jwt_required, admin_required, get_current_user
 from flask import g
+import validatecompany
 
 
 app = Flask(__name__)
@@ -1106,6 +1107,18 @@ def update_audit_status():
         }), 500
     
 
+
+@app.route('/api/company/validate', methods=['POST'])
+def validate_company():
+    """Validate company data and optionally search Cyprus registry"""
+    try:
+        data = request.json or {}
+        result = validatecompany.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+
 # ================================
 # AUTHENTICATION ROUTES
 # ================================
@@ -1381,12 +1394,6 @@ def forbidden(error):
         "success": False,
         "error": "Insufficient permissions"
     }), 403
-
-
-
-
-
-
 
 # Error handlers
 @app.errorhandler(404)

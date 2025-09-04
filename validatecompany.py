@@ -1,51 +1,15 @@
+import re
+import time
+import json
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
-import json
-import time
-import re
-
-
-
-def main(data):
-    success = False
-    company_name = data["company_name"]
-    registration_number = data["registration_number"]
-    # You can customize the search parameters here
-    result = search_cyprus_company(
-        reg_number=registration_number, 
-        company_name=company_name
-    )
-    
-    if result:
-        print("Search completed!")
-        print(f"Success: {result['success']}")
-        
-        # Pretty print the JSON response
-        print("\n" + "="*50)
-        print("JSON RESPONSE:")
-        print("="*50)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        
-        # Save to file
-        save_json_response(result)
-        
-        if result['success']:
-            success= True
-            print(f"\nFound company info: {result.get('company_info', {})}")
-        else:
-            print(f"\nErrors: {result.get('errors', [])}")
-    else:
-        print("Search failed - no response received")
-    # Safe access with fallback
-    search_params = result.get('search_params', {}) 
-
-    return {"success": success, "search_params":search_params}
-    
-
+import os
 
 # ============================================================================
 # CYPRUS COMPANY REGISTRY - NAME AND REGISTRATION PROCESSING FUNCTIONS
@@ -222,7 +186,6 @@ def parse_company_data(html_content):
                 })
         
         # Try to extract specific company information
-        # Look for common patterns in Cyprus company registry
         text_content = soup.get_text()
         
         # Extract registration number
@@ -284,73 +247,10 @@ def parse_company_data(html_content):
     
     return company_data
 
-def search_cyprus_company(reg_number="474078", company_name="KYRASTEL ENTERPRISES LTD"):
+def search_cyprus_company_registry(reg_number, company_name):
     """
-    Search for a Cyprus company and return JSON response
-    
-    Args:
-        reg_number (str): Company registration number
-        company_name (str): Company name
-    
-    Returns:
-        dict: JSON response with company data or error information
+    Perform actual search on Cyprus company registry
     """
-    
-    # ============================================================================
-    # PROCESS INPUT PARAMETERS WITH REGEX FUNCTIONS
-    # ============================================================================
-    
-    print("=== PROCESSING INPUT PARAMETERS ===")
-    
-    # Process the input parameters using our regex functions
-    processed_data = process_company_data(company_name, reg_number)
-    
-    print(f"Original name: '{company_name}'")
-    print(f"Processed name: '{processed_data['processed']['name']}'")
-    print(f"Original reg number: '{reg_number}'")
-    print(f"Processed reg number: '{processed_data['processed']['registration']}'")
-    print(f"Validation results: {processed_data['validation']}")
-    
-    # Use processed values for the search
-    search_name = processed_data['processed']['name']
-    search_reg_number = processed_data['processed']['registration']
-    
-    # Validate inputs before proceeding
-    if not processed_data['validation']['cyprus_name_valid']:
-        return {
-            "success": False,
-            "errors": [f"Invalid company name format: '{company_name}'"],
-            "search_params": {
-                "registration_number": reg_number,
-                "company_name": company_name,
-                "processed_registration_number": search_reg_number,
-                "processed_company_name": search_name,
-                "validation": processed_data['validation'],
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        }
-    
-    if not processed_data['validation']['cyprus_reg_number_valid']:
-        return {
-            "success": False,
-            "errors": [f"Invalid registration number format: '{reg_number}' (must be 6 digits)"],
-            "search_params": {
-                "registration_number": reg_number,
-                "company_name": company_name,
-                "processed_registration_number": search_reg_number,
-                "processed_company_name": search_name,
-                "validation": processed_data['validation'],
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        }
-    
-    # ============================================================================
-    # SELENIUM SEARCH PROCESS
-    # ============================================================================
-    
-    # Initialize the WebDriver with Chrome options
-    from selenium.webdriver.chrome.options import Options
-    
     chrome_options = Options()
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -358,163 +258,203 @@ def search_cyprus_company(reg_number="474078", company_name="KYRASTEL ENTERPRISE
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--user-data-dir=/tmp/chrome_selenium_profile")
-    # Optionally run headless
-    # chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless")  # Run headless for API
     
     driver = webdriver.Chrome(options=chrome_options)
     
     try:
         # Navigate to the webpage
-        print("Navigating to Cyprus eFiling website...")
         driver.get("https://efiling.drcor.mcit.gov.cy/DrcorPublic/SearchForm.aspx?sc=0")
         
         # Wait for page to load
         wait = WebDriverWait(driver, 15)
         
         # Fill registration number field
-        print(f"Filling registration number: {search_reg_number}")
         reg_number_field = wait.until(
             EC.presence_of_element_located((By.ID, "ctl00_cphMyMasterCentral_ucSearch_txtNumber"))
         )
         reg_number_field.clear()
-        reg_number_field.send_keys(search_reg_number)
+        reg_number_field.send_keys(reg_number)
         
         # Fill name field
-        print(f"Filling company name: {search_name}")
         name_field = driver.find_element(By.ID, "ctl00_cphMyMasterCentral_ucSearch_txtName")
         name_field.clear()
-        name_field.send_keys(search_name)
+        name_field.send_keys(company_name)
         
         # Click the Go button
-        print("Clicking search button...")
         go_button = driver.find_element(By.XPATH, "//*[@id='ctl00_cphMyMasterCentral_ucSearch_lbtnSearch']")
         go_button.click()
         
         # Wait for results to load
-        print("Waiting for search results...")
         time.sleep(3)
         
         # Wait for the page to change or results to appear
         try:
             wait.until(lambda driver: driver.current_url != "https://efiling.drcor.mcit.gov.cy/DrcorPublic/SearchForm.aspx?sc=0")
         except TimeoutException:
-            print("Page didn't change - checking for results on same page...")
+            pass  # Page might not change
         
         # Wait a bit more for dynamic content to load
         time.sleep(2)
         
         # Get the response and parse it
         html_response = driver.page_source
-        print("Search completed! Parsing results...")
         
         # Parse HTML to JSON
-        json_response = parse_company_data(html_response)
+        search_results = parse_company_data(html_response)
         
-        # Add search metadata with processed values
-        json_response["search_params"] = {
-            "registration_number": reg_number,
-            "company_name": company_name,
-            "processed_registration_number": search_reg_number,
-            "processed_company_name": search_name,
-            "validation": processed_data['validation'],
+        return {
+            "search_performed": True,
             "search_url": driver.current_url,
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            "results": search_results
         }
         
-        print(f"Parsing completed! Found {len(json_response.get('raw_tables', []))} tables")
-        
-        return json_response
-        
-    except TimeoutException:
-        print("Timeout error: Page elements took too long to load")
-        return {
-            "success": False,
-            "errors": ["Timeout error: Page elements took too long to load"],
-            "search_params": {
-                "registration_number": reg_number,
-                "company_name": company_name,
-                "processed_registration_number": search_reg_number,
-                "processed_company_name": search_name,
-                "validation": processed_data['validation'],
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        }
     except Exception as e:
-        print(f"An error occurred: {e}")
         return {
-            "success": False,
-            "errors": [f"An error occurred: {str(e)}"],
-            "search_params": {
-                "registration_number": reg_number,
-                "company_name": company_name,
-                "processed_registration_number": search_reg_number,
-                "processed_company_name": search_name,
-                "validation": processed_data['validation'],
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
+            "search_performed": False,
+            "error": f"Search error: {str(e)}"
         }
     finally:
-        # Close the browser
-        print("Closing browser...")
         driver.quit()
 
-def save_json_response(json_data, filename="cyprus_search_results.json"):
-    """Save JSON response to file"""
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(json_data, f, indent=2, ensure_ascii=False)
-    print(f"Results saved to '{filename}'")
-
-def process_bulk_companies(companies):
+def main(data):
     """
-    Process multiple companies at once
-    Args:
-        companies (list): List of {name, registration} dictionaries
+    Main API function to validate company data and optionally search Cyprus registry
+    
+    Expected data format:
+    {
+        "company_name": "KYRASTEL ENTERPRISES LTD",
+        "registration_number": "474078",
+        "perform_search": false  # optional, defaults to false
+    }
+    
     Returns:
-        list: List of processed results
+        dict: Validation results and optional search results
     """
-    if not isinstance(companies, list):
-        return []
     
-    return [process_company_data(company.get('name', ''), company.get('registration', '')) 
-            for company in companies]
+    # Validate required fields
+    if not data.get('company_name') and not data.get('registration_number'):
+        return {
+            'success': False,
+            'error': 'Either company_name or registration_number is required'
+        }
+    
+    company_name = data.get('company_name', '')
+    registration_number = data.get('registration_number', '')
+    perform_search = data.get('perform_search', False)
+    
+    # Process and validate the company data
+    processed_data = process_company_data(company_name, registration_number)
+    
+    # Prepare response
+    response = {
+        'success': True,
+        'validation': {
+            'company_name': {
+                'original': processed_data['original']['name'],
+                'processed': processed_data['processed']['name'],
+                'is_valid': processed_data['validation']['name_valid'],
+                'cyprus_valid': processed_data['validation']['cyprus_name_valid']
+            },
+            'registration_number': {
+                'original': processed_data['original']['registration'],
+                'processed': processed_data['processed']['registration'],
+                'is_valid': processed_data['validation']['reg_number_valid'],
+                'cyprus_valid': processed_data['validation']['cyprus_reg_number_valid']
+            },
+            'overall_valid': (
+                processed_data['validation']['cyprus_name_valid'] and 
+                processed_data['validation']['cyprus_reg_number_valid']
+            )
+        },
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # Add validation summary
+    validation_issues = []
+    if not processed_data['validation']['cyprus_name_valid']:
+        validation_issues.append("Company name format is invalid for Cyprus registry")
+    if not processed_data['validation']['cyprus_reg_number_valid']:
+        validation_issues.append("Registration number format is invalid (must be exactly 6 digits)")
+    
+    if validation_issues:
+        response['validation_issues'] = validation_issues
+    
+    # Perform actual search if requested and validation passed
+    if perform_search and response['validation']['overall_valid']:
+        try:
+            search_results = search_cyprus_company_registry(
+                processed_data['processed']['registration'],
+                processed_data['processed']['name']
+            )
+            response['search'] = search_results
+        except Exception as e:
+            response['search'] = {
+                'search_performed': False,
+                'error': f"Search failed: {str(e)}"
+            }
+    elif perform_search and not response['validation']['overall_valid']:
+        response['search'] = {
+            'search_performed': False,
+            'error': "Search skipped due to validation failures"
+        }
+    
+    return response
 
-def filter_valid_companies(processed_results):
+def validate(data):
+    """Alias for main function to maintain compatibility"""
+    return main(data)
+
+# Bulk validation function
+def validate_bulk(companies_data):
     """
-    Filter valid companies from processed results
-    Args:
-        processed_results (list): Results from process_bulk_companies
-    Returns:
-        list: Only valid companies
+    Validate multiple companies at once
+    
+    Expected data format:
+    {
+        "companies": [
+            {
+                "company_name": "Company 1",
+                "registration_number": "123456"
+            },
+            {
+                "company_name": "Company 2", 
+                "registration_number": "654321"
+            }
+        ]
+    }
     """
-    return [result for result in processed_results 
-            if result['validation']['cyprus_name_valid'] and result['validation']['cyprus_reg_number_valid']]
-
-# ============================================================================
-# EXAMPLE USAGE AND TESTING
-# ============================================================================
-
-def test_regex_functions():
-    """Test the regex processing functions"""
-    print("\n=== TESTING REGEX FUNCTIONS ===")
     
-    test_cases = [
-        {"name": "  kyrastel enterprises ltd  ", "reg": "ΗΕ474078"},
-        {"name": "MICROSOFT CYPRUS LTD", "reg": "123456"},
-        {"name": "  google cyprus  ", "reg": "ΗΕ654321"},
-        {"name": "Amazon Web Services (Cyprus) Ltd", "reg": "789012"},
-        {"name": "", "reg": "invalid"},
-        {"name": "Valid Company Name", "reg": "12345"}  # Too short
-    ]
+    if not companies_data.get('companies') or not isinstance(companies_data['companies'], list):
+        return {
+            'success': False,
+            'error': 'companies array is required'
+        }
     
-    for i, test_case in enumerate(test_cases):
-        print(f"\nTest Case {i + 1}:")
-        result = process_company_data(test_case['name'], test_case['reg'])
-        print(f"Input: '{test_case['name']}' | '{test_case['reg']}'")
-        print(f"Output: '{result['processed']['name']}' | '{result['processed']['registration']}'")
-        print(f"Valid: {result['validation']['cyprus_name_valid'] and result['validation']['cyprus_reg_number_valid']}")
-
-
+    results = []
+    valid_count = 0
     
+    for i, company in enumerate(companies_data['companies']):
+        try:
+            result = main(company)
+            result['index'] = i
+            results.append(result)
+            
+            if result.get('validation', {}).get('overall_valid'):
+                valid_count += 1
+                
+        except Exception as e:
+            results.append({
+                'success': False,
+                'error': str(e),
+                'index': i
+            })
     
-    
-
+    return {
+        'success': True,
+        'total_companies': len(companies_data['companies']),
+        'valid_companies': valid_count,
+        'invalid_companies': len(companies_data['companies']) - valid_count,
+        'results': results,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
