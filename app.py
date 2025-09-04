@@ -1106,26 +1106,10 @@ def update_audit_status():
         }), 500
     
 
-@app.route("/api/upload", methods=["POST"])
-def upload_files():
-    """Upload files and forward to n8n"""
-    try:
-        result = upload.main(request.form, request.files.getlist("files"))
-        status_code = 200 if result.get("status") == "success" else 400
-        return jsonify(result), status_code
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
-    
-@app.route("/api/onboarding", methods=["POST"])
-def onboard_company():
-    """Handle company onboarding form submission and forward to n8n"""
-    try:
-        result = onboarding.main(request.form, request.files.getlist("files"))
-        status_code = 200 if result.get("status") == "success" else 400
-        return jsonify(result), status_code
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
-    
+# ================================
+# AUTHENTICATION ROUTES
+# ================================
+
 @app.route("/api/auth/login", methods=["POST"])
 def login():
     """Authenticate user and return JWT token"""
@@ -1194,7 +1178,6 @@ def refresh_token():
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
     """Logout user (client-side token removal)"""
-    # In a more advanced implementation, you could blacklist the token
     return jsonify({
         "success": True,
         "message": "Logged out successfully"
@@ -1224,7 +1207,7 @@ def get_current_user_info():
 @app.route("/api/admin/companies", methods=["GET"])
 @jwt_required
 @admin_required
-def get_companies():
+def get_onboarding_submissions():
     """Get all company onboarding submissions for admin dashboard"""
     try:
         result = admin.get_all_companies()
@@ -1235,17 +1218,17 @@ def get_companies():
             return jsonify(result), 500
             
     except Exception as e:
-        print(f"❌ Admin get companies error: {e}")
+        print(f"❌ Admin get onboarding submissions error: {e}")
         return jsonify({
             "success": False,
-            "error": "Failed to retrieve companies"
+            "error": "Failed to retrieve onboarding submissions"
         }), 500
 
 @app.route("/api/admin/companies/<submission_id>", methods=["GET"])
 @jwt_required
 @admin_required
-def get_company_details(submission_id):
-    """Get detailed information for a specific company"""
+def get_onboarding_details(submission_id):
+    """Get detailed information for a specific onboarding submission"""
     try:
         result = admin.get_company_details(submission_id)
         
@@ -1255,17 +1238,17 @@ def get_company_details(submission_id):
             return jsonify(result), 404 if "not found" in result["error"].lower() else 500
             
     except Exception as e:
-        print(f"❌ Admin get company details error: {e}")
+        print(f"❌ Admin get onboarding details error: {e}")
         return jsonify({
             "success": False,
-            "error": "Failed to retrieve company details"
+            "error": "Failed to retrieve onboarding details"
         }), 500
 
 @app.route("/api/admin/companies/<submission_id>/approve", methods=["PUT"])
 @jwt_required
 @admin_required
-def approve_company(submission_id):
-    """Approve a company submission"""
+def approve_onboarding_submission(submission_id):
+    """Approve a company onboarding submission"""
     try:
         current_user = get_current_user()
         admin_username = current_user['username']
@@ -1278,17 +1261,17 @@ def approve_company(submission_id):
             return jsonify(result), 400
             
     except Exception as e:
-        print(f"❌ Admin approve company error: {e}")
+        print(f"❌ Admin approve onboarding submission error: {e}")
         return jsonify({
             "success": False,
-            "error": "Failed to approve company"
+            "error": "Failed to approve onboarding submission"
         }), 500
 
 @app.route("/api/admin/companies/<submission_id>/reject", methods=["PUT"])
 @jwt_required
 @admin_required
-def reject_company(submission_id):
-    """Reject a company submission"""
+def reject_onboarding_submission(submission_id):
+    """Reject a company onboarding submission"""
     try:
         data = request.get_json()
         reason = data.get('reason', 'No reason provided')
@@ -1304,10 +1287,10 @@ def reject_company(submission_id):
             return jsonify(result), 400
             
     except Exception as e:
-        print(f"❌ Admin reject company error: {e}")
+        print(f"❌ Admin reject onboarding submission error: {e}")
         return jsonify({
             "success": False,
-            "error": "Failed to reject company"
+            "error": "Failed to reject onboarding submission"
         }), 500
 
 # ================================
@@ -1321,7 +1304,6 @@ def get_user_profile():
     try:
         current_user = get_current_user()
         
-        # You can extend this to fetch additional user data from DynamoDB if needed
         return jsonify({
             "success": True,
             "profile": current_user
@@ -1333,6 +1315,7 @@ def get_user_profile():
             "success": False,
             "error": "Failed to get user profile"
         }), 500
+
 
 # ================================
 # SECURE DOCUMENT UPLOAD (Updated)
