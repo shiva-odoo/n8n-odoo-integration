@@ -1317,6 +1317,18 @@ def get_user_profile():
         }), 500
 
 
+# Add this route to your app.py file
+@app.route("/api/onboarding", methods=["POST"])
+def onboard_company():
+    """Handle company onboarding form submission and forward to n8n"""
+    try:
+        result = onboarding.main(request.form, request.files.getlist("files"))
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
 # ================================
 # SECURE DOCUMENT UPLOAD (Updated)
 # ================================
@@ -1339,6 +1351,8 @@ def upload_files():
         return jsonify(result), status_code
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
+    
+
 
 # ================================
 # HELPER FUNCTIONS
@@ -1370,6 +1384,20 @@ def forbidden(error):
 
 
 
+import validatecompany
+@app.route("/api/company/validate", methods=["POST"])
+def validate_company_function():
+    
+    """Upload files and forward to n8n (now requires authentication)"""
+    try:
+        data = request.json
+        result = validatecompany.main(data)
+        return result
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
@@ -1387,4 +1415,5 @@ def bad_request(error):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
-    app.run(host='0.0.0.0', port=port, debug=debug)  # 0.0.0.0 allows external access
+    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=True)
+    #this is commentline
