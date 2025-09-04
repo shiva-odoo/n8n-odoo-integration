@@ -34,6 +34,10 @@ except ImportError as e:
 
 import upload
 import onboarding
+import auth
+import admin
+from middleware import jwt_required, admin_required, get_current_user
+from flask import g
 
 
 app = Flask(__name__)
@@ -1121,6 +1125,265 @@ def onboard_company():
         return jsonify(result), status_code
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
+    
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    """Authenticate user and return JWT token"""
+    try:
+        data = request.get_json()
+        
+        if not data or not data.get('username') or not data.get('password'):
+            return jsonify({
+                "success": False,
+                "error": "Username and password are required"
+            }), 400
+        
+        username = data['username'].strip()
+        password = data['password']
+        
+        # Authenticate user
+        result = auth.authenticate_user(username, password)
+        
+        if result["success"]:
+            return jsonify({
+                "success": True,
+                "token": result["token"],
+                "user": result["user"],
+                "expires_in": result["expires_in"]
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": result["error"]
+            }), 401
+            
+    except Exception as e:
+        print(f"❌ Login error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Login failed"
+        }), 500
+
+@app.route("/api/auth/refresh", methods=["POST"])
+def refresh_token():
+    """Refresh JWT token"""
+    try:
+        data = request.get_json()
+        current_token = data.get('token')
+        
+        if not current_token:
+            return jsonify({
+                "success": False,
+                "error": "Token is required"
+            }), 400
+        
+        result = auth.refresh_token(current_token)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 401
+            
+    except Exception as e:
+        print(f"❌ Token refresh error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Token refresh failed"
+        }), 500
+
+@app.route("/api/auth/logout", methods=["POST"])
+def logout():
+    """Logout user (client-side token removal)"""
+    # In a more advanced implementation, you could blacklist the token
+    return jsonify({
+        "success": True,
+        "message": "Logged out successfully"
+    }), 200
+
+@app.route("/api/auth/me", methods=["GET"])
+@jwt_required
+def get_current_user_info():
+    """Get current authenticated user information"""
+    try:
+        current_user = get_current_user()
+        return jsonify({
+            "success": True,
+            "user": current_user
+        }), 200
+    except Exception as e:
+        print(f"❌ Get user info error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get user information"
+        }), 500
+
+# ================================
+# ADMIN ROUTES (Protected)
+# ================================
+
+@app.route("/api/admin/companies", methods=["GET"])
+@jwt_required
+@admin_required
+def get_companies():
+    """Get all company onboarding submissions for admin dashboard"""
+    try:
+        result = admin.get_all_companies()
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Admin get companies error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to retrieve companies"
+        }), 500
+
+@app.route("/api/admin/companies/<submission_id>", methods=["GET"])
+@jwt_required
+@admin_required
+def get_company_details(submission_id):
+    """Get detailed information for a specific company"""
+    try:
+        result = admin.get_company_details(submission_id)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 404 if "not found" in result["error"].lower() else 500
+            
+    except Exception as e:
+        print(f"❌ Admin get company details error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to retrieve company details"
+        }), 500
+
+@app.route("/api/admin/companies/<submission_id>/approve", methods=["PUT"])
+@jwt_required
+@admin_required
+def approve_company(submission_id):
+    """Approve a company submission"""
+    try:
+        current_user = get_current_user()
+        admin_username = current_user['username']
+        
+        result = admin.approve_company(submission_id, admin_username)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Admin approve company error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to approve company"
+        }), 500
+
+@app.route("/api/admin/companies/<submission_id>/reject", methods=["PUT"])
+@jwt_required
+@admin_required
+def reject_company(submission_id):
+    """Reject a company submission"""
+    try:
+        data = request.get_json()
+        reason = data.get('reason', 'No reason provided')
+        
+        current_user = get_current_user()
+        admin_username = current_user['username']
+        
+        result = admin.reject_company(submission_id, admin_username, reason)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Admin reject company error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to reject company"
+        }), 500
+
+# ================================
+# USER ROUTES (Protected)
+# ================================
+
+@app.route("/api/user/profile", methods=["GET"])
+@jwt_required
+def get_user_profile():
+    """Get current user's profile information"""
+    try:
+        current_user = get_current_user()
+        
+        # You can extend this to fetch additional user data from DynamoDB if needed
+        return jsonify({
+            "success": True,
+            "profile": current_user
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Get user profile error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get user profile"
+        }), 500
+
+# ================================
+# SECURE DOCUMENT UPLOAD (Updated)
+# ================================
+
+@app.route("/api/upload", methods=["POST"])
+@jwt_required  # Now requires authentication
+def upload_files():
+    """Upload files and forward to n8n (now requires authentication)"""
+    try:
+        current_user = get_current_user()
+        
+        # Add user context to the upload
+        form_data = request.form.copy()
+        form_data['user_id'] = current_user['username']
+        form_data['company_id'] = current_user['company_id']
+        form_data['company_name'] = current_user['company_name']
+        
+        result = upload.main(form_data, request.files.getlist("files"))
+        status_code = 200 if result.get("status") == "success" else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+# ================================
+# HELPER FUNCTIONS
+# ================================
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "bookkeeping-backend"
+    }), 200
+
+# Error handlers
+@app.errorhandler(401)
+def unauthorized(error):
+    return jsonify({
+        "success": False,
+        "error": "Authentication required"
+    }), 401
+
+@app.errorhandler(403)
+def forbidden(error):
+    return jsonify({
+        "success": False,
+        "error": "Insufficient permissions"
+    }), 403
 
 
 
