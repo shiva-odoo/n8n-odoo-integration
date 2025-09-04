@@ -22,7 +22,7 @@ def main(form_data, files):
             'registrationNo': form_data.get('registrationNo', ''),
             'vatNo': form_data.get('vatNo', ''),
             'repName': form_data.get('repName', ''),
-            '   ': form_data.get('repEmail', ''),
+            'repEmail': form_data.get('repEmail', ''),
         }
         
         # Prepare files for upload
