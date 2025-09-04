@@ -12,7 +12,7 @@ JWT_ALGORITHM = 'HS256'
 JWT_EXPIRY_MINUTES = 30
 
 # DynamoDB setup
-dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Change region as needed
+dynamodb = boto3.resource('dynamodb', region_name='eu-north-1')  # Change region as needed
 users_table = dynamodb.Table('users')
 
 def hash_password(password):
