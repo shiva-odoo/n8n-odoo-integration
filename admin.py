@@ -6,10 +6,26 @@ from auth import create_user_account
 import requests
 import secrets
 import string
+from decimal import Decimal
 
 # DynamoDB setup
 dynamodb = boto3.resource('dynamodb', region_name='eu-north-1')  # Change region as needed
 onboarding_table = dynamodb.Table('onboarding_submissions')
+
+def convert_decimal(obj):
+    """Convert DynamoDB Decimal objects to regular Python numbers"""
+    if isinstance(obj, dict):
+        return {k: convert_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimal(v) for v in obj]
+    elif isinstance(obj, Decimal):
+        # Convert to int if it's a whole number, otherwise float
+        if obj % 1 == 0:
+            return int(obj)
+        else:
+            return float(obj)
+    else:
+        return obj
 
 def get_all_companies():
     """Get all onboarding submissions for admin dashboard"""
@@ -17,6 +33,9 @@ def get_all_companies():
         # Scan the onboarding_submissions table
         response = onboarding_table.scan()
         companies = response.get('Items', [])
+        
+        # Convert Decimal objects
+        companies = convert_decimal(companies)
         
         # Sort by submission date (newest first)
         companies.sort(key=lambda x: x.get('submitted_at', ''), reverse=True)
@@ -75,6 +94,9 @@ def get_company_details(submission_id):
         
         company = response['Item']
         
+        # Convert Decimal objects
+        company = convert_decimal(company)
+        
         return {
             "success": True,
             "company": company
@@ -119,11 +141,24 @@ def approve_company(submission_id, approved_by_username):
         
         company = company_result["company"]
         
-        # Check if already approved
-        if company['status'] in ['manual_approved', 'ai_approved']:
+        # Check if already manually approved or rejected
+        if company['status'] == 'manual_approved':
             return {
                 "success": False,
-                "error": "Company is already approved"
+                "error": "Company is already manually approved"
+            }
+        
+        if company['status'] == 'rejected':
+            return {
+                "success": False,
+                "error": "Cannot approve a rejected company"
+            }
+        
+        # Allow approval for both 'pending' and 'ai_approved' statuses
+        if company['status'] not in ['pending', 'ai_approved']:
+            return {
+                "success": False,
+                "error": f"Cannot approve company with status: {company['status']}"
             }
         
         # Generate username and password
@@ -152,7 +187,7 @@ def approve_company(submission_id, approved_by_username):
                 "error": "Failed to create user account"
             }
         
-        # Update onboarding submission status
+        # Update onboarding submission status to manual_approved
         onboarding_table.update_item(
             Key={'submission_id': submission_id},
             UpdateExpression='SET #status = :status, approved_at = :approved_at, approved_by = :approved_by, username = :username',
@@ -167,8 +202,7 @@ def approve_company(submission_id, approved_by_username):
             }
         )
         
-        # TODO: Send email with credentials via n8n
-        # You can trigger an n8n webhook here to send the email
+        # Send email with credentials via n8n
         send_credentials_email(company['rep_email'], company['company_name'], username, password)
         
         print(f"✅ Company {company['company_name']} approved by {approved_by_username}")
@@ -203,6 +237,19 @@ def reject_company(submission_id, rejected_by_username, reason):
         
         company = company_result["company"]
         
+        # Check if already processed
+        if company['status'] == 'rejected':
+            return {
+                "success": False,
+                "error": "Company is already rejected"
+            }
+        
+        if company['status'] == 'manual_approved':
+            return {
+                "success": False,
+                "error": "Cannot reject an already approved company"
+            }
+        
         # Update submission status to rejected
         onboarding_table.update_item(
             Key={'submission_id': submission_id},
@@ -218,7 +265,7 @@ def reject_company(submission_id, rejected_by_username, reason):
             }
         )
         
-        # TODO: Send rejection email via n8n
+        # Send rejection email via n8n
         send_rejection_email(company['rep_email'], company['company_name'], reason)
         
         print(f"✅ Company {company['company_name']} rejected by {rejected_by_username}")
