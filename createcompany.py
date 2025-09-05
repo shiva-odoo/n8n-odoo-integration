@@ -270,8 +270,8 @@ def main(data):
         "city": "City Name",                      # optional - City
         "zip": "12345",                           # optional - ZIP
         "state": "State Name",                    # optional - State
-        "country_code": "IN",                     # optional - Country (ISO code)
-        "currency_code": "INR",                   # optional - Currency (ISO code)
+        "country_code": "IN",                     # optional - Country (ISO code) - defaults to "CY"
+        "currency_code": "INR",                   # optional - Currency (ISO code) - defaults to "EUR"
         "similarity_threshold": 85,               # optional - Similarity threshold for duplicate detection (0-100)
         "allow_similar": False                    # optional - Whether to allow creation despite similar names
     }
@@ -283,6 +283,11 @@ def main(data):
             'success': False,
             'error': 'name is required'
         }
+    
+    # Set default values for country and currency codes
+    # Default to Cyprus (CY) and Euro (EUR) when not provided
+    country_code = data.get('country_code', 'CY')
+    currency_code = data.get('currency_code', 'EUR')
     
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -381,26 +386,47 @@ def main(data):
             if value and field in available_fields:
                 company_data[field] = value
 
-        # Handle country (if country_code provided and country_id field exists)
-        if data.get('country_code') and 'country_id' in available_fields:
-            country_id = get_country_id(models, db, uid, password, data['country_code'])
+        # Handle country - always validate since we have a default
+        if 'country_id' in available_fields:
+            country_id = get_country_id(models, db, uid, password, country_code)
             if country_id:
                 company_data['country_id'] = country_id
+                print(f"Using country: {country_code} {'(default)' if not data.get('country_code') else '(provided)'}")
             else:
+                # If user provided an invalid country code, throw error
+                # If using default and it's invalid, also throw error (shouldn't happen with CY)
+                default_used = not data.get('country_code')
+                error_msg = f'Country code "{country_code}" not found'
+                if default_used:
+                    error_msg += ' (default value)'
+                else:
+                    error_msg += ' (provided value)'
+                
                 return {
                     'success': False,
-                    'error': f'Country code "{data["country_code"]}" not found'
+                    'error': error_msg
                 }
 
-        # Handle currency (if currency_code provided and currency_id field exists)
+        # Handle currency - always validate since we have a default
         currency_id = None
         currency_warning = None
-        if data.get('currency_code') and 'currency_id' in available_fields:
-            currency_id = get_currency_id(models, db, uid, password, data['currency_code'])
+        if 'currency_id' in available_fields:
+            currency_id = get_currency_id(models, db, uid, password, currency_code)
             if currency_id:
                 company_data['currency_id'] = currency_id
+                print(f"Using currency: {currency_code} {'(default)' if not data.get('currency_code') else '(provided)'}")
             else:
-                currency_warning = f'Currency code "{data["currency_code"]}" not found - company created without specific currency'
+                # If user provided an invalid currency code, throw error
+                # If using default and it's invalid, show warning but continue
+                default_used = not data.get('currency_code')
+                if default_used:
+                    currency_warning = f'Default currency code "{currency_code}" not found - company created without specific currency'
+                    print(f"Warning: {currency_warning}")
+                else:
+                    return {
+                        'success': False,
+                        'error': f'Currency code "{currency_code}" not found'
+                    }
 
         # Handle state (if state provided and state_id field exists)
         if data.get('state') and company_data.get('country_id') and 'state_id' in available_fields:
@@ -425,8 +451,8 @@ def main(data):
 
         print(f"Company created successfully with ID: {company_id}")
 
-        # Initiate Chart of Accounts installation
-        chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, data.get('country_code'))
+        # Initiate Chart of Accounts installation - use the resolved country_code (including default)
+        chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, country_code)
         print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
 
         # Wait for Chart of Accounts to be ready before creating journals
@@ -471,6 +497,22 @@ def main(data):
             'company_name': company_info['name'],
             'message': 'Company created successfully'
         }
+        
+        # Add information about defaults used
+        defaults_used = []
+        if not data.get('country_code'):
+            defaults_used.append(f'country_code: {country_code}')
+        if not data.get('currency_code'):
+            defaults_used.append(f'currency_code: {currency_code}')
+        
+        if defaults_used:
+            response['defaults_applied'] = {
+                'message': f'Applied default values for: {", ".join(defaults_used)}',
+                'defaults': {
+                    'country_code': country_code if not data.get('country_code') else None,
+                    'currency_code': currency_code if not data.get('currency_code') else None
+                }
+            }
         
         # Add similarity check results to response for transparency
         if similar_check.get('has_similar') and allow_similar:
@@ -576,8 +618,6 @@ def check_company_similarity(data):
             'success': False,
             'error': str(e)
         }
-
-# [Rest of the functions remain the same - wait_for_chart_of_accounts, create_essential_journals, etc.]
 
 def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120, check_interval=5):
     """
