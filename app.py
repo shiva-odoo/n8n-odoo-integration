@@ -1409,6 +1409,63 @@ def update_submission_files(submission_id):
         }), 500
 
 
+@app.route("/api/admin/companies/<submission_id>/documents", methods=["GET"])
+@jwt_required
+@admin_required
+def get_company_documents_endpoint(submission_id):
+    """Get documents for a specific company submission"""
+    try:
+        result = admin.get_company_documents(submission_id)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 404 if "not found" in result["error"].lower() else 500
+            
+    except Exception as e:
+        print(f"❌ Get company documents error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to retrieve documents"
+        }), 500
+
+@app.route("/api/admin/companies/<submission_id>/files", methods=["PUT"])
+@jwt_required
+@admin_required
+def update_submission_files_endpoint(submission_id):
+    """Update the files field for a specific onboarding submission"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "JSON body is required"
+            }), 400
+        
+        files_data = data.get('files')
+        
+        if not files_data:
+            return jsonify({
+                "success": False,
+                "error": "files field is required in request body"
+            }), 400
+        
+        result = admin.update_submission_files(submission_id, files_data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Update submission files error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update submission files"
+        }), 500
+
+
 # ================================
 # HELPER FUNCTIONS
 # ================================

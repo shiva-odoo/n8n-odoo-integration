@@ -9,10 +9,74 @@ import requests
 import secrets
 import string
 from decimal import Decimal
+import os
+
+AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
 
 # DynamoDB setup
-dynamodb = boto3.resource('dynamodb', region_name='eu-north-1')  # Change region as needed
+dynamodb = boto3.resource('dynamodb', region_name='AWS_REGION')  # Change region as needed
 onboarding_table = dynamodb.Table('onboarding_submissions')
+
+# Update the existing S3 and DynamoDB setup lines
+s3_client = boto3.client('s3', region_name=AWS_REGION)
+dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
+
+def generate_presigned_url(s3_key, expiration=3600):
+    """Generate a presigned URL for S3 object"""
+    try:
+        response = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': S3_BUCKET_NAME, 'Key': s3_key},
+            ExpiresIn=expiration
+        )
+        return response
+    except ClientError as e:
+        print(f"❌ Error generating presigned URL for {s3_key}: {e}")
+        return None
+
+def get_company_documents(submission_id):
+    """Get documents for a specific company submission with presigned URLs"""
+    try:
+        # Get company details
+        response = onboarding_table.get_item(
+            Key={'submission_id': submission_id}
+        )
+        
+        if 'Item' not in response:
+            return {"success": False, "error": "Submission not found"}
+        
+        company = response['Item']
+        company = convert_decimal(company)
+        
+        # Get documents and generate presigned URLs
+        documents = []
+        files = company.get('files', [])
+        
+        for file_data in files:
+            s3_key = file_data.get('s3_key')
+            if s3_key:
+                presigned_url = generate_presigned_url(s3_key)
+                if presigned_url:
+                    documents.append({
+                        'filename': file_data.get('filename', s3_key.split('/')[-1]),
+                        's3_key': s3_key,
+                        'download_url': presigned_url,
+                        'file_type': file_data.get('file_type', 'unknown'),
+                        'bucket': file_data.get('bucket', S3_BUCKET_NAME),
+                        'uploaded_at': file_data.get('uploaded_at', ''),
+                        's3_location': file_data.get('s3_location', '')
+                    })
+        
+        return {
+            "success": True,
+            "documents": documents,
+            "total_count": len(documents)
+        }
+        
+    except Exception as e:
+        print(f"❌ Error getting company documents: {e}")
+        return {"success": False, "error": "Failed to get documents"}
 
 def convert_decimal(obj):
     """Convert DynamoDB Decimal objects to regular Python numbers"""
