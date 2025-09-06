@@ -32,6 +32,16 @@ try:
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
 
+import base64
+import logging
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# PDF extraction availability (set based on your setup)
+PDF_EXTRACTION_AVAILABLE = False  # Change to True if you have PDF processing modules
 import upload
 import onboarding
 import auth
@@ -1435,42 +1445,8 @@ def get_company_documents_endpoint(submission_id):
             "success": False,
             "error": "Failed to retrieve documents"
         }), 500
+    
 
-@app.route("/api/admin/companies/<submission_id>/files", methods=["PUT"])
-@jwt_required
-@admin_required
-def update_submission_files_endpoint(submission_id):
-    """Update the files field for a specific onboarding submission"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                "success": False,
-                "error": "JSON body is required"
-            }), 400
-        
-        files_data = data.get('files')
-        
-        if not files_data:
-            return jsonify({
-                "success": False,
-                "error": "files field is required in request body"
-            }), 400
-        
-        result = admin.update_submission_files(submission_id, files_data)
-        
-        if result["success"]:
-            return jsonify(result), 200
-        else:
-            return jsonify(result), 400
-            
-    except Exception as e:
-        print(f"❌ Update submission files error: {e}")
-        return jsonify({
-            "success": False,
-            "error": "Failed to update submission files"
-        }), 500
 
 
 # ================================

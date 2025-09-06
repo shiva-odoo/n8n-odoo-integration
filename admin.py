@@ -11,16 +11,15 @@ import string
 from decimal import Decimal
 import os
 
+
+# Configuration from environment variables with fallbacks
 AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
 S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
 
-# DynamoDB setup
-dynamodb = boto3.resource('dynamodb', region_name='AWS_REGION')  # Change region as needed
-onboarding_table = dynamodb.Table('onboarding_submissions')
-
-# Update the existing S3 and DynamoDB setup lines
+# AWS clients with consistent region configuration
 s3_client = boto3.client('s3', region_name=AWS_REGION)
 dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
+onboarding_table = dynamodb.Table('onboarding_submissions')
 
 def generate_presigned_url(s3_key, expiration=3600):
     """Generate a presigned URL for S3 object"""
