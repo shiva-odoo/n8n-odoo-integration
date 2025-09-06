@@ -116,19 +116,27 @@ def get_company_details(submission_id):
             "error": "Failed to get company details"
         }
 
-def generate_username_password(company_name):
-    """Generate username and password for approved company"""
-    # Create username from company name
-    username = company_name.lower().replace(' ', '_').replace('-', '_')
-    username = ''.join(c for c in username if c.isalnum() or c == '_')
-    username = username[:20]  # Limit length
+def generate_username_password(company_name, password_length=12):
+    """Generate username (max 12 chars with 2-digit suffix) and secure password"""
     
-    # Add random suffix to ensure uniqueness
-    suffix = ''.join(secrets.choice(string.digits) for _ in range(4))
-    username = f"{username}_{suffix}"
+    # Clean company name: only alphanumeric, lowercase
+    base = ''.join(c for c in company_name.lower() if c.isalnum())
+    
+    if not base:
+        base = "user"
+    
+    # Add random 2-digit suffix
+    suffix = ''.join(secrets.choice(string.digits) for _ in range(2))
+    
+    # Ensure base length + 2 <= 12
+    max_base_length = 12 - len(suffix)
+    base = base[:max_base_length]
+    
+    username = base + suffix
     
     # Generate secure password
-    password = ''.join(secrets.choice(string.ascii_letters + string.digits + '!@#$%') for _ in range(12))
+    all_chars = string.ascii_letters + string.digits + '!@#$%'
+    password = ''.join(secrets.choice(all_chars) for _ in range(password_length))
     
     return username, password
 
