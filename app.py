@@ -42,7 +42,14 @@ import validatecompany
 
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}) 
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["*"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Home endpoint with comprehensive API documentation
 
