@@ -1,3 +1,4 @@
+#admin.py
 import boto3
 import json
 from datetime import datetime
@@ -478,3 +479,63 @@ def send_rejection_email(email, company_name, reason):
     except Exception as e:
         print(f"❌ Error sending rejection email: {e}")
         return False
+    
+
+def update_submission_files(submission_id, files_data):
+    """Update the files field for a specific onboarding submission"""
+    try:
+        # Validate input
+        if not submission_id:
+            return {
+                "success": False,
+                "error": "submission_id is required"
+            }
+        
+        if not files_data or not isinstance(files_data, list):
+            return {
+                "success": False,
+                "error": "files_data must be a non-empty list"
+            }
+        
+        # Validate that submission exists
+        response = onboarding_table.get_item(
+            Key={'submission_id': submission_id}
+        )
+        
+        if 'Item' not in response:
+            return {
+                "success": False,
+                "error": "Submission not found"
+            }
+        
+        # Update the files field
+        onboarding_table.update_item(
+            Key={'submission_id': submission_id},
+            UpdateExpression='SET files = :files, updated_at = :updated_at',
+            ExpressionAttributeValues={
+                ':files': files_data,
+                ':updated_at': datetime.utcnow().isoformat()
+            }
+        )
+        
+        print(f"✅ Updated files for submission {submission_id} with {len(files_data)} files")
+        
+        return {
+            "success": True,
+            "message": f"Successfully updated {len(files_data)} files for submission {submission_id}",
+            "submission_id": submission_id,
+            "files_count": len(files_data)
+        }
+        
+    except ClientError as e:
+        print(f"❌ DynamoDB error updating files: {e}")
+        return {
+            "success": False,
+            "error": "Failed to update submission files"
+        }
+    except Exception as e:
+        print(f"❌ Error updating submission files: {e}")
+        return {
+            "success": False,
+            "error": "Update process failed"
+        }
