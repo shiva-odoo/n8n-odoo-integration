@@ -308,6 +308,7 @@ def approve_company(submission_id, approved_by_username, admin_email):
             'email': company['rep_email'],
             'company_name': company['company_name'],
             'company_id': f"cmp_{submission_id}",
+            'business_company_id': business_company_id,  # Add Odoo company ID
             'role': 'user',
             'metadata': {
                 'registration_no': company.get('registration_no', ''),
