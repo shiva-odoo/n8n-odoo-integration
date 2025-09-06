@@ -1375,8 +1375,6 @@ def upload_files():
 # ================================
 
 @app.route("/api/admin/companies/<submission_id>/files", methods=["PUT"])
-@jwt_required
-@admin_required
 def update_submission_files(submission_id):
     """Update the files field for a specific onboarding submission"""
     try:
