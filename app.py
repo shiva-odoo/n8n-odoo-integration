@@ -49,7 +49,7 @@ import admin
 from middleware import jwt_required, admin_required, get_current_user
 from flask import g
 import validatecompany
-
+import batchupdate
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1364,27 +1364,216 @@ def onboard_company():
 
 
 # ================================
-# SECURE DOCUMENT UPLOAD (Updated)
+# UPDATED UPLOAD ROUTE (Replace existing)
 # ================================
 
 @app.route("/api/upload", methods=["POST"])
-@jwt_required  # Now requires authentication
+@jwt_required
 def upload_files():
-    """Upload files and forward to n8n (now requires authentication)"""
+    """Upload files with batch tracking"""
+    try:
+        current_user = get_current_user()
+        files = request.files.getlist("files")
+        
+        if not files:
+            return jsonify({
+                "status": "error", 
+                "error": "No files uploaded"
+            }), 400
+        
+        # Prepare form data with user context
+        form_data = {
+            'company_name': current_user['company_name'],
+            'email': current_user['email'],
+            'user_id': current_user['username'],
+            'company_id': current_user.get('company_id', '')
+        }
+        
+        # Call upload.main which now handles batch creation
+        result = upload.main(form_data, files)
+        
+        status_code = 200 if result.get("status") == "success" else 500
+        return jsonify(result), status_code
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error", 
+            "error": str(e)
+        }), 500
+
+# ================================
+# NEW BATCH ROUTES 
+# ================================
+
+@app.route("/api/batches", methods=["GET"])
+@jwt_required
+def get_user_batches():
+    """Get current user's batches for smart polling"""
+    try:
+        current_user = get_current_user()
+        result = upload.get_user_batches(current_user['username'])
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route("/api/batches/incomplete", methods=["GET"])
+@jwt_required
+def get_user_incomplete_batches():
+    """Get current user's incomplete batches for smart polling optimization"""
+    try:
+        current_user = get_current_user()
+        result = upload.get_incomplete_batches(current_user['username'])
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route("/api/batches/<batch_id>/status", methods=["PUT"])
+def update_batch_status_endpoint(batch_id):
+    """Update batch status (called by n8n) - No auth required for n8n"""
+    try:
+        data = request.get_json()
+        
+        if not data or not data.get('processing_stage'):
+            return jsonify({
+                "success": False,
+                "error": "processing_stage is required"
+            }), 400
+        
+        processing_stage = data['processing_stage']
+        completed_documents = data.get('completed_documents', 0)
+        failed_documents = data.get('failed_documents', 0)
+        
+        # Update batch in DynamoDB
+        update_expression = 'SET processing_stage = :stage, completed_documents = :completed, failed_documents = :failed, updated_at = :updated'
+        expression_values = {
+            ':stage': processing_stage,
+            ':completed': completed_documents,
+            ':failed': failed_documents,
+            ':updated': datetime.utcnow().isoformat()
+        }
+        
+        upload.batch_table.update_item(
+            Key={'batch_id': batch_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values
+        )
+        
+        print(f"✅ Batch {batch_id} updated to {processing_stage} by n8n")
+        
+        return jsonify({
+            "success": True,
+            "message": "Batch status updated successfully",
+            "batch_id": batch_id,
+            "new_stage": processing_stage
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error updating batch status: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route("/api/batches/<batch_id>", methods=["GET"])
+@jwt_required
+def get_batch_details(batch_id):
+    """Get specific batch details"""
     try:
         current_user = get_current_user()
         
-        # Add user context to the upload
-        form_data = request.form.copy()
-        form_data['user_id'] = current_user['username']
-        form_data['company_id'] = current_user['company_id']
-        form_data['company_name'] = current_user['company_name']
+        # Verify the batch belongs to the current user
+        response = upload.batch_table.get_item(Key={'batch_id': batch_id})
         
-        result = upload.main(form_data, request.files.getlist("files"))
-        status_code = 200 if result.get("status") == "success" else 400
-        return jsonify(result), status_code
+        if 'Item' not in response:
+            return jsonify({
+                "success": False,
+                "error": "Batch not found"
+            }), 404
+        
+        batch = response['Item']
+        batch = upload.convert_decimal(batch)
+        
+        # Security check - ensure user owns this batch
+        if batch.get('username') != current_user['username']:
+            return jsonify({
+                "success": False,
+                "error": "Access denied"
+            }), 403
+        
+        return jsonify({
+            "success": True,
+            "batch": batch
+        }), 200
+        
     except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+    
+# Add these endpoints to your existing app.py file:
+
+@app.route("/api/batches/<batch_id>/status", methods=["PUT"])
+def update_batch_status_endpoint(batch_id):
+    """Update batch status (called by n8n) - No auth required for n8n"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "JSON body is required"
+            }), 400
+        
+        # Call the batchupdate function
+        result = batchupdate.update_batch_status(batch_id, data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Update batch status error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update batch status"
+        }), 500
+
+@app.route("/api/batches", methods=["GET"])
+@jwt_required
+def get_user_batches():
+    """Get current user's batches for smart polling"""
+    try:
+        current_user = get_current_user()
+        result = upload.get_user_batches(current_user['username'])
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
     
 
 # ================================
