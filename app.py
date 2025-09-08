@@ -1122,8 +1122,6 @@ def update_audit_status():
             "success": False,
             "error": str(e)
         }), 500
-    
-
 
 @app.route('/api/company/validate', methods=['POST'])
 def validate_company():
@@ -1134,8 +1132,7 @@ def validate_company():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
-    
-#app.py
+
 # ================================
 # AUTHENTICATION ROUTES
 # ================================
@@ -1274,8 +1271,6 @@ def get_onboarding_details(submission_id):
             "error": "Failed to retrieve onboarding details"
         }), 500
 
-# Replace the existing approve route in your app.py with this updated version:
-
 @app.route("/api/admin/companies/<submission_id>/approve", methods=["PUT"])
 @jwt_required
 @admin_required
@@ -1284,9 +1279,8 @@ def approve_onboarding_submission(submission_id):
     try:
         current_user = get_current_user()
         admin_username = current_user['username']
-        admin_email = current_user['email']  # Get admin email from JWT
+        admin_email = current_user['email']
         
-        # Pass admin email to the approve function
         result = admin.approve_company(submission_id, admin_username, admin_email)
         
         if result["success"]:
@@ -1327,6 +1321,60 @@ def reject_onboarding_submission(submission_id):
             "error": "Failed to reject onboarding submission"
         }), 500
 
+@app.route("/api/admin/companies/<submission_id>/files", methods=["PUT"])
+def update_submission_files(submission_id):
+    """Update the files field for a specific onboarding submission"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "JSON body is required"
+            }), 400
+        
+        files_data = data.get('files')
+        
+        if not files_data:
+            return jsonify({
+                "success": False,
+                "error": "files field is required in request body"
+            }), 400
+        
+        result = admin.update_submission_files(submission_id, files_data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Update submission files error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update submission files"
+        }), 500
+
+@app.route("/api/admin/companies/<submission_id>/documents", methods=["GET"])
+@jwt_required
+@admin_required
+def get_company_documents_endpoint(submission_id):
+    """Get documents for a specific company submission"""
+    try:
+        result = admin.get_company_documents(submission_id)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 404 if "not found" in result["error"].lower() else 500
+            
+    except Exception as e:
+        print(f"❌ Get company documents error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to retrieve documents"
+        }), 500
+
 # ================================
 # USER ROUTES (Protected)
 # ================================
@@ -1350,8 +1398,6 @@ def get_user_profile():
             "error": "Failed to get user profile"
         }), 500
 
-
-# Add this route to your app.py file
 @app.route("/api/onboarding", methods=["POST"])
 def onboard_company():
     """Handle company onboarding form submission and forward to n8n"""
@@ -1362,9 +1408,8 @@ def onboard_company():
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
-
 # ================================
-# UPDATED UPLOAD ROUTE (Replace existing)
+# UPLOAD AND BATCH ROUTES (No Duplicates)
 # ================================
 
 @app.route("/api/upload", methods=["POST"])
@@ -1401,10 +1446,6 @@ def upload_files():
             "error": str(e)
         }), 500
 
-# ================================
-# NEW BATCH ROUTES 
-# ================================
-
 @app.route("/api/batches", methods=["GET"])
 @jwt_required
 def get_user_batches():
@@ -1423,111 +1464,6 @@ def get_user_batches():
             "success": False,
             "error": str(e)
         }), 500
-
-@app.route("/api/batches/incomplete", methods=["GET"])
-@jwt_required
-def get_user_incomplete_batches():
-    """Get current user's incomplete batches for smart polling optimization"""
-    try:
-        current_user = get_current_user()
-        result = upload.get_incomplete_batches(current_user['username'])
-        
-        if result["success"]:
-            return jsonify(result), 200
-        else:
-            return jsonify(result), 500
-            
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route("/api/batches/<batch_id>/status", methods=["PUT"])
-def update_batch_status_endpoint(batch_id):
-    """Update batch status (called by n8n) - No auth required for n8n"""
-    try:
-        data = request.get_json()
-        
-        if not data or not data.get('processing_stage'):
-            return jsonify({
-                "success": False,
-                "error": "processing_stage is required"
-            }), 400
-        
-        processing_stage = data['processing_stage']
-        completed_documents = data.get('completed_documents', 0)
-        failed_documents = data.get('failed_documents', 0)
-        
-        # Update batch in DynamoDB
-        update_expression = 'SET processing_stage = :stage, completed_documents = :completed, failed_documents = :failed, updated_at = :updated'
-        expression_values = {
-            ':stage': processing_stage,
-            ':completed': completed_documents,
-            ':failed': failed_documents,
-            ':updated': datetime.utcnow().isoformat()
-        }
-        
-        upload.batch_table.update_item(
-            Key={'batch_id': batch_id},
-            UpdateExpression=update_expression,
-            ExpressionAttributeValues=expression_values
-        )
-        
-        print(f"✅ Batch {batch_id} updated to {processing_stage} by n8n")
-        
-        return jsonify({
-            "success": True,
-            "message": "Batch status updated successfully",
-            "batch_id": batch_id,
-            "new_stage": processing_stage
-        }), 200
-        
-    except Exception as e:
-        print(f"❌ Error updating batch status: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route("/api/batches/<batch_id>", methods=["GET"])
-@jwt_required
-def get_batch_details(batch_id):
-    """Get specific batch details"""
-    try:
-        current_user = get_current_user()
-        
-        # Verify the batch belongs to the current user
-        response = upload.batch_table.get_item(Key={'batch_id': batch_id})
-        
-        if 'Item' not in response:
-            return jsonify({
-                "success": False,
-                "error": "Batch not found"
-            }), 404
-        
-        batch = response['Item']
-        batch = upload.convert_decimal(batch)
-        
-        # Security check - ensure user owns this batch
-        if batch.get('username') != current_user['username']:
-            return jsonify({
-                "success": False,
-                "error": "Access denied"
-            }), 403
-        
-        return jsonify({
-            "success": True,
-            "batch": batch
-        }), 200
-        
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-    
-# Add these endpoints to your existing app.py file:
 
 @app.route("/api/batches/<batch_id>/status", methods=["PUT"])
 def update_batch_status_endpoint(batch_id):
@@ -1555,88 +1491,6 @@ def update_batch_status_endpoint(batch_id):
             "success": False,
             "error": "Failed to update batch status"
         }), 500
-
-@app.route("/api/batches", methods=["GET"])
-@jwt_required
-def get_user_batches():
-    """Get current user's batches for smart polling"""
-    try:
-        current_user = get_current_user()
-        result = upload.get_user_batches(current_user['username'])
-        
-        if result["success"]:
-            return jsonify(result), 200
-        else:
-            return jsonify(result), 500
-            
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-    
-
-# ================================
-# Upload the file s3 keys to their corresponding submission_id 
-# ================================
-
-@app.route("/api/admin/companies/<submission_id>/files", methods=["PUT"])
-def update_submission_files(submission_id):
-    """Update the files field for a specific onboarding submission"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                "success": False,
-                "error": "JSON body is required"
-            }), 400
-        
-        files_data = data.get('files')
-        
-        if not files_data:
-            return jsonify({
-                "success": False,
-                "error": "files field is required in request body"
-            }), 400
-        
-        result = admin.update_submission_files(submission_id, files_data)
-        
-        if result["success"]:
-            return jsonify(result), 200
-        else:
-            return jsonify(result), 400
-            
-    except Exception as e:
-        print(f"❌ Update submission files error: {e}")
-        return jsonify({
-            "success": False,
-            "error": "Failed to update submission files"
-        }), 500
-
-
-@app.route("/api/admin/companies/<submission_id>/documents", methods=["GET"])
-@jwt_required
-@admin_required
-def get_company_documents_endpoint(submission_id):
-    """Get documents for a specific company submission"""
-    try:
-        result = admin.get_company_documents(submission_id)
-        
-        if result["success"]:
-            return jsonify(result), 200
-        else:
-            return jsonify(result), 404 if "not found" in result["error"].lower() else 500
-            
-    except Exception as e:
-        print(f"❌ Get company documents error: {e}")
-        return jsonify({
-            "success": False,
-            "error": "Failed to retrieve documents"
-        }), 500
-    
-
-
 
 # ================================
 # HELPER FUNCTIONS
@@ -1666,7 +1520,6 @@ def forbidden(error):
         "error": "Insufficient permissions"
     }), 403
 
-# Error handlers
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
@@ -1679,9 +1532,7 @@ def internal_error(error):
 def bad_request(error):
     return jsonify({'success': False, 'error': 'Bad request - check your JSON format'}), 400
 
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=True)
-    #this is commentline
