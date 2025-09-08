@@ -1,7 +1,6 @@
 import xmlrpc.client
 import os
 import time
-import re
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -10,249 +9,6 @@ if os.path.exists('.env'):
         load_dotenv()
     except ImportError:
         pass  # dotenv not installed, use system env vars
-
-def levenshtein_distance(s1, s2):
-    """
-    Calculate the Levenshtein distance between two strings.
-    Returns the minimum number of single-character edits needed to transform s1 into s2.
-    """
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
-
-    if len(s2) == 0:
-        return len(s1)
-
-    previous_row = list(range(len(s2) + 1))
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-    
-    return previous_row[-1]
-
-def normalize_company_name(name):
-    """
-    Normalize company name for better comparison by:
-    - Converting to lowercase
-    - Removing common business suffixes
-    - Removing extra whitespace and punctuation
-    - Expanding common abbreviations
-    """
-    if not name:
-        return ""
-    
-    # Convert to lowercase
-    normalized = name.lower().strip()
-    
-    # Remove common business entity suffixes and abbreviations
-    business_suffixes = [
-        r'\b(inc\.?|incorporated)\b',
-        r'\b(corp\.?|corporation)\b', 
-        r'\b(ltd\.?|limited)\b',
-        r'\b(llc\.?|l\.l\.c\.?)\b',
-        r'\b(llp\.?|l\.l\.p\.?)\b',
-        r'\b(plc\.?|p\.l\.c\.?)\b',
-        r'\b(co\.?|company)\b',
-        r'\b(pvt\.?|private)\b',
-        r'\b(pte\.?|pte)\b',
-        r'\b(gmbh\.?)\b',
-        r'\b(sa\.?|s\.a\.?)\b',
-        r'\b(ag\.?|a\.g\.?)\b',
-        r'\b(bv\.?|b\.v\.?)\b',
-        r'\b(nv\.?|n\.v\.?)\b',
-        r'\b(srl\.?|s\.r\.l\.?)\b',
-        r'\b(spa\.?|s\.p\.a\.?)\b',
-        r'\b(sas\.?|s\.a\.s\.?)\b',
-        r'\b(sarl\.?|s\.a\.r\.l\.?)\b'
-    ]
-    
-    for suffix in business_suffixes:
-        normalized = re.sub(suffix, '', normalized)
-    
-    # Remove extra punctuation and whitespace
-    normalized = re.sub(r'[^\w\s]', ' ', normalized)
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-    
-    return normalized
-
-def calculate_similarity(s1, s2):
-    """
-    Calculate similarity percentage between two strings using Levenshtein distance.
-    Returns a value between 0 and 100 (100 being identical).
-    """
-    if not s1 or not s2:
-        return 0.0
-    
-    # Normalize both strings
-    norm_s1 = normalize_company_name(s1)
-    norm_s2 = normalize_company_name(s2)
-    
-    if not norm_s1 or not norm_s2:
-        return 0.0
-    
-    if norm_s1 == norm_s2:
-        return 100.0
-    
-    # Calculate Levenshtein distance
-    distance = levenshtein_distance(norm_s1, norm_s2)
-    max_len = max(len(norm_s1), len(norm_s2))
-    
-    # Convert to similarity percentage
-    similarity = ((max_len - distance) / max_len) * 100
-    return max(0.0, similarity)
-
-def jaro_winkler_similarity(s1, s2):
-    """
-    Calculate Jaro-Winkler similarity between two strings.
-    Good for detecting typos and similar names.
-    """
-    def jaro_distance(s1, s2):
-        if s1 == s2:
-            return 1.0
-        
-        len1, len2 = len(s1), len(s2)
-        if len1 == 0 or len2 == 0:
-            return 0.0
-        
-        match_window = max(len1, len2) // 2 - 1
-        match_window = max(0, match_window)
-        
-        s1_matches = [False] * len1
-        s2_matches = [False] * len2
-        
-        matches = 0
-        transpositions = 0
-        
-        # Find matches
-        for i in range(len1):
-            start = max(0, i - match_window)
-            end = min(i + match_window + 1, len2)
-            for j in range(start, end):
-                if s2_matches[j] or s1[i] != s2[j]:
-                    continue
-                s1_matches[i] = s2_matches[j] = True
-                matches += 1
-                break
-        
-        if matches == 0:
-            return 0.0
-        
-        # Find transpositions
-        k = 0
-        for i in range(len1):
-            if not s1_matches[i]:
-                continue
-            while not s2_matches[k]:
-                k += 1
-            if s1[i] != s2[k]:
-                transpositions += 1
-            k += 1
-        
-        jaro = (matches / len1 + matches / len2 + (matches - transpositions / 2) / matches) / 3
-        return jaro
-    
-    # Normalize strings
-    norm_s1 = normalize_company_name(s1)
-    norm_s2 = normalize_company_name(s2)
-    
-    if not norm_s1 or not norm_s2:
-        return 0.0
-    
-    jaro = jaro_distance(norm_s1, norm_s2)
-    
-    # Apply Winkler prefix bonus
-    prefix_len = 0
-    for i in range(min(len(norm_s1), len(norm_s2), 4)):
-        if norm_s1[i] == norm_s2[i]:
-            prefix_len += 1
-        else:
-            break
-    
-    return (jaro + (0.1 * prefix_len * (1 - jaro))) * 100
-
-def check_similar_companies(models, db, uid, password, company_name, similarity_threshold=85):
-    """
-    Check for existing companies with similar names using fuzzy string matching.
-    
-    Args:
-        models: Odoo models proxy
-        db: Database name
-        uid: User ID
-        password: API password
-        company_name: New company name to check
-        similarity_threshold: Minimum similarity percentage to consider a match (0-100)
-    
-    Returns:
-        dict: Contains 'has_similar', 'similar_companies' list, and 'exact_match' boolean
-    """
-    try:
-        # Get all existing company names
-        existing_companies = models.execute_kw(
-            db, uid, password,
-            'res.company', 'search_read',
-            [[]], 
-            {'fields': ['id', 'name']}
-        )
-        
-        similar_companies = []
-        exact_match = False
-        
-        for company in existing_companies:
-            existing_name = company.get('name', '')
-            if not existing_name:
-                continue
-            
-            # Check for exact match (case insensitive)
-            if company_name.lower().strip() == existing_name.lower().strip():
-                exact_match = True
-                similar_companies.append({
-                    'id': company['id'],
-                    'name': existing_name,
-                    'similarity': 100.0,
-                    'match_type': 'exact'
-                })
-                continue
-            
-            # Calculate similarity using both algorithms
-            levenshtein_sim = calculate_similarity(company_name, existing_name)
-            jaro_winkler_sim = jaro_winkler_similarity(company_name, existing_name)
-            
-            # Use the higher of the two similarities
-            max_similarity = max(levenshtein_sim, jaro_winkler_sim)
-            
-            if max_similarity >= similarity_threshold:
-                match_type = 'jaro_winkler' if jaro_winkler_sim > levenshtein_sim else 'levenshtein'
-                similar_companies.append({
-                    'id': company['id'],
-                    'name': existing_name,
-                    'similarity': round(max_similarity, 2),
-                    'match_type': match_type,
-                    'levenshtein_similarity': round(levenshtein_sim, 2),
-                    'jaro_winkler_similarity': round(jaro_winkler_sim, 2)
-                })
-        
-        # Sort by similarity (highest first)
-        similar_companies.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        return {
-            'has_similar': len(similar_companies) > 0,
-            'similar_companies': similar_companies,
-            'exact_match': exact_match,
-            'total_checked': len(existing_companies)
-        }
-        
-    except Exception as e:
-        print(f"Error checking similar companies: {str(e)}")
-        return {
-            'has_similar': False,
-            'similar_companies': [],
-            'exact_match': False,
-            'error': str(e)
-        }
 
 def main(data):
     """
@@ -270,10 +26,8 @@ def main(data):
         "city": "City Name",                      # optional - City
         "zip": "12345",                           # optional - ZIP
         "state": "State Name",                    # optional - State
-        "country_code": "IN",                     # optional - Country (ISO code) - defaults to "CY"
-        "currency_code": "INR",                   # optional - Currency (ISO code) - defaults to "EUR"
-        "similarity_threshold": 85,               # optional - Similarity threshold for duplicate detection (0-100)
-        "allow_similar": False                    # optional - Whether to allow creation despite similar names
+        "country_code": "IN",                     # optional - Country (ISO code), defaults to "CY"
+        "currency_code": "INR"                    # optional - Currency (ISO code), defaults to "EUR"
     }
     """
     
@@ -284,10 +38,16 @@ def main(data):
             'error': 'name is required'
         }
     
-    # Set default values for country and currency codes
-    # Default to Cyprus (CY) and Euro (EUR) when not provided
-    country_code = data.get('country_code', 'CY')
-    currency_code = data.get('currency_code', 'EUR')
+    # Set default values for country_code and currency_code if empty or not provided
+    country_code = data.get('country_code', '').strip()
+    if not country_code:
+        country_code = 'CY'  # Default to Cyprus
+        data['country_code'] = country_code
+    
+    currency_code = data.get('currency_code', '').strip()
+    if not currency_code:
+        currency_code = 'EUR'  # Default to Euro
+        data['currency_code'] = currency_code
     
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -314,57 +74,18 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
 
-        # Enhanced duplicate checking with fuzzy matching
-        similarity_threshold = data.get('similarity_threshold', 85)  # Default 85% similarity
-        allow_similar = data.get('allow_similar', False)
-        
-        print(f"Checking for similar companies with threshold: {similarity_threshold}%")
-        
-        similar_check = check_similar_companies(
-            models, db, uid, password, 
-            data['name'], 
-            similarity_threshold
+        # Check if company already exists
+        existing_company = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_count',
+            [[('name', '=', data['name'])]]
         )
-        
-        if similar_check.get('error'):
-            print(f"Warning: Could not check for similar companies: {similar_check['error']}")
-            # Continue with basic exact match check as fallback
-            existing_company = models.execute_kw(
-                db, uid, password,
-                'res.company', 'search_count',
-                [[('name', '=', data['name'])]]
-            )
-            if existing_company:
-                return {
-                    'success': False,
-                    'error': f'Company with name "{data["name"]}" already exists (exact match)'
-                }
-        else:
-            # Check results from fuzzy matching
-            if similar_check['exact_match']:
-                return {
-                    'success': False,
-                    'error': f'Company with name "{data["name"]}" already exists (exact match)',
-                    'similar_companies': similar_check['similar_companies']
-                }
-            
-            if similar_check['has_similar'] and not allow_similar:
-                similar_companies = similar_check['similar_companies']
-                error_msg = f'Found {len(similar_companies)} similar company name(s). '
-                error_msg += f'Most similar: "{similar_companies[0]["name"]}" '
-                error_msg += f'({similar_companies[0]["similarity"]}% similarity). '
-                error_msg += 'Set "allow_similar": true to create anyway.'
-                
-                return {
-                    'success': False,
-                    'error': error_msg,
-                    'similar_companies': similar_companies,
-                    'suggestion': 'Consider using a more unique company name or set allow_similar=true'
-                }
-            
-            # Log if similar companies found but creation is allowed
-            if similar_check['has_similar'] and allow_similar:
-                print(f"Warning: Found {len(similar_check['similar_companies'])} similar companies, but proceeding due to allow_similar=true")
+
+        if existing_company:
+            return {
+                'success': False,
+                'error': f'Company with name "{data["name"]}" already exists'
+            }
 
         available_fields = get_available_company_fields(models, db, uid, password)
         company_data = {'name': data['name']}
@@ -386,47 +107,26 @@ def main(data):
             if value and field in available_fields:
                 company_data[field] = value
 
-        # Handle country - always validate since we have a default
+        # Handle country (use default CY if not provided or empty)
         if 'country_id' in available_fields:
             country_id = get_country_id(models, db, uid, password, country_code)
             if country_id:
                 company_data['country_id'] = country_id
-                print(f"Using country: {country_code} {'(default)' if not data.get('country_code') else '(provided)'}")
             else:
-                # If user provided an invalid country code, throw error
-                # If using default and it's invalid, also throw error (shouldn't happen with CY)
-                default_used = not data.get('country_code')
-                error_msg = f'Country code "{country_code}" not found'
-                if default_used:
-                    error_msg += ' (default value)'
-                else:
-                    error_msg += ' (provided value)'
-                
                 return {
                     'success': False,
-                    'error': error_msg
+                    'error': f'Country code "{country_code}" not found'
                 }
 
-        # Handle currency - always validate since we have a default
+        # Handle currency (use default EUR if not provided or empty)
         currency_id = None
         currency_warning = None
         if 'currency_id' in available_fields:
             currency_id = get_currency_id(models, db, uid, password, currency_code)
             if currency_id:
                 company_data['currency_id'] = currency_id
-                print(f"Using currency: {currency_code} {'(default)' if not data.get('currency_code') else '(provided)'}")
             else:
-                # If user provided an invalid currency code, throw error
-                # If using default and it's invalid, show warning but continue
-                default_used = not data.get('currency_code')
-                if default_used:
-                    currency_warning = f'Default currency code "{currency_code}" not found - company created without specific currency'
-                    print(f"Warning: {currency_warning}")
-                else:
-                    return {
-                        'success': False,
-                        'error': f'Currency code "{currency_code}" not found'
-                    }
+                currency_warning = f'Currency code "{currency_code}" not found - company created without specific currency'
 
         # Handle state (if state provided and state_id field exists)
         if data.get('state') and company_data.get('country_id') and 'state_id' in available_fields:
@@ -451,7 +151,7 @@ def main(data):
 
         print(f"Company created successfully with ID: {company_id}")
 
-        # Initiate Chart of Accounts installation - use the resolved country_code (including default)
+        # Initiate Chart of Accounts installation (use the country_code for chart selection)
         chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, country_code)
         print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
 
@@ -498,28 +198,11 @@ def main(data):
             'message': 'Company created successfully'
         }
         
-        # Add information about defaults used
-        defaults_used = []
-        if not data.get('country_code'):
-            defaults_used.append(f'country_code: {country_code}')
-        if not data.get('currency_code'):
-            defaults_used.append(f'currency_code: {currency_code}')
-        
-        if defaults_used:
-            response['defaults_applied'] = {
-                'message': f'Applied default values for: {", ".join(defaults_used)}',
-                'defaults': {
-                    'country_code': country_code if not data.get('country_code') else None,
-                    'currency_code': currency_code if not data.get('currency_code') else None
-                }
-            }
-        
-        # Add similarity check results to response for transparency
-        if similar_check.get('has_similar') and allow_similar:
-            response['similarity_warning'] = {
-                'message': f'Company created despite {len(similar_check["similar_companies"])} similar names found',
-                'similar_companies': similar_check['similar_companies'][:3]  # Include top 3 matches
-            }
+        # Add default values info to response
+        if data.get('country_code') != country_code:
+            response['country_default_applied'] = f'Used default country: {country_code}'
+        if data.get('currency_code') != currency_code:
+            response['currency_default_applied'] = f'Used default currency: {currency_code}'
         
         # Add chart of accounts status
         response['chart_of_accounts_status'] = chart_ready['message']
@@ -569,54 +252,6 @@ def main(data):
         return {
             'success': False,
             'error': f'Unexpected error: {str(e)}'
-        }
-
-def check_company_similarity(data):
-    """
-    Standalone function to check for similar company names without creating a company.
-    Useful for pre-validation in forms.
-    
-    Expected data format:
-    {
-        "name": "Company Name",           # required
-        "similarity_threshold": 85        # optional, default 85
-    }
-    """
-    if not data.get('name'):
-        return {
-            'success': False,
-            'error': 'name is required'
-        }
-    
-    try:
-        similarity_threshold = data.get('similarity_threshold', 85)
-        
-        similar_check = check_similar_companies(
-            data['name'], 
-            similarity_threshold
-        )
-        
-        if similar_check.get('error'):
-            return {
-                'success': False,
-                'error': similar_check['error']
-            }
-        
-        return {
-            'success': True,
-            'company_name': data['name'],
-            'similarity_threshold': similarity_threshold,
-            'exact_match': similar_check.get('exact_match', False),
-            'has_similar': similar_check.get('has_similar', False),
-            'similar_companies': similar_check.get('similar_companies', []),
-            'total_companies_checked': similar_check.get('total_checked', 0),
-            'recommendation': 'safe_to_create' if not similar_check.get('has_similar') else 'review_similarities'
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': str(e)
         }
 
 def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120, check_interval=5):
