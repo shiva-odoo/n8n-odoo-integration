@@ -26,8 +26,8 @@ def main(data):
         "city": "City Name",                      # optional - City
         "zip": "12345",                           # optional - ZIP
         "state": "State Name",                    # optional - State
-        "country_code": "IN",                     # optional - Country (ISO code), defaults to "CY"
-        "currency_code": "INR"                    # optional - Currency (ISO code), defaults to "EUR"
+        "country_code": "CY",                     # optional - Country (ISO code), defaults to "CY"
+        "currency_code": "EUR"                    # optional - Currency (ISO code), defaults to "EUR"
     }
     """
     
@@ -38,16 +38,14 @@ def main(data):
             'error': 'name is required'
         }
     
-    # Set default values for country_code and currency_code if empty or not provided
-    country_code = data.get('country_code', '').strip()
-    if not country_code:
-        country_code = 'CY'  # Default to Cyprus
-        data['country_code'] = country_code
+    # ALWAYS default to Cyprus and EUR - force these values regardless of input
+    # This ensures the company is always created for Cyprus with EUR currency
+    country_code = 'CY'  # Always use Cyprus
+    currency_code = 'EUR'  # Always use Euro
     
-    currency_code = data.get('currency_code', '').strip()
-    if not currency_code:
-        currency_code = 'EUR'  # Default to Euro
-        data['currency_code'] = currency_code
+    # Update the data object to reflect the forced defaults
+    data['country_code'] = country_code
+    data['currency_code'] = currency_code
     
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -107,7 +105,7 @@ def main(data):
             if value and field in available_fields:
                 company_data[field] = value
 
-        # Handle country (use default CY if not provided or empty)
+        # Handle country (always use Cyprus)
         if 'country_id' in available_fields:
             country_id = get_country_id(models, db, uid, password, country_code)
             if country_id:
@@ -118,7 +116,7 @@ def main(data):
                     'error': f'Country code "{country_code}" not found'
                 }
 
-        # Handle currency (use default EUR if not provided or empty)
+        # Handle currency (always use EUR)
         currency_id = None
         currency_warning = None
         if 'currency_id' in available_fields:
@@ -151,7 +149,7 @@ def main(data):
 
         print(f"Company created successfully with ID: {company_id}")
 
-        # Initiate Chart of Accounts installation (use the country_code for chart selection)
+        # Initiate Chart of Accounts installation (use Cyprus for chart selection)
         chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, country_code)
         print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
 
@@ -198,7 +196,7 @@ def main(data):
             'message': 'Company created successfully'
         }
         
-        # Add default values info to response
+        # Add default values info to response (only if defaults were actually applied)
         if data.get('country_code') != country_code:
             response['country_default_applied'] = f'Used default country: {country_code}'
         if data.get('currency_code') != currency_code:
