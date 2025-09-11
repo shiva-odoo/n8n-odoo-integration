@@ -52,6 +52,7 @@ from flask import g
 import validatecompany
 import batchupdate
 import classifydocument
+import splitinvoice
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1559,6 +1560,74 @@ def classify_document_health():
             "healthy": False,
             "error": str(e)
         }), 503
+    
+@app.route('/api/split-document', methods=['POST'])
+def split_document():
+    """
+    Split multi-invoice PDF documents into individual invoices with OCR extraction
+    
+    Expected JSON body:
+    {
+        "s3_key": "clients/Company Name/merged-invoices.pdf",
+        "bucket_name": "company-documents-2025"  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "invoices": [
+            {
+                "invoice_index": 1,
+                "page_range": "1-2",
+                "raw_text": "Complete OCR text from pages 1-2..."
+            },
+            {
+                "invoice_index": 2,
+                "page_range": "3-3",
+                "raw_text": "Complete OCR text from page 3..."
+            }
+        ],
+        "total_invoices": 2
+    }
+    """
+    try:
+        # Validate request
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Call the splitting function
+        result = splitinvoice.main(data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Split document endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error"
+        }), 500
+
+@app.route('/api/split-document/health', methods=['GET'])
+def split_document_health():
+    """Health check endpoint for document splitting service"""
+    try:
+        result = splitinvoice.health_check()
+        status_code = 200 if result.get("healthy") else 503
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({
+            "healthy": False,
+            "error": str(e)
+        }), 503
+
 
 
 # ================================
