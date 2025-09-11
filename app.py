@@ -26,6 +26,7 @@ try:
     import getDetailsByCompany
     import updateAuditStatus
     import openaipdf as pdf_processor
+    import pdf_extractor
     
 
     
@@ -50,6 +51,7 @@ from middleware import jwt_required, admin_required, get_current_user
 from flask import g
 import validatecompany
 import batchupdate
+import classifydocument
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1491,6 +1493,73 @@ def update_batch_status_endpoint(batch_id):
             "success": False,
             "error": "Failed to update batch status"
         }), 500
+    
+
+# ================================
+# CLAUDE ENDPOINTS
+# ================================
+
+@app.route('/api/classify-document', methods=['POST'])
+def classify_document():
+    """
+    N8N HTTP Request endpoint for document classification
+    
+    Expected JSON body:
+    {
+        "company_name": "ENAMI LIMITED",
+        "s3_key": "clients/ENAMI LIMITED/invoice_2025_0445.pdf",
+        "bucket_name": "company-documents-2025"  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "result": {
+            "document_type": "bill",
+            "category": "money_going_out", 
+            "company_name": "ENAMI LIMITED",
+            "total_amount": 892.50
+        }
+    }
+    """
+    try:
+        # Validate request
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Call the classification function
+        result = classifydocument.main(data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Classify document endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error"
+        }), 500
+
+@app.route('/api/classify-document/health', methods=['GET'])
+def classify_document_health():
+    """Health check endpoint for document classification service"""
+    try:
+        result = classifydocument.health_check()
+        status_code = 200 if result.get("healthy") else 503
+        return jsonify(result), status_code
+    except Exception as e:
+        return jsonify({
+            "healthy": False,
+            "error": str(e)
+        }), 503
+
 
 # ================================
 # HELPER FUNCTIONS
