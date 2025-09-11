@@ -201,15 +201,29 @@ ALWAYS DO THIS:
 
 10. OUTPUT FORMAT
 
-JSON Structure (EXACT FORMAT):
-- "invoice_index": Sequential number starting at 1
-- "page_range": "X-Y" format (e.g., "1-1", "1-2", "3-4")
-- "raw_text": Complete OCR text from specified pages
+JSON Structure (EXACT FORMAT - MUST BE FOLLOWED PRECISELY):
+- "invoice_index": Sequential number starting at 1 (integer)
+- "page_range": "X-Y" format (e.g., "1-1", "1-2", "3-4") (string)
+- "raw_text": Complete OCR text from specified pages (string)
 
-Examples (STRUCTURE ONLY - EXTRACT REAL PDF TEXT):
-{"invoice_index":1,"page_range":"1-2","raw_text":"[INSERT ACTUAL RAW OCR TEXT FROM PDF PAGES 1-2 HERE]"}
+**MANDATORY JSON FORMAT EXAMPLE:**
+{"invoice_index":1,"page_range":"1-1","raw_text":"ANDREAS SPANOS\nARCHITECTURE & DESIGN\nDATE: July 17, 2025\nPROJECT: PEYIA HOUSES\nCLIENT: KYRASTEL ENTERPRISES LIMITED\nINVOICE No.: 621467\nQty Unit Price Line Total\n1 € 400.00 € 400.00\nSubtotal € 400.00\nTotal Amount € 400.00\nIBAN: CY26 0020 0195 0000 3570 0523 4757\nAgias Anastasias 33 / 4158 / Kato Polemidia / Limassol / Cyprus // +357 99016937 // aspanos.asarc@gmail.com"}
 
-**DO NOT COPY THIS EXAMPLE. EXTRACT THE REAL TEXT FROM THE PDF.**
+**CRITICAL FORMAT REQUIREMENTS:**
+- Each JSON object must be on its own line
+- No spaces after colons in field names
+- Use double quotes for all strings
+- Preserve exact newline characters (\n) in raw_text
+- No trailing commas
+- No additional formatting or indentation
+- Each invoice = one complete JSON object per line
+
+**MULTI-INVOICE OUTPUT EXAMPLE:**
+{"invoice_index":1,"page_range":"1-1","raw_text":"First invoice text here..."}
+{"invoice_index":2,"page_range":"2-2","raw_text":"Second invoice text here..."}
+{"invoice_index":3,"page_range":"3-4","raw_text":"Third invoice spanning pages 3-4..."}
+
+**DO NOT COPY THESE EXAMPLES. EXTRACT THE REAL TEXT FROM THE PDF. USE THIS EXACT JSON STRUCTURE.**
 
 11. FINAL ALGORITHM
 
