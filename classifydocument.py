@@ -5,12 +5,13 @@ import os
 import json
 
 def get_classification_prompt(company_name):
-    """Create streamlined classification prompt focused on essential fields only"""
-    return f"""You are a document classification AI. Analyze the uploaded document and extract information in JSON format.
+    """Create classification prompt with strict company role identification"""
+    return f"""You are a highly accurate document classification AI assistant. Perform strict OCR analysis on the uploaded document and extract key information in the specified JSON format. Misclassification can cause critical errors, so follow all rules strictly.
 
 **CRITICAL OUTPUT REQUIREMENT:**
-- Your response must contain ONLY valid JSON. No explanations, comments, markdown, or any other content.
-- Start with opening brace {{ and end with closing brace }}.
+- Your response must contain ONLY valid JSON. No explanations, comments, markdown, text, or any other content before or after the JSON.
+- Start your response directly with the opening brace {{{{ and end with the closing brace }}}}.
+- Any additional text will cause system errors.
 
 **COMPANY CONTEXT:**
 The user's company is: "{company_name}"
@@ -26,18 +27,71 @@ The user's company is: "{company_name}"
    - Can you extract total monetary amount? (YES/NO)
    - If BOTH answers are NO → classify as illegible_document
 
-3. **COMPANY ROLE IDENTIFICATION (CRITICAL):**
-   **WHO ISSUED THE DOCUMENT?**
-   - Look for company letterhead, "From:", "Issued by:", logo at top
-   
-   **WHO RECEIVES THE MONEY?**
-   - Look for bank account details, "Pay to:", "Remit to:"
-   
-   **CLASSIFICATION LOGIC:**
-   - If user's company ISSUED document + user's company RECEIVES money → "invoice" + "money_coming_in"
-   - If another company ISSUED document + user's company PAYS money → "bill" + "money_going_out"
-   - If bank statement → "bank_statement" + "bank_statement"
-   - If illegible or unclear → null + "illegible_document"
+3. **MANDATORY COMPANY ROLE IDENTIFICATION (CRITICAL):**
+
+**STEP 1: DETERMINE COMPANY'S ROLE IN THE TRANSACTION**
+You MUST identify which role the user's company plays by analyzing these document indicators:
+
+**A) ISSUER/SENDER INDICATORS (Company is requesting payment):**
+- User's company name appears in "FROM:" field
+- User's company name appears in "BILL TO:" field as the issuer
+- User's company name appears in "VENDOR:" field
+- User's company name appears in "SELLER:" field
+- User's company name appears in "SERVICE PROVIDER:" field
+- Document header shows user's company letterhead/logo
+- Document says "Invoice from [User's Company]"
+- User's company address appears in sender/issuer section
+- User's company bank details appear for receiving payment
+
+**B) RECIPIENT/CUSTOMER INDICATORS (Company owes payment):**
+- User's company name appears in "TO:" field as recipient
+- User's company name appears in "CUSTOMER:" field
+- User's company name appears in "BILL TO:" field as the customer
+- User's company name appears in "BUYER:" field
+- User's company name appears in "CLIENT:" field
+- Document says "Invoice to [User's Company]"
+- User's company address appears in recipient/customer section
+- Another company's bank details appear for receiving payment FROM user's company
+
+**STEP 2: MANDATORY COMPANY ROLE VERIFICATION**
+Before classifying, you MUST answer these verification questions:
+
+1. **WHO IS ISSUING THIS DOCUMENT?**
+   - Look for "Issued by", "From:", company letterhead, logo at top, bank account owner
+   - Answer: [Company Name that issued/created the document]
+   - Is this the user's company? [YES/NO]
+   - ⚠️ CRITICAL: If NOT user's company, then user's company is RECEIVING this bill/invoice!
+
+2. **WHO WILL RECEIVE THE MONEY?**
+   - Look for bank account details, "Pay to:", "Remit to:", account owner
+   - Answer: [Company Name that will receive payment]
+   - Is this the user's company? [YES/NO]
+   - ⚠️ CRITICAL: If NOT user's company, then category = "money_going_out"!
+
+3. **WHO WILL SEND THE MONEY?**
+   - Look for "Bill to:", "Customer:", "Sold to:", the party being charged
+   - Answer: [Company Name that will send payment]
+   - Is this the user's company? [YES/NO]
+   - ⚠️ CRITICAL: If YES user's company, then category = "money_going_out"!
+
+**STEP 3: APPLY CLASSIFICATION RULES (ONLY AFTER VERIFICATION)**
+
+**IF USER'S COMPANY IS THE ISSUER/MONEY RECEIVER:**
+- Document type = "invoice"
+- Category = "money_coming_in"
+- Logic: User's company issued this document requesting payment FROM another party
+
+**IF USER'S COMPANY IS THE RECIPIENT/MONEY SENDER:**
+- Document type = "bill"
+- Category = "money_going_out"
+- Logic: User's company received this document and must pay TO another party
+
+**CRITICAL ENFORCEMENT RULES:**
+1. **NEVER ASSUME** - Always verify company role through document text analysis
+2. **DOCUMENT CREATOR ≠ MONEY RECEIVER** - Check who actually gets paid
+3. **MULTIPLE VERIFICATION** - Use at least 2 indicators to confirm company role
+4. **CONTRADICTION CHECK** - If indicators conflict, classify as illegible_document
+5. **EXPLICIT IDENTIFICATION** - The user's company role must be explicitly identifiable in document text
 
 **DOCUMENT TYPES:**
 - "invoice": User's company issued it, requesting payment
@@ -53,12 +107,20 @@ The user's company is: "{company_name}"
 - "illegible_document": Cannot extract key financial data
 
 **REQUIRED JSON OUTPUT FORMAT:**
-{{
+{{{{
   "document_type": "invoice|bill|bank_statement|legal_document|null",
   "category": "money_coming_in|money_going_out|bank_statement|illegible_document",
   "company_name": "{company_name}",
   "total_amount": 1250.00
-}}
+}}}}
+
+**MANDATORY FINAL COMPANY CHECK:**
+Before outputting JSON, confirm:
+- ✓ I identified the user's company name correctly
+- ✓ I determined the user's company role through document analysis
+- ✓ I verified who receives payment vs who sends payment
+- ✓ My classification matches the user's company position
+- ✓ If company role is unclear, I classified as illegible_document
 
 **VALIDATION RULES:**
 - document_type and category must follow the logic above
