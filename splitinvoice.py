@@ -3,270 +3,89 @@ import base64
 import anthropic
 import os
 import json
+import re
 
 def get_splitting_prompt():
-    """Create the OCR extraction and document splitting prompt"""
-    return """You are an OCR extraction specialist.
-Your task is:
-1. Perform OCR on all pages of the PDF(s) attached in this conversation/thread.
-2. **READ THE ACTUAL PDF DOCUMENT and extract its real content - do not copy examples or placeholders**
-2. PERFORM OCR - COMPLETE TEXT EXTRACTION FROM TOP OF EVERY PAGE
-- **MANDATORY: Begin OCR extraction from the FIRST LINE of each page - do NOT skip any header content**
-- **ABSOLUTE REQUIREMENT: Start with the very first visible text element on page 1 - typically company contact information, phone numbers, addresses, or registration details**
-- **REQUIRED: Extract the raw OCR output exactly as the OCR engine produces it - do NOT clean, interpret, or correct the text**
-- **ESSENTIAL: Include ALL dates, especially those in headers like "30-06-2025", "å¤þÞÐ¤ª¡@« : 30-06-2025" (even if OCR renders it with special characters)**
-- **CRITICAL: Preserve the actual OCR character output - if OCR produces "é¥¡|ÞÐ ÂªÆþ¿¯ÝªÞ¥|ª®ª¬: 150" then use that exact text, do not convert to "Κέντρο Τηλεπικοινωνίας: 150"**
-- **CRITICAL: Capture ALL text in reading order from top-to-bottom, left-to-right - missing header information indicates incomplete extraction**
-- **HEADER VALIDATION: If your extraction does not begin with company/header information from the top of page 1, you have failed to extract completely**
-- **DATE VALIDATION: Invoice dates often appear in document headers - ensure header extraction captures ALL date references**
-- Preserve character case, spacing, punctuation, and line breaks exactly as OCR recognizes them (including any OCR artifacts or encoding issues)
+    """Create concise and focused document splitting prompt"""
+    return """You are an OCR specialist that splits multi-invoice PDF documents. Your task: identify separate invoices and extract complete text for each.
 
-3. MULTILINGUAL TEXT EXTRACTION REQUIREMENTS
+**CRITICAL OUTPUT RULES:**
+- Output ONLY JSON objects, one per line
+- No explanations, comments, or markdown
+- Start response immediately with first JSON object
+- Each JSON object format: {"invoice_index":1,"page_range":"1-1","raw_text":"complete text"}
 
-CRITICAL MULTILINGUAL PROCESSING:
-- ALWAYS preserve original language text exactly as it appears
-- Support ALL languages including but not limited to: Greek, English, Spanish, French, German, Italian, Portuguese, Dutch, Polish, Turkish, Arabic, Chinese, Japanese, Korean, Russian, Bulgarian, Romanian, Hungarian, Czech, Slovak, Croatian, Serbian, Albanian, Macedonian
-- Maintain proper encoding for special characters: á, é, í, ó, ú, ñ, ç, ü, ö, ä, ß, α, β, γ, δ, ε, ζ, η, θ, ι, κ, λ, μ, ν, ξ, ο, π, ρ, σ, τ, υ, φ, χ, ψ, ω, ά, έ, ή, ί, ό, ύ, ώ, etc.
-- Preserve currency symbols: €, $, £, ¥, ₹, ₽, ₴, ₺, etc.
-- Maintain mathematical symbols, percentages, and numeric formatting
-- NEVER translate, transliterate, or modify foreign language text
-- NEVER replace special characters with approximations (e.g., don't replace ά with a, ñ with n, ü with u)
+**INVOICE IDENTIFICATION RULES (Priority Order):**
 
-LANGUAGE-SPECIFIC TEXT ACCURACY:
-- Greek text: Preserve all Greek letters (Α-Ω, α-ω) and accent marks (άέήίόύώ)
-- Cyrillic text: Maintain all Cyrillic characters without corruption
-- Accented Latin: Preserve all diacritical marks and accents
-- Arabic/Hebrew: Maintain right-to-left text direction markers
-- Asian languages: Preserve character spacing and formatting
-- Mixed language documents: Keep language boundaries intact
+1. **PAGE INDICATOR RULE (HIGHEST PRIORITY):**
+   - Scan EVERY page for page indicators: "Page X of Y", "Σελ X από Y", "Página X de Y"
+   - "Page 1 of 1" multiple times = Multiple separate single-page invoices
+   - "Page 1 of 2", "Page 2 of 2" = One two-page invoice
+   - "Page 1 of 3", "Page 2 of 3", "Page 3 of 3" = One three-page invoice
 
-CHARACTER ENCODING VALIDATION:
-- Verify special characters render correctly in raw_text output
-- If OCR produces garbled characters, re-attempt with higher accuracy
-- Prioritize character accuracy over processing speed
-- Test output contains proper Unicode representation
+2. **INVOICE NUMBER RULE (SECOND PRIORITY):**
+   - Different invoice numbers = Different invoices
+   - Same invoice number across pages = Same invoice (unless Rule 1 overrides)
 
-FOREIGN LANGUAGE PATTERN RECOGNITION:
-- Recognize page indicators in any language: "Σελ 1 από 2", "Página 1 de 2", "Page 1 sur 2", "Seite 1 von 2", etc.
-- Identify invoice headers in any language: "ΤΙΜΟΛΟΓΙΟ", "FACTURA", "RECHNUNG", "FATTURA", etc.
-- Find invoice numbers with foreign prefixes: "Αρ. Τιμολογίου:", "Factura No:", "Rechnung Nr:", etc.
-- **Identify date patterns in any language: "Ημερομηνία:", "Fecha:", "Date:", "Datum:", etc.**
-- Apply all existing boundary detection rules regardless of document language
+3. **HEADER COUNT RULE (THIRD PRIORITY):**
+   - Multiple "INVOICE" headers typically = Multiple invoices
+   - Check invoice dates, amounts, customer details for confirmation
 
-4. ABSOLUTE OUTPUT RULES
+**COMMON SCENARIOS:**
 
-CRITICAL: OUTPUT ONLY JSON OBJECTS
-- **FORBIDDEN: Any text, explanations, or commentary outside of JSON objects**
-- **FORBIDDEN: Markdown formatting, code blocks, ```json, or any formatting**
-- **FORBIDDEN: Text like "I'll extract..." or "The document contains..." or "Here is the extracted data..."**
-- **REQUIRED: Start response immediately with JSON object - no introduction**
-- **REQUIRED: End response immediately after final JSON object - no conclusion**
-- ONLY JSON objects, each on its own line
-- Preserve exact raw OCR text in raw_text field (including garbled characters if that's how OCR reads it)
-- **raw_text should contain the actual OCR output, not cleaned/interpreted text**
-- **NEVER include any part of these instructions or analysis text in raw_text**
-- **raw_text must contain ONLY the actual text from the PDF pages - no prompt text, no analysis, no commentary**
+**Single-page invoices:** Document with 4 pages, each showing "Page 1 of 1"
+→ Output 4 separate JSON objects with page_range "1-1", "2-2", "3-3", "4-4"
 
-5. MANDATORY DOCUMENT ANALYSIS (FIRST STEP)
+**Multi-page invoice:** Document with 2 pages showing "Page 1 of 2", "Page 2 of 2"
+→ Output 1 JSON object with page_range "1-2"
 
-STEP 1 - VERIFY ACTUAL PAGE COUNT:
-- Count exact number of pages in the PDF
-- NEVER reference pages beyond this count
-- If document has N pages, only pages 1 through N exist
+**Mixed document:** Pages showing "Page 1 of 2", "Page 2 of 2", "Page 1 of 1", "Page 1 of 1"
+→ Output 3 JSON objects with page_range "1-2", "3-3", "4-4"
 
-STEP 2 - SCAN FOR PAGE INDICATORS (HIGHEST PRIORITY):
-- **SCAN EVERY PAGE for page indicators in any language**
-- Look for page indicators in any language:
-  * "Page 1 of 1", "Page 1 of 2", "Page 2 of 2", "Page 3 of 3"
-  * "Σελ 1 από 2", "Σελίδα 1 από 2", "Σελ 2 από 2", "Σελίδα 1 από 3", "Σελίδα 2 από 3", "Σελίδα 3 από 3"
-  * "~þÆ 1 «Ý¶ 2", "~þÆ 2 «Ý¶ 2" (Greek OCR format)
-  * "Página 1 de 2", "Page 1 sur 2", "Seite 1 von 2"
-- **CRITICAL: If you find "Page 1 of 1" on multiple pages, this is DEFINITIVE PROOF of multiple separate invoices**
-- **CRITICAL: Count how many times "Page 1 of 1" appears - this equals the number of separate invoices**
-- **CRITICAL: Look for page sequences like "Page 1 of 3", "Page 2 of 3", "Page 3 of 3" - this indicates ONE invoice spanning 3 pages**
-- Record ALL page indicators found and note which pages they appear on
+**OCR EXTRACTION RULES:**
+- Extract complete text from top to bottom of each page in the page range
+- Include ALL header information: company names, addresses, phone numbers
+- Include ALL line items with descriptions, quantities, prices
+- Include ALL totals: subtotal, VAT, final amount
+- Include ALL dates, invoice numbers, reference numbers
+- Preserve text structure with appropriate line breaks
+- Do not clean or interpret text - use exact OCR output
 
-STEP 3 - SCAN FOR INVOICE NUMBERS:
-- Find all invoice numbers/references in document:
-  * "Invoice No:", "Invoice Number:", "Invoice #"
-  * Patterns like "2025/059", "INV-001", "#12345"
-- Record ALL unique invoice numbers found
+**VALIDATION CHECKS:**
+- Each invoice should have coherent line items that sum to a total amount
+- Invoice numbers should be unique per invoice (except multi-page invoices)
+- Dates should be consistent within each invoice
+- Customer/billing information should be consistent within each invoice
 
-STEP 4 - SCAN FOR INVOICE HEADERS:
-- Find all invoice headers in any language:
-  * "INVOICE", "ΤΙΜΟΛΟΓΙΟ", "Factura", "Rechnung"
-- Count total occurrences
+**MANDATORY OUTPUT FORMAT:**
+{"invoice_index":1,"page_range":"1-1","raw_text":"MFO ASSET MANAGEMENT LTD\n66, Acropolis Avenue\nINVOICE\nENAMI LIMITED\nInvoice No. : 2025/059\nDate : 07/03/25\nDescription VAT % Amount (EUR)\nPortfolio Management fee, for the month of February 2025 19 2,773.08\nAmount Excl. VAT 2,773.08\nVAT Amount 526.89\nTotal Amount 3,299.97"}
 
-6. ABSOLUTE BOUNDARY DETECTION RULES (PRIORITY ORDER)
+**PROCESSING ALGORITHM:**
+1. Count total PDF pages
+2. Scan each page for page indicators ("Page X of Y")
+3. If multiple "Page 1 of 1" found → Create separate invoices for each page
+4. If page sequences found (1 of 2, 2 of 2) → Group into single invoices
+5. Extract complete OCR text for each determined page range
+6. Output one JSON object per invoice
+7. Ensure invoice_index increments sequentially (1, 2, 3, 4...)
 
-RULE 1 - PAGE INDICATOR OVERRIDE (HIGHEST PRIORITY):
-- "Page X of Y" or equivalent = ONE invoice spanning Y pages
-- **"Page 1 of 1" multiple times = multiple separate single-page invoices (MOST COMMON CASE)**
-- **MANDATORY: Each occurrence of "Page 1 of 1" creates a separate invoice with page_range covering only that page**
-- **MULTI-PAGE SEQUENCES: If you find "Page 1 of 3", "Page 2 of 3", "Page 3 of 3" on consecutive pages = ONE invoice spanning those 3 pages**
-- **MIXED DOCUMENT EXAMPLE: Pages with "Page 1 of 2", "Page 2 of 2", "Page 1 of 3", "Page 2 of 3", "Page 3 of 3", "Page 1 of 2", "Page 2 of 2" = THREE separate invoices with ranges "1-2", "3-5", "6-7"**
-- This rule OVERRIDES all other considerations
-- Examples:
-  * If pages show "Page 1 of 2" and "Page 2 of 2" = ONE invoice covering pages 1-2
-  * If pages show "Σελίδα 1 από 3", "Σελίδα 2 από 3", "Σελίδα 3 από 3" = ONE invoice covering pages with these indicators
-  * **If pages show "~þÆ 1 «Ý¶ 2", "~þÆ 2 «Ý¶ 2" = ONE invoice covering those 2 pages**
-  * **If complex document shows multiple page sequences, create separate invoices for each sequence**
-  * **If pages show "Page 1 of 1", "Page 1 of 1", "Page 1 of 1", "Page 1 of 1" = FOUR separate invoices, page ranges "1-1", "2-2", "3-3", "4-4"**
+**ERROR PREVENTION:**
+- Never split pages that belong to the same invoice (same page sequence)
+- Never combine pages that have different "Page 1 of 1" indicators
+- Always include complete text - partial extraction is not acceptable
+- Page ranges must correspond to actual pages in the document
 
-RULE 2 - INVOICE NUMBER CHANGE (SECOND HIGHEST PRIORITY):
-- Each unique invoice number = separate invoice (unless Rule 1 overrides)
-- Different invoice numbers on different pages = different invoices
-- Same invoice number across pages = same invoice (unless Rule 1 indicates otherwise)
+**EXAMPLES:**
+Four single-page invoices:
+{"invoice_index":1,"page_range":"1-1","raw_text":"Invoice 1 complete text..."}
+{"invoice_index":2,"page_range":"2-2","raw_text":"Invoice 2 complete text..."}
+{"invoice_index":3,"page_range":"3-3","raw_text":"Invoice 3 complete text..."}
+{"invoice_index":4,"page_range":"4-4","raw_text":"Invoice 4 complete text..."}
 
-RULE 3 - INVOICE HEADER COUNT:
-- Multiple "INVOICE" headers typically indicate multiple invoices
-- But subject to Rules 1 and 2 above
+One two-page invoice:
+{"invoice_index":1,"page_range":"1-2","raw_text":"Complete text from both pages..."}
 
-RULE 4 - CONTINUITY INDICATORS (LOWEST PRIORITY):
-- Same customer numbers, amounts, billing periods suggest continuity
-- But ONLY apply if Rules 1-3 don't provide clear direction
-
-7. DECISION MATRIX FOR COMMON SCENARIOS
-
-SCENARIO A - Multi-page single invoice:
-- Indicators: "Page 1 of 2", "Page 2 of 2" OR "Σελ 1 από 2", "Σελ 2 από 2" OR "~þÆ 1 «Ý¶ 2", "~þÆ 2 «Ý¶ 2"
-- Same invoice number across pages
-- Same customer and amounts
-- Decision: ONE invoice with page_range covering all pages
-
-SCENARIO B - Multiple single-page invoices:
-- Indicators: "Page 1 of 1" appears multiple times
-- Different invoice numbers on each page
-- Different amounts or dates
-- Decision: Multiple invoices, each with page_range covering one page
-
-SCENARIO C - Multiple multi-page invoices:
-- Indicators: Sequential page ranges for different invoice numbers
-- Example: Pages 1-2 have "Page 1 of 2"/"Page 2 of 2", Pages 3-4 have "Page 1 of 2"/"Page 2 of 2"
-- Decision: Multiple invoices with appropriate page ranges
-
-**SCENARIO D - Complex merged document (MOST CHALLENGING):**
-- **Indicators: Mixed page sequences like "Page 1 of 2", "Page 2 of 2", "Page 1 of 3", "Page 2 of 3", "Page 3 of 3", "Page 1 of 2", "Page 2 of 2"**
-- **Different invoice numbers and/or different companies on different page sequences**
-- **Decision: Create separate invoices for each complete page sequence**
-- **Example: Invoice 1 (pages 1-2), Invoice 2 (pages 3-5), Invoice 3 (pages 6-7)**
-
-SCENARIO E - No clear indicators:
-- No page indicators found
-- No obvious invoice number changes
-- Decision: Default to single invoice covering all pages
-
-8. VALIDATION CHECKPOINTS
-
-CHECKPOINT 1 - PAGE INDICATOR VALIDATION:
-- If "Page X of Y" patterns exist, have you grouped those pages together?
-- If multiple "Page 1 of 1" exist, have you separated them?
-
-CHECKPOINT 2 - INVOICE NUMBER VALIDATION:
-- Does each unique invoice number get its own invoice object?
-- Are multi-page invoices with same number grouped together?
-
-CHECKPOINT 3 - COMPLETENESS VALIDATION:
-- Does every page appear in exactly one page_range?
-- Do all page numbers correspond to actual pages?
-- Is the raw_text complete for each page_range?
-- **CRITICAL: Does raw_text begin with header information like company names, addresses, phone numbers, or websites from the top of page 1?**
-- **REQUIRED: Are ALL dates included, especially those appearing in document headers?**
-- **HEADER DATE VALIDATION: For documents with headers containing dates (like "å¤þÞÐ¤ª¡@« : 30-06-2025"), these dates MUST appear in raw_text**
-- **EXTRACTION START VALIDATION: If raw_text does not begin with the very first line of text from page 1, re-extract from the absolute beginning**
-- **VALIDATION: If raw_text starts with terms/conditions, service details, or footer text, the extraction is INCOMPLETE**
-
-9. CRITICAL ERROR PREVENTION
-
-NEVER DO THIS:
-- Split pages that show "Page 1 of 2", "Page 2 of 2" into separate invoices
-- Reference page numbers that don't exist (e.g., page 3 in a 2-page document)
-- Create incomplete raw_text (must include ALL text from specified pages)
-- **Skip header sections or dates that appear at the top of pages**
-- **Start extraction from the middle of a document - ALWAYS begin with the first line of text**
-- **Omit company information, addresses, phone numbers, websites, or registration details from page tops**
-- **Include ANY prompt instructions, analysis text, or commentary in raw_text**
-- **Put phrases like "analysis becomes unclear" or "default to single invoice" in raw_text**
-- Include explanations or commentary in output
-
-ALWAYS DO THIS:
-- **MANDATORY: Start extraction with the very first text that appears at the top of page 1 (typically company name, address, or contact info)**
-- **REQUIRED: Include ALL dates from anywhere in the document, prioritizing those in headers**
-- **ESSENTIAL: If the document header contains dates like "30-06-2025" or "Ημερομηνία : 30-06-2025", these MUST be in your raw_text**
-- **CRITICAL: raw_text contains ONLY actual PDF content - no instructions, no analysis, no prompt text**
-- Treat "Page X of Y" as definitive proof of single invoice
-- Treat multiple "Page 1 of 1" as definitive proof of separate invoices
-- Include complete OCR text for specified page ranges
-- Output only JSON objects
-
-10. OUTPUT FORMAT
-
-JSON Structure (EXACT FORMAT - MUST BE FOLLOWED PRECISELY):
-- "invoice_index": Sequential number starting at 1 (integer)
-- "page_range": "X-Y" format (e.g., "1-1", "1-2", "3-4") (string)
-- "raw_text": Complete OCR text from specified pages (string)
-
-**MANDATORY JSON FORMAT EXAMPLE:**
-{"invoice_index":1,"page_range":"1-1","raw_text":"ANDREAS SPANOS\nARCHITECTURE & DESIGN\nDATE: July 17, 2025\nPROJECT: PEYIA HOUSES\nCLIENT: KYRASTEL ENTERPRISES LIMITED\nINVOICE No.: 621467\nQty Unit Price Line Total\n1 € 400.00 € 400.00\nSubtotal € 400.00\nTotal Amount € 400.00\nIBAN: CY26 0020 0195 0000 3570 0523 4757\nAgias Anastasias 33 / 4158 / Kato Polemidia / Limassol / Cyprus // +357 99016937 // aspanos.asarc@gmail.com"}
-
-**CRITICAL FORMAT REQUIREMENTS:**
-- Each JSON object must be on its own line
-- No spaces after colons in field names
-- Use double quotes for all strings
-- Preserve exact newline characters (\n) in raw_text
-- No trailing commas
-- No additional formatting or indentation
-- Each invoice = one complete JSON object per line
-
-**MULTI-INVOICE OUTPUT EXAMPLE:**
-{"invoice_index":1,"page_range":"1-1","raw_text":"First invoice text here..."}
-{"invoice_index":2,"page_range":"2-2","raw_text":"Second invoice text here..."}
-{"invoice_index":3,"page_range":"3-4","raw_text":"Third invoice spanning pages 3-4..."}
-
-**DO NOT COPY THESE EXAMPLES. EXTRACT THE REAL TEXT FROM THE PDF. USE THIS EXACT JSON STRUCTURE.**
-
-11. FINAL ALGORITHM
-
-FOR EACH DOCUMENT:
-1. Count actual pages (N)
-2. **PERFORM ACTUAL OCR on the PDF document - read and extract the real text**
-3. **EXTRACT COMPLETE TEXT starting from the absolute first line of each page - include ALL header content**
-4. **SCAN FOR PAGE INDICATORS FIRST - count occurrences of "Page 1 of 1" to determine number of invoices**
-5. Scan for invoice numbers and note changes between pages
-6. Apply RULE 1 (page indicators) - highest priority
-7. Apply RULE 2 (invoice number changes) - second priority  
-8. Apply RULE 3 (header count) - third priority
-9. Default to RULE 4 (continuity) if no clear signals
-10. Validate all page ranges ≤ N
-11. Ensure complete coverage of all pages
-12. **VERIFY: If document has 4 pages each with "Page 1 of 1", you must create 4 separate invoices**
-13. **VERIFY: Confirm raw_text begins with header information (company name, address, dates) not middle/footer content**
-14. **VERIFY: Confirm raw_text contains ONLY PDF content - no prompt instructions or analysis text**
-15. **VERIFY: You extracted actual PDF text, not copied format examples**
-16. Output ONLY JSON objects
-
-CRITICAL SUCCESS FACTORS:
-- **IMMEDIATE JSON OUTPUT: Start your response with JSON object, no introduction**
-- **END WITH JSON: End your response with final JSON object, no conclusion or explanation**
-- **Extract from the VERY TOP of each page including ALL header information and dates**
-- **raw_text contains ONLY raw OCR output from PDF - preserve exact OCR character rendering**
-- **NEVER clean, correct, or interpret OCR text - use exactly what OCR produces**
-- Page indicators are ABSOLUTE - never override them
-- Different invoice numbers usually = different invoices
-- Complete text extraction for all specified pages
-- No explanatory output whatsoever
-
-RESPONSE FORMAT:
-{"invoice_index":1,"page_range":"1-2","raw_text":"[exact OCR output]"}
-
-NOTHING ELSE. NO OTHER TEXT.
-
-PARAMETERS FOR DETERMINISM:
-temperature = 0.0
-top_p = 0.1
-
-EMERGENCY FALLBACK:
-If analysis becomes unclear, default to single invoice covering all pages rather than risk incorrect splitting or page reference errors."""
+START PROCESSING NOW. OUTPUT ONLY JSON OBJECTS."""
 
 def download_from_s3(s3_key, bucket_name=None):
     """Download file from S3 using key"""
@@ -308,14 +127,14 @@ def process_document_splitting(pdf_content):
         # Encode to base64
         pdf_base64 = base64.b64encode(pdf_content).decode('utf-8')
         
-        # Get prompt
+        # Get concise prompt
         prompt = get_splitting_prompt()
         
-        # Send to Claude with specific parameters for determinism
+        # Send to Claude with parameters optimized for structured output
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=8000,  # Increased for potentially multiple invoices with full text
-            temperature=0.0,  # For determinism as specified in prompt
+            max_tokens=8000,
+            temperature=0.0,  # Maximum determinism for consistent parsing
             messages=[
                 {
                     "role": "user",
@@ -359,39 +178,48 @@ def process_document_splitting(pdf_content):
         }
 
 def parse_split_invoices(raw_response):
-    """Parse the raw response into individual invoice objects"""
+    """Parse the raw response into individual invoice objects with robust handling"""
     try:
         invoices = []
         
-        # First try to parse as a single JSON object (in case Claude didn't follow line-by-line format)
-        try:
-            single_object = json.loads(raw_response.strip())
-            if isinstance(single_object, dict) and 'invoice_index' in single_object:
-                # Single invoice returned as one object
-                invoices.append(single_object)
-            elif isinstance(single_object, list):
-                # Array of invoices
-                invoices = single_object
-            else:
-                print(f"Unexpected single object format: {type(single_object)}")
-        except json.JSONDecodeError:
-            # Not a single JSON object, try line-by-line parsing
-            lines = raw_response.strip().split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if line:  # Skip empty lines
-                    try:
-                        invoice_data = json.loads(line)
-                        invoices.append(invoice_data)
-                    except json.JSONDecodeError as e:
-                        print(f"Warning: Could not parse line as JSON: {line[:100]}...")
-                        continue
+        # Clean the response and remove excessive whitespace
+        cleaned_response = raw_response.strip()
         
-        # If still no invoices found, try splitting by }{ pattern for concatenated objects
-        if not invoices and '}{' in raw_response:
-            # Handle concatenated JSON objects like: {"a":1}{"b":2}
-            parts = raw_response.split('}{')
+        # Try parsing as line-separated JSON objects first (expected format)
+        lines = cleaned_response.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line and line.startswith('{') and line.endswith('}'):
+                try:
+                    invoice_data = json.loads(line)
+                    # Validate required fields
+                    if all(field in invoice_data for field in ['invoice_index', 'page_range', 'raw_text']):
+                        # Clean up excessive newlines in raw_text
+                        if 'raw_text' in invoice_data:
+                            raw_text = invoice_data['raw_text']
+                            # Replace excessive newlines but preserve document structure
+                            cleaned_text = re.sub(r'\n{5,}', '\n\n', raw_text)
+                            cleaned_text = cleaned_text.strip()
+                            invoice_data['raw_text'] = cleaned_text
+                        invoices.append(invoice_data)
+                except json.JSONDecodeError:
+                    continue
+        
+        # If no line-separated objects found, try parsing as single JSON object
+        if not invoices:
+            try:
+                single_object = json.loads(cleaned_response)
+                if isinstance(single_object, dict) and 'invoice_index' in single_object:
+                    invoices.append(single_object)
+                elif isinstance(single_object, list):
+                    invoices = single_object
+            except json.JSONDecodeError:
+                pass
+        
+        # If still no invoices, try parsing concatenated JSON objects
+        if not invoices and '}{' in cleaned_response:
+            parts = cleaned_response.split('}{')
             for i, part in enumerate(parts):
                 try:
                     if i == 0:
@@ -401,11 +229,19 @@ def parse_split_invoices(raw_response):
                     else:
                         json_str = '{' + part + '}'
                     
+                    json_str = json_str.strip()
                     invoice_data = json.loads(json_str)
-                    invoices.append(invoice_data)
-                except json.JSONDecodeError as e:
-                    print(f"Warning: Could not parse concatenated part {i}: {json_str[:100]}...")
+                    
+                    # Validate required fields
+                    if all(field in invoice_data for field in ['invoice_index', 'page_range', 'raw_text']):
+                        invoices.append(invoice_data)
+                except json.JSONDecodeError:
                     continue
+        
+        print(f"Successfully parsed {len(invoices)} invoices from response")
+        
+        # Sort invoices by invoice_index to ensure proper order
+        invoices.sort(key=lambda x: x.get('invoice_index', 0))
         
         return {
             "success": True,
@@ -414,6 +250,7 @@ def parse_split_invoices(raw_response):
         }
         
     except Exception as e:
+        print(f"Error in parse_split_invoices: {str(e)}")
         return {
             "success": False,
             "error": f"Error parsing split invoices: {str(e)}"
