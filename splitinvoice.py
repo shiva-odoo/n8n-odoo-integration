@@ -363,17 +363,48 @@ def parse_split_invoices(raw_response):
     try:
         invoices = []
         
-        # Split response by lines and parse each JSON object
-        lines = raw_response.strip().split('\n')
+        # First try to parse as a single JSON object (in case Claude didn't follow line-by-line format)
+        try:
+            single_object = json.loads(raw_response.strip())
+            if isinstance(single_object, dict) and 'invoice_index' in single_object:
+                # Single invoice returned as one object
+                invoices.append(single_object)
+            elif isinstance(single_object, list):
+                # Array of invoices
+                invoices = single_object
+            else:
+                print(f"Unexpected single object format: {type(single_object)}")
+        except json.JSONDecodeError:
+            # Not a single JSON object, try line-by-line parsing
+            lines = raw_response.strip().split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if line:  # Skip empty lines
+                    try:
+                        invoice_data = json.loads(line)
+                        invoices.append(invoice_data)
+                    except json.JSONDecodeError as e:
+                        print(f"Warning: Could not parse line as JSON: {line[:100]}...")
+                        continue
         
-        for line in lines:
-            line = line.strip()
-            if line:  # Skip empty lines
+        # If still no invoices found, try splitting by }{ pattern for concatenated objects
+        if not invoices and '}{' in raw_response:
+            # Handle concatenated JSON objects like: {"a":1}{"b":2}
+            parts = raw_response.split('}{')
+            for i, part in enumerate(parts):
                 try:
-                    invoice_data = json.loads(line)
+                    if i == 0:
+                        json_str = part + '}'
+                    elif i == len(parts) - 1:
+                        json_str = '{' + part
+                    else:
+                        json_str = '{' + part + '}'
+                    
+                    invoice_data = json.loads(json_str)
                     invoices.append(invoice_data)
                 except json.JSONDecodeError as e:
-                    print(f"Warning: Could not parse line as JSON: {line[:100]}...")
+                    print(f"Warning: Could not parse concatenated part {i}: {json_str[:100]}...")
                     continue
         
         return {
