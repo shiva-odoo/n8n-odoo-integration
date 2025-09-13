@@ -6,7 +6,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 import os
@@ -22,6 +22,20 @@ def process_company_name(name):
         name (str): The company name to process
     Returns:
         str: Processed company name (uppercase, trimmed)
+    """
+    if not name or not isinstance(name, str):
+        return ''
+    
+    # Trim spaces from both sides and convert to uppercase
+    return name.strip().upper()
+
+def process_director_name(name):
+    """
+    Process director name: convert to uppercase and trim spaces
+    Args:
+        name (str): The director name to process
+    Returns:
+        str: Processed director name (uppercase, trimmed)
     """
     if not name or not isinstance(name, str):
         return ''
@@ -247,9 +261,247 @@ def parse_company_data(html_content):
     
     return company_data
 
-def search_cyprus_company_registry(reg_number, company_name):
+def parse_directors_data(html_content):
+    """Parse HTML content from directors page and extract director information"""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    directors_data = {
+        "success": False,
+        "directors": [],
+        "errors": [],
+        "raw_tables": []
+    }
+    
+    try:
+        # Look for error messages first
+        error_selectors = [
+            '.error', '.alert', '[class*="error"]', '.message',
+            '#ctl00_cphMyMasterCentral_lblMessage',
+            '[id*="Message"]', '[id*="Error"]'
+        ]
+        
+        for selector in error_selectors:
+            error_elements = soup.select(selector)
+            for error in error_elements:
+                error_text = error.get_text(strip=True)
+                if error_text and error_text not in directors_data["errors"]:
+                    directors_data["errors"].append(error_text)
+        
+        # Look for director tables or data containers
+        tables = soup.find_all('table')
+        
+        for i, table in enumerate(tables):
+            table_data = []
+            rows = table.find_all('tr')
+            
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
+                if cells:
+                    row_data = [cell.get_text(strip=True) for cell in cells]
+                    if any(row_data):  # Only add non-empty rows
+                        table_data.append(row_data)
+            
+            if table_data:
+                directors_data["raw_tables"].append({
+                    "table_index": i,
+                    "data": table_data
+                })
+        
+        # Extract director names from tables
+        text_content = soup.get_text()
+        
+        # Look for director names in tables
+        for table in directors_data["raw_tables"]:
+            for row in table["data"]:
+                for cell in row:
+                    # Check if cell contains a person's name (basic heuristic)
+                    if len(cell) > 3 and any(char.isalpha() for char in cell):
+                        # Filter out common non-name entries
+                        exclude_terms = ['Όνομα', 'Name', 'Διευθυντής', 'Director', 'Γραμματέας', 'Secretary', 
+                                       'Ημερομηνία', 'Date', 'Στοιχεία', 'Details', 'Τύπος', 'Type']
+                        
+                        if not any(term.lower() in cell.lower() for term in exclude_terms):
+                            # Process as potential director name
+                            processed_name = process_director_name(cell)
+                            if processed_name and processed_name not in directors_data["directors"]:
+                                directors_data["directors"].append(processed_name)
+        
+        # Check if we found any directors
+        if directors_data["directors"] or directors_data["raw_tables"]:
+            directors_data["success"] = True
+        
+        # If no directors found but no errors
+        if not directors_data["errors"] and not directors_data["directors"]:
+            directors_data["errors"].append("No directors found on this page")
+        
+    except Exception as e:
+        directors_data["errors"].append(f"Parsing error: {str(e)}")
+    
+    return directors_data
+
+def validate_director(director_name, directors_list):
     """
-    Perform actual search on Cyprus company registry
+    Check if director name matches any name in the directors list
+    Args:
+        director_name (str): Director name to validate
+        directors_list (list): List of director names from the website
+    Returns:
+        dict: Validation result
+    """
+    processed_director = process_director_name(director_name)
+    
+    validation_result = {
+        "director_name": director_name,
+        "processed_director_name": processed_director,
+        "directors_found": directors_list,
+        "director_valid": False,
+        "matched_name": None
+    }
+    
+    # Greek to English name mappings (common conversions)
+    name_mappings = {
+        "ΚΟΙΡΑΝΙΔΗΣ ΣΤΕΛΙΟΣ": "STELIOS KYRANIDES",
+        "ΚΥΡΑΝΙΔΗΣ ΣΤΕΛΙΟΣ": "STELIOS KYRANIDES", 
+        "ΣΤΕΛΙΟΣ ΚΟΙΡΑΝΙΔΗΣ": "STELIOS KYRANIDES",
+        "ΣΤΕΛΙΟΣ ΚΥΡΑΝΙΔΗΣ": "STELIOS KYRANIDES"
+    }
+    
+    # Check for exact match
+    if processed_director in directors_list:
+        validation_result["director_valid"] = True
+        validation_result["matched_name"] = processed_director
+        return validation_result
+    
+    # Check for Greek name mappings
+    for greek_name, english_name in name_mappings.items():
+        if greek_name in directors_list and english_name.upper() == processed_director:
+            validation_result["director_valid"] = True
+            validation_result["matched_name"] = greek_name
+            return validation_result
+    
+    # Check for partial match (in case of slight variations)
+    for director in directors_list:
+        if processed_director in director or director in processed_director:
+            validation_result["director_valid"] = True
+            validation_result["matched_name"] = director
+            break
+    
+    # Check if any director contains parts of the name (word-based matching)
+    director_words = processed_director.split()
+    for director in directors_list:
+        director_upper = director.upper()
+        # Check if all words from the search name appear in this director entry
+        if len(director_words) >= 2 and all(word in director_upper for word in director_words):
+            validation_result["director_valid"] = True
+            validation_result["matched_name"] = director
+            break
+    
+    return validation_result
+
+def search_cyprus_company_with_director_validation(data):
+    """
+    Main function to search Cyprus company registry with director validation
+    
+    Expected data format:
+    {
+        "company_name": "KYRASTEL ENTERPRISES LTD",
+        "registration_number": "474078",
+        "director_name": "STELIOS KYRANIDES",  # Required for director validation
+        "perform_search": true  # Set to true to perform actual search
+    }
+    
+    Returns:
+        dict: Validation results and search results with director validation
+    """
+    
+    # Validate required fields
+    if not data.get('company_name') and not data.get('registration_number'):
+        return {
+            'success': False,
+            'error': 'Either company_name or registration_number is required'
+        }
+    
+    company_name = data.get('company_name', '')
+    registration_number = data.get('registration_number', '')
+    director_name = data.get('director_name', '')
+    perform_search = data.get('perform_search', False)
+    
+    # Process and validate the company data
+    processed_data = process_company_data(company_name, registration_number)
+    processed_director = process_director_name(director_name)
+    
+    # Prepare initial response
+    response = {
+        'success': True,
+        'validation': {
+            'company_name': {
+                'original': processed_data['original']['name'],
+                'processed': processed_data['processed']['name'],
+                'is_valid': processed_data['validation']['name_valid'],
+                'cyprus_valid': processed_data['validation']['cyprus_name_valid']
+            },
+            'registration_number': {
+                'original': processed_data['original']['registration'],
+                'processed': processed_data['processed']['registration'],
+                'is_valid': processed_data['validation']['reg_number_valid'],
+                'cyprus_valid': processed_data['validation']['cyprus_reg_number_valid']
+            },
+            'director_name': {
+                'original': director_name,
+                'processed': processed_director,
+                'is_valid': bool(processed_director)
+            },
+            'overall_valid': (
+                processed_data['validation']['cyprus_name_valid'] and 
+                processed_data['validation']['cyprus_reg_number_valid'] and
+                bool(processed_director)
+            )
+        },
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # Add validation summary
+    validation_issues = []
+    if not processed_data['validation']['cyprus_name_valid']:
+        validation_issues.append("Company name format is invalid for Cyprus registry")
+    if not processed_data['validation']['cyprus_reg_number_valid']:
+        validation_issues.append("Registration number format is invalid (must be exactly 6 digits)")
+    if not processed_director:
+        validation_issues.append("Director name is required for director validation")
+    
+    if validation_issues:
+        response['validation_issues'] = validation_issues
+    
+    # Perform actual search if requested and basic validation passed
+    if perform_search and response['validation']['overall_valid']:
+        try:
+            search_results = search_cyprus_company_with_selenium(
+                processed_data['processed']['registration'],
+                processed_data['processed']['name'],
+                processed_director
+            )
+            response['search'] = search_results
+            
+            # Update overall success based on search results
+            response['success'] = search_results.get('success', False)
+            
+        except Exception as e:
+            response['search'] = {
+                'search_performed': False,
+                'error': f"Search failed: {str(e)}"
+            }
+            response['success'] = False
+    elif perform_search and not response['validation']['overall_valid']:
+        response['search'] = {
+            'search_performed': False,
+            'error': "Search skipped due to validation failures"
+        }
+    
+    return response
+
+def search_cyprus_company_with_selenium(reg_number, company_name, director_name):
+    """
+    Perform the actual Cyprus company registry search with director validation using Selenium
     """
     chrome_options = Options()
     chrome_options.add_argument("--no-sandbox")
@@ -258,7 +510,7 @@ def search_cyprus_company_registry(reg_number, company_name):
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--user-data-dir=/tmp/chrome_selenium_profile")
-    chrome_options.add_argument("--headless")  # Run headless for API
+    chrome_options.add_argument("--headless")  # Run headless for production
     
     driver = webdriver.Chrome(options=chrome_options)
     
@@ -288,140 +540,82 @@ def search_cyprus_company_registry(reg_number, company_name):
         # Wait for results to load
         time.sleep(3)
         
-        # Wait for the page to change or results to appear
-        try:
-            wait.until(lambda driver: driver.current_url != "https://efiling.drcor.mcit.gov.cy/DrcorPublic/SearchForm.aspx?sc=0")
-        except TimeoutException:
-            pass  # Page might not change
-        
-        # Wait a bit more for dynamic content to load
-        time.sleep(2)
-        
-        # Get the response and parse it
+        # Get the company search results
         html_response = driver.page_source
+        company_search_result = parse_company_data(html_response)
         
-        # Parse HTML to JSON
-        search_results = parse_company_data(html_response)
-        
-        return {
-            "search_performed": True,
-            "search_url": driver.current_url,
-            "results": search_results
+        search_response = {
+            "success": False,
+            "company_search": company_search_result,
+            "director_validation": {},
+            "search_url": driver.current_url
         }
+        
+        # If company search failed, return early
+        if not company_search_result["success"]:
+            search_response["errors"] = company_search_result.get("errors", [])
+            return search_response
+        
+        # Try to click on the first result and navigate to directors page
+        try:
+            # Look for the results table row
+            result_row = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "tr.basket"))
+            )
+            result_row.click()
+            time.sleep(3)
+            
+            # Click on directors tab
+            directors_tab = wait.until(
+                EC.element_to_be_clickable((By.ID, "ctl00_cphMyMasterCentral_directors"))
+            )
+            directors_tab.click()
+            time.sleep(3)
+            
+            # Parse directors page
+            directors_html = driver.page_source
+            directors_result = parse_directors_data(directors_html)
+            
+            # Validate director
+            director_validation = validate_director(director_name, directors_result.get('directors', []))
+            search_response["director_validation"] = director_validation
+            search_response["success"] = director_validation["director_valid"]
+            
+        except (TimeoutException, NoSuchElementException) as e:
+            search_response["director_validation"] = {
+                "error": f"Could not access directors page: {str(e)}",
+                "director_valid": False
+            }
+        
+        return search_response
         
     except Exception as e:
         return {
-            "search_performed": False,
+            "success": False,
             "error": f"Search error: {str(e)}"
         }
     finally:
         driver.quit()
 
-def main(data):
+def validate_bulk_companies_with_directors(companies_data):
     """
-    Main API function to validate company data and optionally search Cyprus registry
-    
-    Expected data format:
-    {
-        "company_name": "KYRASTEL ENTERPRISES LTD",
-        "registration_number": "474078",
-        "perform_search": false  # optional, defaults to false
-    }
-    
-    Returns:
-        dict: Validation results and optional search results
-    """
-    
-    # Validate required fields
-    if not data.get('company_name') and not data.get('registration_number'):
-        return {
-            'success': False,
-            'error': 'Either company_name or registration_number is required'
-        }
-    
-    company_name = data.get('company_name', '')
-    registration_number = data.get('registration_number', '')
-    perform_search = data.get('perform_search', False)
-    
-    # Process and validate the company data
-    processed_data = process_company_data(company_name, registration_number)
-    
-    # Prepare response
-    response = {
-        'success': True,
-        'validation': {
-            'company_name': {
-                'original': processed_data['original']['name'],
-                'processed': processed_data['processed']['name'],
-                'is_valid': processed_data['validation']['name_valid'],
-                'cyprus_valid': processed_data['validation']['cyprus_name_valid']
-            },
-            'registration_number': {
-                'original': processed_data['original']['registration'],
-                'processed': processed_data['processed']['registration'],
-                'is_valid': processed_data['validation']['reg_number_valid'],
-                'cyprus_valid': processed_data['validation']['cyprus_reg_number_valid']
-            },
-            'overall_valid': (
-                processed_data['validation']['cyprus_name_valid'] and 
-                processed_data['validation']['cyprus_reg_number_valid']
-            )
-        },
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
-    # Add validation summary
-    validation_issues = []
-    if not processed_data['validation']['cyprus_name_valid']:
-        validation_issues.append("Company name format is invalid for Cyprus registry")
-    if not processed_data['validation']['cyprus_reg_number_valid']:
-        validation_issues.append("Registration number format is invalid (must be exactly 6 digits)")
-    
-    if validation_issues:
-        response['validation_issues'] = validation_issues
-    
-    # Perform actual search if requested and validation passed
-    if perform_search and response['validation']['overall_valid']:
-        try:
-            search_results = search_cyprus_company_registry(
-                processed_data['processed']['registration'],
-                processed_data['processed']['name']
-            )
-            response['search'] = search_results
-        except Exception as e:
-            response['search'] = {
-                'search_performed': False,
-                'error': f"Search failed: {str(e)}"
-            }
-    elif perform_search and not response['validation']['overall_valid']:
-        response['search'] = {
-            'search_performed': False,
-            'error': "Search skipped due to validation failures"
-        }
-    
-    return response
-
-def validate(data):
-    """Alias for main function to maintain compatibility"""
-    return main(data)
-
-# Bulk validation function
-def validate_bulk(companies_data):
-    """
-    Validate multiple companies at once
+    Validate multiple companies with director validation
     
     Expected data format:
     {
         "companies": [
             {
                 "company_name": "Company 1",
-                "registration_number": "123456"
+                "registration_number": "123456",
+                "director_name": "Director 1"
             },
             {
                 "company_name": "Company 2", 
-                "registration_number": "654321"
+                "registration_number": "654321",
+                "director_name": "Director 2"
             }
-        ]
+        ],
+        "perform_search": false  # Set to true to perform actual searches
     }
     """
     
@@ -433,14 +627,19 @@ def validate_bulk(companies_data):
     
     results = []
     valid_count = 0
+    perform_search = companies_data.get('perform_search', False)
     
     for i, company in enumerate(companies_data['companies']):
         try:
-            result = main(company)
+            # Add perform_search flag to individual company data
+            company_data = company.copy()
+            company_data['perform_search'] = perform_search
+            
+            result = search_cyprus_company_with_director_validation(company_data)
             result['index'] = i
             results.append(result)
             
-            if result.get('validation', {}).get('overall_valid'):
+            if result.get('validation', {}).get('overall_valid') and result.get('success'):
                 valid_count += 1
                 
         except Exception as e:
@@ -458,3 +657,51 @@ def validate_bulk(companies_data):
         'results': results,
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
+
+# Main execution function
+def main():
+    """
+    Example usage of the Cyprus company registry validator with director validation
+    """
+    
+    # Example data for single company validation with director
+    example_data = {
+        "company_name": "KYRASTEL ENTERPRISES LTD",
+        "registration_number": "474078",
+        "director_name": "STELIOS KYRANIDES",
+        "perform_search": False  # Set to True to perform actual search
+    }
+    
+    print("=== CYPRUS COMPANY REGISTRY VALIDATOR WITH DIRECTOR VALIDATION ===")
+    print("Example single company validation:")
+    print(json.dumps(example_data, indent=2))
+    
+    # Perform validation
+    result = search_cyprus_company_with_director_validation(example_data)
+    
+    print("\nValidation Result:")
+    print(json.dumps(result, indent=2))
+    
+    # Example bulk validation
+    bulk_data = {
+        "companies": [
+            {
+                "company_name": "KYRASTEL ENTERPRISES LTD",
+                "registration_number": "474078",
+                "director_name": "STELIOS KYRANIDES"
+            },
+            {
+                "company_name": "TEST COMPANY LTD",
+                "registration_number": "123456",
+                "director_name": "JOHN DOE"
+            }
+        ],
+        "perform_search": False
+    }
+    
+    print("\n=== BULK VALIDATION EXAMPLE ===")
+    bulk_result = validate_bulk_companies_with_directors(bulk_data)
+    print(json.dumps(bulk_result, indent=2))
+
+if __name__ == "__main__":
+    main()
