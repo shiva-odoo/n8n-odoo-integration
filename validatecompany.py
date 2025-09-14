@@ -213,7 +213,7 @@ def search_cyprus_company_with_director_validation(data):
     company_name = process_company_name(data.get("company_name", ""))
     registration_number = process_registration_number(data.get("registration_number", ""))
     director_name = process_director_name(data.get("director_name", ""))
-    perform_search = data.get("perform_search", False)
+    perform_search = False
     validation_results = process_company_data(company_name, registration_number)
     director_matches = {
         "match_found": False,
@@ -313,4 +313,6 @@ def main(data):
     result = search_cyprus_company_with_director_validation(data)
     print("\nValidation Result:")
     print(json.dumps(result, indent=2))
+
+    return result
 
