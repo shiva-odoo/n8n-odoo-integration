@@ -7,12 +7,6 @@ from bs4 import BeautifulSoup
 import json
 import time
 import re
-
-# Initialize variables as requested
-company_name = "KYRASTEL ENTERPRISES LTD"
-registration_number = "474078"
-director_name = "STELIOS KYRANIDES"
-
 # ============================================================================
 # CYPRUS COMPANY REGISTRY - NAME AND REGISTRATION PROCESSING FUNCTIONS
 # ============================================================================

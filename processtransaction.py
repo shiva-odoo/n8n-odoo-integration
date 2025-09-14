@@ -21,10 +21,18 @@ You will receive bank statement text. Extract:
 2. **All Transactions**: Date, description, amounts, references, transaction type
 3. **Currency Information**: Identify the currency used in transactions
 
+## CRITICAL OUTPUT REQUIREMENTS
+- Return ONLY a valid JSON array
+- No markdown code blocks (no ```json```)
+- No explanatory text before or after the JSON
+- No comments or additional formatting
+- Start response with [ and end with ]
+- Ensure valid JSON syntax with proper escaping
+- All string values must be properly escaped (quotes, backslashes, etc.)
+
 ## Required Output Format
 For EACH transaction found, create a JSON object with this EXACT structure and return as a JSON array:
 
-```json
 [
   {{
     "company_id": {company_id_value},
@@ -35,26 +43,25 @@ For EACH transaction found, create a JSON object with this EXACT structure and r
     "line_items": [
       {{
         "name": "string",
-        "debit": number,
-        "credit": number
+        "debit": 0.00,
+        "credit": 0.00
       }},
       {{
         "name": "string", 
-        "debit": number,
-        "credit": number
+        "debit": 0.00,
+        "credit": 0.00
       }}
     ]
   }}
 ]
-```
 
 ## Field Generation Rules
 
 ### Standard Fields
-- **company_id**: Always set to `{company_id_value}` 
-- **date**: Convert to YYYY-MM-DD format
-- **ref**: Use actual transaction reference if available, otherwise generate from description
-- **narration**: Clean, business-friendly description of the transaction
+- **company_id**: Always set to `{company_id_value}` (as number, not string)
+- **date**: Convert to YYYY-MM-DD format (string)
+- **ref**: Use actual transaction reference if available, otherwise generate from description (string)
+- **narration**: Clean, business-friendly description of the transaction (string)
 - **partner**: Use the actual partner/counterparty name if found in the transaction. **If no partner name is found, set the value to `"unknown"` (do not leave empty or null).**
 - **line_items**: Array of 2+ accounting entries that balance (total debits = total credits)
 
@@ -89,6 +96,7 @@ For EACH transaction found, create a JSON object with this EXACT structure and r
 - Remove internal bank reference numbers and codes
 - Make descriptions business-friendly and readable
 - Keep essential information like payee names, purpose
+- Properly escape any quotes or special characters for JSON
 - Examples:
   - "FEE REGISTRAR COMPANIES REF:12345" → "Registrar of companies fee"
   - "TRF TO JOHN SMITH REF:ABC123" → "Transfer to John Smith"
@@ -165,11 +173,12 @@ For EACH transaction found, create a JSON object with this EXACT structure and r
 5. **Clean descriptions** and create business-friendly narrations
 6. **Verify currency consistency** throughout the statement
 7. **Set company_id** to `{company_id_value}` for every transaction
+8. **Ensure all numeric values are numbers, not strings**
+9. **Properly escape all string values for JSON format**
 
 ## Example Output Structure
 Return a JSON array containing one object for each transaction:
 
-```json
 [
   {{
     "company_id": {company_id_value},
@@ -191,10 +200,130 @@ Return a JSON array containing one object for each transaction:
     ]
   }}
 ]
-```
 
-**IMPORTANT: Return ONLY the JSON array with no additional text, explanations, or markdown formatting.**
+**CRITICAL: Return ONLY the JSON array. No markdown formatting, no code blocks, no explanatory text. The response must start with '[' and end with ']'.**
 """
+
+def extract_json_from_response(response_text):
+    """Extract JSON from Claude's response, handling various formats"""
+    try:
+        # Remove any leading/trailing whitespace
+        response_text = response_text.strip()
+        
+        # Try to parse directly first
+        try:
+            parsed = json.loads(response_text)
+            return parsed
+        except json.JSONDecodeError:
+            pass
+        
+        # Look for JSON wrapped in markdown code blocks
+        json_pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+        matches = re.findall(json_pattern, response_text, re.IGNORECASE)
+        
+        if matches:
+            # Try each match
+            for match in matches:
+                try:
+                    parsed = json.loads(match.strip())
+                    return parsed
+                except json.JSONDecodeError:
+                    continue
+        
+        # Look for JSON arrays/objects without code blocks
+        # Find content between first '[' and last ']'
+        if '[' in response_text and ']' in response_text:
+            start_idx = response_text.find('[')
+            
+            # Find matching closing bracket
+            bracket_count = 0
+            end_idx = -1
+            
+            for i in range(start_idx, len(response_text)):
+                char = response_text[i]
+                if char == '[':
+                    bracket_count += 1
+                elif char == ']':
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        end_idx = i + 1
+                        break
+            
+            if end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx]
+                try:
+                    parsed = json.loads(json_str)
+                    return parsed
+                except json.JSONDecodeError:
+                    pass
+        
+        # Look for JSON objects if no arrays found
+        if '{' in response_text and '}' in response_text:
+            start_idx = response_text.find('{')
+            
+            # Find matching closing brace
+            brace_count = 0
+            end_idx = -1
+            
+            for i in range(start_idx, len(response_text)):
+                char = response_text[i]
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i + 1
+                        break
+            
+            if end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx]
+                try:
+                    parsed = json.loads(json_str)
+                    # If it's a single object, wrap it in an array
+                    if isinstance(parsed, dict):
+                        return [parsed]
+                    return parsed
+                except json.JSONDecodeError:
+                    pass
+        
+        # If all else fails, raise an error with the raw response
+        raise json.JSONDecodeError(f"Could not extract valid JSON from response. Response starts with: {response_text[:200]}...")
+        
+    except Exception as e:
+        raise Exception(f"JSON extraction failed: {str(e)}")
+
+def validate_transaction_json(transactions):
+    """Validate the extracted transaction JSON structure"""
+    try:
+        if not isinstance(transactions, list):
+            raise ValueError("Expected JSON array of transactions")
+        
+        for i, transaction in enumerate(transactions):
+            if not isinstance(transaction, dict):
+                raise ValueError(f"Transaction {i} is not a JSON object")
+            
+            # Check required fields
+            required_fields = ['company_id', 'date', 'ref', 'narration', 'partner', 'line_items']
+            for field in required_fields:
+                if field not in transaction:
+                    raise ValueError(f"Transaction {i} missing required field: {field}")
+            
+            # Validate line_items
+            line_items = transaction['line_items']
+            if not isinstance(line_items, list) or len(line_items) < 2:
+                raise ValueError(f"Transaction {i} must have at least 2 line items")
+            
+            # Validate double-entry balancing
+            total_debits = sum(item.get('debit', 0) for item in line_items)
+            total_credits = sum(item.get('credit', 0) for item in line_items)
+            
+            if abs(total_debits - total_credits) > 0.01:  # Allow small rounding differences
+                raise ValueError(f"Transaction {i} debits ({total_debits}) don't balance with credits ({total_credits})")
+        
+        return True
+        
+    except Exception as e:
+        raise Exception(f"Transaction validation failed: {str(e)}")
 
 def download_from_s3(s3_key, bucket_name=None):
     """Download file from S3 using key"""
@@ -268,22 +397,44 @@ def process_bank_statement_extraction(pdf_content, company_id=None):
         # Extract response
         response_text = message.content[0].text.strip()
         
-        # Log token usage for monitoring
-        print(f"Token usage - Input: {message.usage.input_tokens}, Output: {message.usage.output_tokens}")
+        # Log the raw response for debugging (first 500 chars)
+        print(f"Raw Claude response (first 500 chars): {response_text[:500]}...")
         
-        return {
-            "success": True,
-            "extraction_result": response_text,
-            "token_usage": {
-                "input_tokens": message.usage.input_tokens,
-                "output_tokens": message.usage.output_tokens
+        # Extract and parse JSON
+        try:
+            extracted_json = extract_json_from_response(response_text)
+            
+            # Validate the JSON structure
+            validate_transaction_json(extracted_json)
+            
+            # Log token usage for monitoring
+            print(f"Token usage - Input: {message.usage.input_tokens}, Output: {message.usage.output_tokens}")
+            print(f"Successfully extracted and validated {len(extracted_json)} transactions")
+            
+            return {
+                "success": True,
+                "extraction_result": extracted_json,  # Return parsed JSON instead of raw text
+                "raw_response": response_text,  # Keep raw response for debugging
+                "token_usage": {
+                    "input_tokens": message.usage.input_tokens,
+                    "output_tokens": message.usage.output_tokens
+                },
+                "transaction_count": len(extracted_json)
             }
-        }
+            
+        except Exception as json_error:
+            print(f"JSON processing failed: {str(json_error)}")
+            return {
+                "success": False,
+                "error": f"JSON processing failed: {str(json_error)}",
+                "raw_response": response_text
+            }
         
     except Exception as e:
+        print(f"Claude API error: {str(e)}")
         return {
             "success": False,
-            "error": str(e)
+            "error": f"Claude API error: {str(e)}"
         }
 
 def main(data):
@@ -294,7 +445,7 @@ def main(data):
         data (dict): Request data containing:
             - s3_key (str): S3 key path to the document
             - bucket_name (str, optional): S3 bucket name
-            - company_id (str, optional): Company ID for transaction extraction
+            - company_id (str/int, optional): Company ID for transaction extraction
     
     Returns:
         dict: Processing result with success status and extracted data
@@ -311,8 +462,9 @@ def main(data):
         bucket_name = data.get('bucket_name')  # Optional
         company_id = data.get('company_id')  # For bank statement extraction
         
-        
-        print(f"Processing bank statement for transaction extraction, S3 key: {s3_key}")
+        print(f"Processing bank statement for transaction extraction")
+        print(f"S3 key: {s3_key}")
+        print(f"Company ID: {company_id}")
         
         # Download PDF from S3
         pdf_content = download_from_s3(s3_key, bucket_name)
@@ -324,17 +476,13 @@ def main(data):
         if result["success"]:
             return {
                 "success": True,
-                "raw_response": result["extraction_result"],
-                "metadata": {
-                    "token_usage": result["token_usage"],
-                    "s3_key": s3_key,
-                    "company_id": company_id
-                }
+                "transactions": result["extraction_result"]
             }
         else:
             return {
                 "success": False,
-                "error": result["error"]
+                "error": result["error"],
+                "raw_response": result.get("raw_response")
             }
             
     except Exception as e:
@@ -370,3 +518,41 @@ def health_check():
             "healthy": False,
             "error": str(e)
         }
+
+# Example usage for testing
+if __name__ == "__main__":
+    # Test the JSON extraction function
+    test_response = '''```json
+[
+  {
+    "company_id": 123,
+    "date": "2025-07-16",
+    "ref": "test_ref",
+    "narration": "Test transaction",
+    "partner": "Test Partner",
+    "line_items": [
+      {
+        "name": "Bank Account",
+        "debit": 100.00,
+        "credit": 0.00
+      },
+      {
+        "name": "Revenue",
+        "debit": 0.00,
+        "credit": 100.00
+      }
+    ]
+  }
+]
+```'''
+    
+    try:
+        result = extract_json_from_response(test_response)
+        print("JSON extraction test successful:")
+        print(json.dumps(result, indent=2))
+        
+        validate_transaction_json(result)
+        print("Validation test successful!")
+        
+    except Exception as e:
+        print(f"Test failed: {str(e)}")

@@ -37,7 +37,6 @@ except ImportError as e:
 import base64
 import logging
 from datetime import datetime
-import processtransaction
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +54,8 @@ import validatecompany
 import batchupdate
 import classifydocument
 import splitinvoice
+import matchingworkflow
+import processtransaction
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1655,11 +1656,43 @@ def process_transaction_document():
             return jsonify(result), 400
             
     except Exception as e:
-        print(f"❌ Split document endpoint error: {e}")
+        print(f"❌ Process Transaction endpoint error: {e}")
         return jsonify({
             "success": False,
             "error": "Internal server error"
         }), 500
+
+
+@app.route('/api/matching_workflow', methods=['POST'])
+def matching_workflow_dynamodb():
+    """
+     PDF documents into individual invoices with OCR extraction
+    """
+    try:
+        # Validate request
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Call the splitting function
+        result = matchingworkflow.main(data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Matching Workflow endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error"
+        }), 500
+
 
 
 
