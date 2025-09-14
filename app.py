@@ -27,7 +27,7 @@ try:
     import updateAuditStatus
     import openaipdf as pdf_processor
     import pdf_extractor
-    import processtransaction
+
     
 
     
@@ -37,6 +37,7 @@ except ImportError as e:
 import base64
 import logging
 from datetime import datetime
+import processtransaction
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

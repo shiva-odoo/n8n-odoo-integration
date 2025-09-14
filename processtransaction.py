@@ -311,6 +311,7 @@ def main(data):
         bucket_name = data.get('bucket_name')  # Optional
         company_id = data.get('company_id')  # For bank statement extraction
         
+        
         print(f"Processing bank statement for transaction extraction, S3 key: {s3_key}")
         
         # Download PDF from S3
