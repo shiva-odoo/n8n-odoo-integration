@@ -25,11 +25,7 @@ try:
     import createtransaction
     import getDetailsByCompany
     import updateAuditStatus
-    import openaipdf as pdf_processor
-    import pdf_extractor
-
     
-
     
 except ImportError as e:
     print(f"Warning: Could not import some modules: {e}")
@@ -56,6 +52,7 @@ import classifydocument
 import splitinvoice
 import matchingworkflow
 import processtransaction
+import process_bill
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -210,225 +207,7 @@ def home():
     }
     return jsonify(endpoints)
 
-# NEW PDF EXTRACTION ENDPOINTS
-@app.route('/api/extract-pdf-data', methods=['POST'])
-def extract_pdf_data():
-    """
-    Extract structured data from PDF files
-    Expected input from n8n: file_name, file_content (base64), file_type
-    """
-    if not PDF_EXTRACTION_AVAILABLE:
-        return jsonify({"success": False, "error": "PDF extraction not available"}), 500
-    
-    try:
-        data = request.get_json()
-        
-        # Validate input
-        if not data:
-            return jsonify({"success": False, "error": "No JSON data provided"}), 400
-            
-        required_fields = ['file_name', 'file_content']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({"success": False, "error": f"Missing required field: {field}"}), 400
-        
-        file_name = data['file_name']
-        file_content_b64 = data['file_content']
-        file_type = data.get('file_type', 'application/pdf')
-        
-        logger.info(f"Processing file: {file_name}, type: {file_type}")
-        
-        # Decode base64 content
-        try:
-            file_content = base64.b64decode(file_content_b64)
-        except Exception as e:
-            return jsonify({"success": False, "error": f"Invalid base64 content: {str(e)}"}), 400
-        
-        # Process based on file type
-        if file_type == 'application/pdf':
-            result = pdf_extractor.extract_from_pdf(file_content, file_name)
-        elif file_type.startswith('image/'):
-            image_data = f"data:{file_type};base64,{file_content_b64}"
-            result = pdf_extractor.extract_from_image(image_data, file_name)
-        else:
-            return jsonify({"success": False, "error": f"Unsupported file type: {file_type}"}), 400
-        
-        if result["success"]:
-            # Format data for your existing Odoo APIs
-            formatted_data = pdf_extractor.format_for_odoo_apis(result["extracted_data"])
-            result["formatted_for_odoo"] = formatted_data
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Extraction error: {str(e)}")
-        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
-@app.route('/api/process-document', methods=['POST'])
-def process_document():
-    """
-    Complete document processing: Extract data + Create vendor + Create company + Create bill
-    This is the main endpoint for n8n workflow
-    """
-    if not PDF_EXTRACTION_AVAILABLE:
-        return jsonify({"success": False, "error": "PDF extraction not available"}), 500
-    
-    try:
-        # Extract data from the same request
-        file_name = request.json.get('file_name')
-        file_content_b64 = request.json.get('file_content')
-        file_type = request.json.get('file_type', 'application/pdf')
-        
-        if not file_name or not file_content_b64:
-            return jsonify({"success": False, "error": "file_name and file_content are required"}), 400
-        
-        # Decode and extract
-        file_content = base64.b64decode(file_content_b64)
-        
-        if file_type == 'application/pdf':
-            extraction_result = pdf_extractor.extract_from_pdf(file_content, file_name)
-        elif file_type.startswith('image/'):
-            image_data = f"data:{file_type};base64,{file_content_b64}"
-            extraction_result = pdf_extractor.extract_from_image(image_data, file_name)
-        else:
-            return jsonify({"success": False, "error": f"Unsupported file type: {file_type}"}), 400
-        
-        if not extraction_result.get("success"):
-            return jsonify({
-                "success": False,
-                "step": "extraction",
-                "error": extraction_result.get("error")
-            })
-        
-        formatted_data = pdf_extractor.format_for_odoo_apis(extraction_result["extracted_data"])
-        results = {
-            "success": True,
-            "extraction": extraction_result,
-            "vendor_creation": None,
-            "company_creation": None,
-            "bill_creation": None,
-            "processing_summary": {
-                "file_name": file_name,
-                "extraction_method": extraction_result.get("extraction_method"),
-                "records_created": []
-            }
-        }
-        
-        # Step 2: Create vendor if vendor data exists
-        vendor_data = formatted_data.get("vendor_data", {})
-        if vendor_data.get("name"):
-            try:
-                vendor_result = createvendor.main(vendor_data)
-                results["vendor_creation"] = vendor_result
-                if vendor_result.get("success"):
-                    results["processing_summary"]["records_created"].append("vendor")
-                    vendor_id = vendor_result.get("vendor_id")
-                else:
-                    logger.warning(f"Vendor creation failed: {vendor_result.get('error')}")
-            except Exception as e:
-                logger.error(f"Vendor creation error: {str(e)}")
-                results["vendor_creation"] = {"success": False, "error": str(e)}
-        
-        # Step 3: Create company if customer data exists
-        company_data = formatted_data.get("company_data", {})
-        if company_data.get("name"):
-            try:
-                company_result = createcompany.main(company_data)
-                results["company_creation"] = company_result
-                if company_result.get("success"):
-                    results["processing_summary"]["records_created"].append("company")
-            except Exception as e:
-                logger.error(f"Company creation error: {str(e)}")
-                results["company_creation"] = {"success": False, "error": str(e)}
-        
-        # Step 4: Create bill if we have vendor and bill data
-        bill_data = formatted_data.get("bill_data", {})
-        vendor_result = results.get("vendor_creation", {})
-        
-        if bill_data and vendor_result and vendor_result.get("success"):
-            # Add vendor_id to bill data
-            bill_data["vendor_id"] = vendor_result.get("vendor_id")
-            
-            try:
-                bill_result = createbill.main(bill_data)
-                results["bill_creation"] = bill_result
-                if bill_result.get("success"):
-                    results["processing_summary"]["records_created"].append("bill")
-            except Exception as e:
-                logger.error(f"Bill creation error: {str(e)}")
-                results["bill_creation"] = {"success": False, "error": str(e)}
-        
-        # Generate summary
-        total_created = len(results["processing_summary"]["records_created"])
-        results["processing_summary"]["total_records_created"] = total_created
-        results["processing_summary"]["status"] = "completed" if total_created > 0 else "partial"
-        
-        return jsonify(results)
-        
-    except Exception as e:
-        logger.error(f"Document processing error: {str(e)}")
-        return jsonify({
-            "success": False,
-            "step": "processing",
-            "error": f"Processing failed: {str(e)}"
-        }), 500
-
-@app.route('/api/extract-from-url', methods=['POST'])
-def extract_from_url():
-    """
-    Extract data from a file URL (for Google Drive files)
-    """
-    if not PDF_EXTRACTION_AVAILABLE:
-        return jsonify({"success": False, "error": "PDF extraction not available"}), 500
-    
-    try:
-        data = request.get_json()
-        file_url = data.get('file_url')
-        
-        if not file_url:
-            return jsonify({"success": False, "error": "file_url is required"}), 400
-        
-        # Download file from URL
-        import requests
-        response = requests.get(file_url)
-        response.raise_for_status()
-        
-        file_content = response.content
-        file_name = data.get('file_name', 'document.pdf')
-        file_type = response.headers.get('content-type', 'application/pdf')
-        
-        # Process the downloaded file
-        if file_type == 'application/pdf':
-            result = pdf_extractor.extract_from_pdf(file_content, file_name)
-        elif file_type.startswith('image/'):
-            file_content_b64 = base64.b64encode(file_content).decode()
-            image_data = f"data:{file_type};base64,{file_content_b64}"
-            result = pdf_extractor.extract_from_image(image_data, file_name)
-        else:
-            return jsonify({"success": False, "error": f"Unsupported file type: {file_type}"}), 400
-        
-        if result["success"]:
-            formatted_data = pdf_extractor.format_for_odoo_apis(result["extracted_data"])
-            result["formatted_for_odoo"] = formatted_data
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"URL extraction error: {str(e)}")
-        return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
-
-@app.route('/api/extraction-status', methods=['GET'])
-def extraction_status():
-    """
-    Check extraction service status
-    """
-    return jsonify({
-        "success": True,
-        "pdf_extraction_available": PDF_EXTRACTION_AVAILABLE,
-        "supported_formats": ["application/pdf", "image/jpeg", "image/png", "image/jpg"] if PDF_EXTRACTION_AVAILABLE else [],
-        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
-        "version": "4.0"
-    })
 
 # Reference Data Operations
 @app.route('/api/vendors', methods=['GET'])
@@ -658,32 +437,6 @@ def create_company():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     
-@app.route('/api/openaipdf', methods=['POST'])
-def openaipdf_function():
-    """openaipdf - handles binary PDF data from n8n"""
-    try:
-        # Get binary data from n8n
-        pdf_content = request.get_data()
-        
-        if not pdf_content:
-            return jsonify({'success': False, 'error': 'No file data received'}), 400
-        
-        # Extract filename from headers or use default
-        filename = request.headers.get('X-Filename', 'uploaded.pdf')
-        
-        result = pdf_processor.main({
-            'pdf_content': pdf_content,
-            'filename': filename
-        })
-        
-        if result['success']:
-            return jsonify(result['data'])
-        else:
-            return jsonify(result), 400
-            
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
 @app.route('/api/create/credit-notes', methods=['POST'])
 def create_credit_notes():
     """Create credit note"""
@@ -1692,6 +1445,264 @@ def matching_workflow_dynamodb():
             "success": False,
             "error": "Internal server error"
         }), 500
+    
+# Add this import at the top of your app.py file
+
+
+# Add this route to your app.py file
+@app.route('/api/process-bill', methods=['POST'])
+def process_bill_endpoint():
+    """
+    Process multi-invoice PDF documents into structured vendor bill data
+    Combines document splitting and data extraction in one operation
+    
+    Expected JSON body:
+    {
+        "s3_key": "clients/Company Name/vendor-bills.pdf",
+        "company_name": "ACME Corporation Ltd",
+        "bucket_name": "company-documents-2025"  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "total_bills": 3,
+        "bills": [
+            {
+                "bill_index": 1,
+                "page_range": "1-1",
+                "document_classification": {
+                    "document_type": "vendor_bill",
+                    "company_position": "recipient",
+                    "direction_confidence": "high",
+                    "detection_details": "Company found in 'Bill To' section"
+                },
+                "company_validation": {
+                    "expected_company": "ACME Corporation Ltd",
+                    "found_companies": ["ACME Corporation Ltd", "Supplier Inc"],
+                    "company_match": "exact_match",
+                    "match_details": "Exact match found in billing address"
+                },
+                "company_data": {
+                    "name": "ACME Corporation Ltd",
+                    "email": "billing@acme.com",
+                    "phone": "+1234567890",
+                    "street": "123 Business Ave",
+                    "city": "Business City",
+                    "zip": "12345",
+                    "country_code": "US"
+                },
+                "vendor_data": {
+                    "name": "Supplier Inc",
+                    "email": "invoices@supplier.com",
+                    "phone": "+0987654321",
+                    "street": "456 Vendor St",
+                    "city": "Supplier Town",
+                    "zip": "67890",
+                    "country_code": "US",
+                    "invoice_date": "2025-03-15",
+                    "due_date": "2025-04-15",
+                    "vendor_ref": "INV-2025-001",
+                    "payment_reference": "PAY-REF-12345",
+                    "subtotal": 1000.00,
+                    "tax_amount": 100.00,
+                    "total_amount": 1100.00,
+                    "currency_code": "USD",
+                    "line_items": [
+                        {
+                            "description": "Professional Services - March 2025",
+                            "quantity": 1,
+                            "price_unit": 1000.00,
+                            "line_total": 1000.00,
+                            "tax_rate": 10.0
+                        }
+                    ]
+                },
+                "extraction_confidence": {
+                    "vendor_name": "high",
+                    "total_amount": "high",
+                    "line_items": "medium",
+                    "dates": "high",
+                    "company_validation": "high",
+                    "document_classification": "high"
+                },
+                "missing_fields": []
+            }
+            // Additional bills...
+        ],
+        "processing_summary": {
+            "bills_processed": 3,
+            "bills_with_issues": 0,
+            "success_rate": "100.0%"
+        },
+        "validation_results": [
+            {
+                "bill_index": 1,
+                "issues": [],
+                "warnings": [],
+                "mandatory_fields_present": true
+            }
+            // Additional validation results...
+        ],
+        "metadata": {
+            "company_name": "ACME Corporation Ltd",
+            "s3_key": "clients/Company Name/vendor-bills.pdf",
+            "token_usage": {
+                "input_tokens": 2500,
+                "output_tokens": 1800
+            }
+        }
+    }
+    
+    Error Response:
+    {
+        "success": false,
+        "error": "Missing required fields: company_name",
+        "details": "Additional error context if available"
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body is required"
+            }), 400
+        
+        required_fields = ['s3_key', 'company_name']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        
+        if missing_fields:
+            return jsonify({
+                "success": False,
+                "error": f"Missing required fields: {', '.join(missing_fields)}",
+                "details": f"Required fields are: {', '.join(required_fields)}"
+            }), 400
+        
+        # Validate field types and values
+        if not isinstance(data['s3_key'], str) or not data['s3_key'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid s3_key",
+                "details": "s3_key must be a non-empty string"
+            }), 400
+            
+        if not isinstance(data['company_name'], str) or not data['company_name'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid company_name", 
+                "details": "company_name must be a non-empty string"
+            }), 400
+        
+        # Optional bucket_name validation
+        if 'bucket_name' in data and (not isinstance(data['bucket_name'], str) or not data['bucket_name'].strip()):
+            return jsonify({
+                "success": False,
+                "error": "Invalid bucket_name",
+                "details": "bucket_name must be a non-empty string if provided"
+            }), 400
+        
+        # Log processing start
+        print(f"🏭 Processing bills for company: {data['company_name']}")
+        print(f"📄 S3 document: {data['s3_key']}")
+        
+        # Call the bill processing function
+        result = process_bill.main(data)
+        
+        # Handle successful processing
+        if result["success"]:
+            # Log success metrics
+            total_bills = result.get("total_bills", 0)
+            bills_with_issues = result.get("processing_summary", {}).get("bills_with_issues", 0)
+            success_rate = result.get("processing_summary", {}).get("success_rate", "0%")
+            
+            print(f"✅ Successfully processed {total_bills} bills")
+            print(f"📊 Success rate: {success_rate}")
+            if bills_with_issues > 0:
+                print(f"⚠️  Bills with issues: {bills_with_issues}")
+            
+            # Return successful response
+            return jsonify(result), 200
+        else:
+            # Log processing failure
+            error_msg = result.get("error", "Unknown error")
+            print(f"❌ Bill processing failed: {error_msg}")
+            
+            # Return error response with appropriate status code
+            status_code = 422 if "validation" in error_msg.lower() else 500
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "details": result.get("raw_response", "No additional details available")[:200] if result.get("raw_response") else None
+            }), status_code
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"❌ Process bill endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "An unexpected error occurred while processing the request"
+        }), 500
+
+# Add this health check endpoint as well
+@app.route('/api/process-bill/health', methods=['GET'])
+def process_bill_health():
+    """
+    Health check endpoint for the bill processing service
+    
+    Returns:
+    {
+        "healthy": true,
+        "service": "claude-bill-processing",
+        "version": "2.0",
+        "capabilities": [
+            "document_splitting",
+            "data_extraction", 
+            "company_validation",
+            "monetary_calculation",
+            "confidence_scoring"
+        ],
+        "anthropic_configured": true,
+        "aws_configured": true,
+        "s3_bucket": "company-documents-2025"
+    }
+    """
+    try:
+        result = process_bill.health_check()
+        
+        if result["healthy"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 503
+            
+    except Exception as e:
+        print(f"❌ Health check error: {e}")
+        return jsonify({
+            "healthy": False,
+            "error": "Health check failed",
+            "details": str(e)
+        }), 503
+
 
 
 
