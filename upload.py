@@ -4,6 +4,8 @@ from datetime import datetime
 from botocore.exceptions import ClientError
 from decimal import Decimal
 import os
+import uuid
+import json
 
 # DynamoDB setup (using your existing pattern)
 AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
@@ -34,6 +36,22 @@ def create_batch(username, company_name, email, files_list):
         timestamp = int(datetime.utcnow().timestamp() * 1000)
         batch_id = f"batch_{username}_{timestamp}"
         
+        # Create files data with unique file_id for each file
+        files_data = []
+        for f in files_list:
+            file_id = str(uuid.uuid4())  # Generate unique file ID
+            files_data.append({
+                'file_id': file_id,
+                'filename': f.filename,
+                'status': 'uploaded',
+                'document_type': 'unknown',  # Will be updated later by AI processing
+                'content_type': getattr(f, 'content_type', 'application/octet-stream'),
+                'size': getattr(f, 'content_length', 0) or len(f.read()) if hasattr(f, 'read') else 0
+            })
+            # Reset file pointer if we read it for size
+            if hasattr(f, 'seek'):
+                f.seek(0)
+        
         batch_data = {
             'batch_id': batch_id,
             'username': username,
@@ -43,7 +61,7 @@ def create_batch(username, company_name, email, files_list):
             'total_documents': len(files_list),
             'completed_documents': 0,
             'failed_documents': 0,
-            'files': [{'filename': f.filename, 'status': 'uploaded'} for f in files_list],
+            'files': files_data,  # Now includes file_id and additional metadata
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat()
         }
@@ -177,6 +195,7 @@ def main(form, files):
         }
     
     batch_id = batch_result["batch_id"]
+    files_data = batch_result["batch_data"]["files"]  # Get the files data with file_ids
 
     # Step 2: Prepare files for n8n
     files_payload = []
@@ -189,7 +208,7 @@ def main(form, files):
         )
 
     try:
-        # Step 3: Send to n8n webhook with batch context
+        # Step 3: Send to n8n webhook with batch context and files metadata
         response = requests.post(
             N8N_WEBHOOK_URL,
             files=files_payload,
@@ -198,7 +217,8 @@ def main(form, files):
                 "email": email,
                 "username": username,
                 "company_id": company_id,
-                "batch_id": batch_id  # This is key for n8n to update the batch
+                "batch_id": batch_id,
+                "files_data": json.dumps(files_data)  # Send files metadata as JSON string
             },
             timeout=60,
         )

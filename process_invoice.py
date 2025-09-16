@@ -5,14 +5,14 @@ import os
 import json
 import re
 
-def get_bill_processing_prompt(company_name):
-    """Create comprehensive bill processing prompt that combines splitting and extraction"""
+def get_invoice_processing_prompt(company_name):
+    """Create comprehensive invoice processing prompt that combines splitting and extraction"""
     return f"""You are an advanced invoice processing AI. Your task is to analyze a multi-invoice PDF document and return structured JSON data.
 
 **CRITICAL INSTRUCTION: Respond with ONLY the JSON object. Do not include any explanatory text, commentary, analysis, or markdown formatting before or after the JSON. Start your response immediately with the opening curly brace {{.**
 
 **INPUT:** Multi-invoice PDF document
-**COMPANY:** {company_name} (the company receiving these bills)
+**COMPANY:** {company_name} (the company issuing these invoices to customers)
 **OUTPUT:** Raw JSON object only
 
 **DOCUMENT SPLITTING RULES (Priority Order):**
@@ -30,7 +30,12 @@ def get_bill_processing_prompt(company_name):
 
 **DATA EXTRACTION FOR EACH INVOICE:**
 
-**DOCUMENT TYPE:** Always set as "vendor_bill" since {company_name} is receiving these bills.
+**DOCUMENT TYPE:** Set as "customer_invoice" for traditional invoices or "share_capital_invoice" for share allotments and capital increases.
+
+**DOCUMENT IDENTIFICATION:**
+- Traditional customer invoices: Services/goods provided to customers
+- Share capital documents: Share allotments, capital increases, shareholder investments
+- Both types represent cash inflow to the company and should be processed
 
 **COMPANY VALIDATION:**
 - Identify ALL company names in the PDF
@@ -38,18 +43,25 @@ def get_bill_processing_prompt(company_name):
 - Set company_match: "exact_match", "close_match", "no_match", or "unclear"
 
 **MANDATORY FIELDS:**
-- Vendor name (Essential)
-- Bill Date (Required)
+- Customer/Shareholder name (Essential)
+- Invoice/Transaction Date (Required)
 - Due Date or Payment Terms
-- Bill Reference (Invoice number)
+- Invoice/Document Reference
 - Currency and Amounts
-- Description (Overall description of the document including details about line items)
+- Description (Overall description of the services/goods/shares provided)
 - Line Items with calculations
-- Credit Account (Account to be credited based on bill type)
-- Debit Account (Account to be debited based on bill type)
+- Credit Account (Account to be credited based on transaction type)
+- Debit Account (Account to be debited based on transaction type)
+
+**SHARE CAPITAL TRANSACTION HANDLING:**
+- Treat share allotments as invoices for accounting purposes
+- Shareholder becomes the "customer" receiving shares
+- Amount represents cash to be received from shareholder
+- Description should detail share allotment (e.g., "15,000 ordinary shares at €1 each")
+- Use appropriate accounting codes: DEBIT 1204 (Bank), CREDIT 3000 (Share Capital)
 
 **DESCRIPTION FIELD:**
-- Create an overall description of the document that summarizes the goods/services provided
+- Create an overall description of the services/goods provided to the customer
 - Include key details from line item descriptions
 - Can be a shortened combination of the description fields from each line item
 - Should give a clear understanding of what the invoice is for
@@ -71,14 +83,14 @@ def get_bill_processing_prompt(company_name):
 
 {{
   "success": true,
-  "total_bills": <number>,
-  "bills": [
+  "total_invoices": <number>,
+  "invoices": [
     {{
-      "bill_index": 1,
+      "invoice_index": 1,
       "page_range": "1",
       "document_classification": {{
-        "document_type": "vendor_bill",
-        "company_position": "recipient",
+        "document_type": "customer_invoice",
+        "company_position": "issuer",
         "direction_confidence": "high",
         "detection_details": ""
       }},
@@ -98,7 +110,7 @@ def get_bill_processing_prompt(company_name):
         "zip": "",
         "country_code": ""
       }},
-      "vendor_data": {{
+      "customer_data": {{
         "name": "",
         "email": "",
         "phone": "",
@@ -109,7 +121,7 @@ def get_bill_processing_prompt(company_name):
         "country_code": "",
         "invoice_date": null,
         "due_date": null,
-        "vendor_ref": "",
+        "invoice_ref": "",
         "payment_reference": "",
         "description": "",
         "subtotal": 0,
@@ -128,7 +140,7 @@ def get_bill_processing_prompt(company_name):
         "additional_entries": []
       }},
       "extraction_confidence": {{
-        "vendor_name": "low",
+        "customer_name": "low",
         "total_amount": "low",
         "line_items": "low",
         "dates": "low",
@@ -161,13 +173,14 @@ Each additional entry in the additional_entries array must have this exact struc
 }}
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Consultancy Bill: debit_account="6200", credit_account="2100"
-- Bank Charges: debit_account="7901", credit_account="1204" 
-- Government Fees: debit_account="8200", credit_account="2100"
-- EU Service with Reverse Charge: Main entry + additional VAT entries in additional_entries array
+- Consultancy Invoice: debit_account="1100", credit_account="6200"
+- Service Invoice: debit_account="1100", credit_account="4000" 
+- Product Sale: debit_account="1100", credit_account="4100"
+- Share Capital Transaction: debit_account="1204", credit_account="3000"
+- EU Customer with Reverse Charge: Main entry + additional VAT entries in additional_entries array
 
 **ABSOLUTE REQUIREMENTS:**
-1. Every field listed above MUST be present in every bill object
+1. Every field listed above MUST be present in every invoice object
 2. Use the exact default values shown when data is not found
 3. Never omit fields - always include them with default values
 4. String fields default to empty string ""
@@ -208,8 +221,8 @@ def download_from_s3(s3_key, bucket_name=None):
     except Exception as e:
         raise Exception(f"Error downloading from S3: {str(e)}")
 
-def process_bills_with_claude(pdf_content, company_name):
-    """Process PDF document with Claude for bill splitting and extraction"""
+def process_invoices_with_claude(pdf_content, company_name):
+    """Process PDF document with Claude for invoice splitting and extraction"""
     try:
         # Initialize Anthropic client
         anthropic_client = anthropic.Anthropic(
@@ -220,42 +233,60 @@ def process_bills_with_claude(pdf_content, company_name):
         pdf_base64 = base64.b64encode(pdf_content).decode('utf-8')
         
         # Get comprehensive prompt
-        prompt = get_bill_processing_prompt(company_name)
+        prompt = get_invoice_processing_prompt(company_name)
         
         # Send to Claude with optimized parameters for structured output
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=15000,
             temperature=0.0,  # Maximum determinism for consistent parsing
-            system="""You are an expert accountant and data extraction system. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping, VAT regulations, and proper account classification.
+            system="""You are an expert accountant and data extraction system specialized in ALL CASH INFLOW transactions. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for REVENUE recognition, EQUITY transactions, VAT regulations, and proper account classification.
 
 CHART OF ACCOUNTS YOU MUST USE:
-• 1100 - Accounts receivable (Asset)
-• 1204 - Bank (Asset) 
-• 2100 - Accounts payable (Liability)
-• 2201 - Output VAT/Sales (Liability)
-• 2202 - Input VAT/Purchases (Asset)
-• 3000 - Share Capital (Equity)
-• 6200 - Consultancy fees (Expense)
-• 7901 - Bank charges (Expense)
-• 8200 - Other non-operating income/expenses (Expense)
+• 1100 - Accounts receivable (Asset) - Customer owes us money
+• 1204 - Bank (Asset) - Cash received from customers or shareholders
+• 2201 - Output VAT/Sales (Liability) - VAT we owe to authorities
+• 2202 - Input VAT/Purchases (Asset) - VAT we paid on purchases
+• 3000 - Share Capital (Equity) - Shareholder investments and capital increases
+• 4000 - Service revenue (Revenue) - Income from services provided
+• 4100 - Sales revenue (Revenue) - Income from products sold
+• 6200 - Consultancy fees (Revenue when we provide consulting)
+• 7900 - Other income (Revenue) - Miscellaneous income
 
-CORE ACCOUNTING BEHAVIOR:
-• Always think: "What did we receive?" (DEBIT) and "What do we owe?" (CREDIT)
-• Vendor bills: DEBIT expense account, CREDIT accounts payable (2100)
-• Professional services → 6200 (Consultancy fees)
-• Government/Registrar fees → 8200 (Other non-operating)
-• Banking fees → 7901 (Bank charges)
-• Apply reverse charge VAT (19%) for EU services: Additional DEBIT 2202, CREDIT 2201
+CORE ACCOUNTING BEHAVIOR FOR ALL CASH INFLOW DOCUMENTS:
+• Always think: "What did we provide?" (CREDIT) and "What do we expect to receive?" (DEBIT)
+• Customer invoices: DEBIT accounts receivable (1100), CREDIT appropriate revenue account
+• Share capital transactions: DEBIT bank (1204), CREDIT share capital (3000)
+• Consultancy services → CREDIT 6200 (Consultancy fees)
+• Professional services → CREDIT 4000 (Service revenue)
+• Product sales → CREDIT 4100 (Sales revenue)
+• Share allotments/capital increases → CREDIT 3000 (Share Capital)
+• Other services → CREDIT 7900 (Other income)
+• Apply output VAT when applicable: Additional DEBIT amount, CREDIT 2201 (VAT portion)
+• EU customers may require reverse charge treatment
 • Ensure debits always equal credits
 
-VAT EXPERTISE:
-• EU suppliers of services = Reverse charge 19%
-• Government fees = Usually no VAT
-• Banking fees = No VAT
+DOCUMENT TYPES TO PROCESS AS INVOICES:
+• Traditional customer invoices for services/products
+• Share allotment documents and capital increase resolutions
+• Shareholder investment agreements
+• Any document representing cash inflow to the company
+
+VAT EXPERTISE FOR SALES:
+• Domestic customers = Standard VAT on invoice (CREDIT 2201)
+• EU business customers = May qualify for reverse charge (no VAT on invoice)
+• Non-EU customers = Usually no VAT
+• Share capital transactions = Usually no VAT
+
+SHARE CAPITAL TRANSACTION HANDLING:
+• Treat share allotments as invoices for Odoo integration
+• Shareholder becomes the "customer" receiving shares
+• Extract share details: number of shares, nominal value, total amount
+• Use DEBIT 1204 (Bank), CREDIT 3000 (Share Capital)
+• Description should detail the share transaction
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every bill.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every cash inflow transaction, whether traditional invoice or share capital.""",
             messages=[
                 {
                     "role": "user",
@@ -301,16 +332,16 @@ Respond only with valid JSON objects. Never include explanatory text, analysis, 
             "error": str(e)
         }
 
-def ensure_bill_structure(bill):
-    """Ensure each bill has the complete required structure with default values"""
+def ensure_invoice_structure(invoice):
+    """Ensure each invoice has the complete required structure with default values"""
     
     # Define the complete structure with default values
-    default_bill = {
-        "bill_index": 1,
+    default_invoice = {
+        "invoice_index": 1,
         "page_range": "1",
         "document_classification": {
-            "document_type": "vendor_bill",
-            "company_position": "recipient",
+            "document_type": "customer_invoice",
+            "company_position": "issuer",
             "direction_confidence": "low",
             "detection_details": ""
         },
@@ -330,7 +361,7 @@ def ensure_bill_structure(bill):
             "zip": "",
             "country_code": ""
         },
-        "vendor_data": {
+        "customer_data": {
             "name": "",
             "email": "",
             "phone": "",
@@ -341,7 +372,7 @@ def ensure_bill_structure(bill):
             "country_code": "",
             "invoice_date": None,
             "due_date": None,
-            "vendor_ref": "",
+            "invoice_ref": "",
             "payment_reference": "",
             "description": "",
             "subtotal": 0,
@@ -360,7 +391,7 @@ def ensure_bill_structure(bill):
             "additional_entries": []
         },
         "extraction_confidence": {
-            "vendor_name": "low",
+            "customer_name": "low",
             "total_amount": "low",
             "line_items": "low",
             "dates": "low",
@@ -392,7 +423,7 @@ def ensure_bill_structure(bill):
         else:
             return source if source is not None else defaults
     
-    return merge_with_defaults(bill, default_bill)
+    return merge_with_defaults(invoice, default_invoice)
 
 def ensure_line_item_structure(line_item):
     """Ensure each line item has the complete required structure"""
@@ -413,8 +444,8 @@ def ensure_line_item_structure(line_item):
     
     return result
 
-def parse_bill_response(raw_response):
-    """Parse the raw response into structured bill data with improved error handling"""
+def parse_invoice_response(raw_response):
+    """Parse the raw response into structured invoice data with improved error handling"""
     try:
         # Clean the response
         cleaned_response = raw_response.strip()
@@ -457,23 +488,23 @@ def parse_bill_response(raw_response):
             # Ensure top-level structure
             if "success" not in result:
                 result["success"] = True
-            if "total_bills" not in result:
-                result["total_bills"] = 0
-            if "bills" not in result:
-                result["bills"] = []
+            if "total_invoices" not in result:
+                result["total_invoices"] = 0
+            if "invoices" not in result:
+                result["invoices"] = []
             
-            # Ensure each bill has complete structure
-            validated_bills = []
-            for i, bill in enumerate(result["bills"]):
-                validated_bill = ensure_bill_structure(bill)
-                # Ensure bill_index is set correctly
-                validated_bill["bill_index"] = i + 1
-                validated_bills.append(validated_bill)
+            # Ensure each invoice has complete structure
+            validated_invoices = []
+            for i, invoice in enumerate(result["invoices"]):
+                validated_invoice = ensure_invoice_structure(invoice)
+                # Ensure invoice_index is set correctly
+                validated_invoice["invoice_index"] = i + 1
+                validated_invoices.append(validated_invoice)
             
-            result["bills"] = validated_bills
-            result["total_bills"] = len(validated_bills)
+            result["invoices"] = validated_invoices
+            result["total_invoices"] = len(validated_invoices)
             
-            print(f"Successfully parsed and validated response with {len(result['bills'])} bills")
+            print(f"Successfully parsed and validated response with {len(result['invoices'])} invoices")
             return {
                 "success": True,
                 "result": result
@@ -501,79 +532,79 @@ def parse_bill_response(raw_response):
             "raw_response": raw_response[:500] if raw_response else "No response"
         }
 
-def validate_bill_data(bills):
-    """Validate extracted bill data for completeness and accuracy"""
+def validate_invoice_data(invoices):
+    """Validate extracted invoice data for completeness and accuracy"""
     validation_results = []
     
-    for bill in bills:
-        bill_validation = {
-            "bill_index": bill.get("bill_index", 0),
+    for invoice in invoices:
+        invoice_validation = {
+            "invoice_index": invoice.get("invoice_index", 0),
             "issues": [],
             "warnings": [],
             "mandatory_fields_present": True,
             "structure_complete": True
         }
         
-        vendor_data = bill.get("vendor_data", {})
+        customer_data = invoice.get("customer_data", {})
         
         # Check mandatory fields (content validation, not structure)
         mandatory_content = {
-            "vendor_name": vendor_data.get("name", ""),
-            "total_amount": vendor_data.get("total_amount", 0),
-            "invoice_date": vendor_data.get("invoice_date"),
-            "description": vendor_data.get("description", "")
+            "customer_name": customer_data.get("name", ""),
+            "total_amount": customer_data.get("total_amount", 0),
+            "invoice_date": customer_data.get("invoice_date"),
+            "description": customer_data.get("description", "")
         }
         
         for field_name, field_value in mandatory_content.items():
             if not field_value or field_value == "":
-                bill_validation["issues"].append(f"Missing content for mandatory field: {field_name}")
-                bill_validation["mandatory_fields_present"] = False
+                invoice_validation["issues"].append(f"Missing content for mandatory field: {field_name}")
+                invoice_validation["mandatory_fields_present"] = False
         
         # Check line items
-        line_items = vendor_data.get("line_items", [])
+        line_items = customer_data.get("line_items", [])
         if not line_items:
-            bill_validation["warnings"].append("No line items found")
+            invoice_validation["warnings"].append("No line items found")
         
         # Check monetary consistency
-        subtotal = vendor_data.get("subtotal", 0)
-        tax_amount = vendor_data.get("tax_amount", 0)
-        total_amount = vendor_data.get("total_amount", 0)
+        subtotal = customer_data.get("subtotal", 0)
+        tax_amount = customer_data.get("tax_amount", 0)
+        total_amount = customer_data.get("total_amount", 0)
         
         if total_amount > 0:
             calculated_total = subtotal + tax_amount
             if abs(calculated_total - total_amount) > 0.01:
-                bill_validation["warnings"].append(
+                invoice_validation["warnings"].append(
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
         # Check confidence levels
-        confidence = bill.get("extraction_confidence", {})
+        confidence = invoice.get("extraction_confidence", {})
         low_confidence_fields = [
             field for field, conf in confidence.items() 
             if conf == "low"
         ]
         
         if low_confidence_fields:
-            bill_validation["warnings"].append(
+            invoice_validation["warnings"].append(
                 f"Low confidence fields: {', '.join(low_confidence_fields)}"
             )
         
-        validation_results.append(bill_validation)
+        validation_results.append(invoice_validation)
     
     return validation_results
 
 def main(data):
     """
-    Main function for combined bill processing (splitting + extraction)
+    Main function for combined invoice processing (splitting + extraction)
     
     Args:
         data (dict): Request data containing:
             - s3_key (str): S3 key path to the PDF document
-            - company_name (str): Name of the company receiving the bills
+            - company_name (str): Name of the company issuing the invoices
             - bucket_name (str, optional): S3 bucket name
     
     Returns:
-        dict: Processing result with structured bill data
+        dict: Processing result with structured invoice data
     """
     try:
         # Validate required fields
@@ -590,14 +621,14 @@ def main(data):
         company_name = data['company_name']
         bucket_name = data.get('bucket_name')
         
-        print(f"Processing bills for company: {company_name}, S3 key: {s3_key}")
+        print(f"Processing invoices for company: {company_name}, S3 key: {s3_key}")
         
         # Download PDF from S3
         pdf_content = download_from_s3(s3_key, bucket_name)
         print(f"Downloaded PDF, size: {len(pdf_content)} bytes")
         
         # Process with Claude for combined splitting and extraction
-        claude_result = process_bills_with_claude(pdf_content, company_name)
+        claude_result = process_invoices_with_claude(pdf_content, company_name)
         
         if not claude_result["success"]:
             return {
@@ -606,7 +637,7 @@ def main(data):
             }
         
         # Parse the structured response with validation
-        parse_result = parse_bill_response(claude_result["raw_response"])
+        parse_result = parse_invoice_response(claude_result["raw_response"])
         
         if not parse_result["success"]:
             return {
@@ -617,23 +648,23 @@ def main(data):
             }
         
         result_data = parse_result["result"]
-        bills = result_data.get("bills", [])
+        invoices = result_data.get("invoices", [])
         
-        # Validate extracted bill data
-        validation_results = validate_bill_data(bills)
+        # Validate extracted invoice data
+        validation_results = validate_invoice_data(invoices)
         
-        # Count bills with critical issues
-        bills_with_issues = sum(1 for v in validation_results if not v["mandatory_fields_present"])
-        total_bills = len(bills)
+        # Count invoices with critical issues
+        invoices_with_issues = sum(1 for v in validation_results if not v["mandatory_fields_present"])
+        total_invoices = len(invoices)
         
         return {
             "success": True,
-            "total_bills": total_bills,
-            "bills": bills,
+            "total_invoices": total_invoices,
+            "invoices": invoices,
             "processing_summary": {
-                "bills_processed": total_bills,
-                "bills_with_issues": bills_with_issues,
-                "success_rate": f"{((total_bills - bills_with_issues) / total_bills * 100):.1f}%" if total_bills > 0 else "0%"
+                "invoices_processed": total_invoices,
+                "invoices_with_issues": invoices_with_issues,
+                "success_rate": f"{((total_invoices - invoices_with_issues) / total_invoices * 100):.1f}%" if total_invoices > 0 else "0%"
             },
             "validation_results": validation_results,
             "metadata": {
@@ -644,14 +675,14 @@ def main(data):
         }
         
     except Exception as e:
-        print(f"Bill processing error: {str(e)}")
+        print(f"Invoice processing error: {str(e)}")
         return {
             "success": False,
             "error": f"Internal processing error: {str(e)}"
         }
 
 def health_check():
-    """Health check for the bill processing service"""
+    """Health check for the invoice processing service"""
     try:
         # Check if required environment variables are set
         required_vars = ['ANTHROPIC_API_KEY']
@@ -665,15 +696,15 @@ def health_check():
         
         return {
             "healthy": True,
-            "service": "claude-bill-processing",
-            "version": "2.1",
+            "service": "claude-invoice-processing",
+            "version": "1.0",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
                 "monetary_calculation",
                 "confidence_scoring",
-                "improved_json_parsing",
-                "guaranteed_structure_consistency"
+                "revenue_accounting",
+                "customer_invoice_processing"
             ],
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),

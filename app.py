@@ -53,6 +53,7 @@ import splitinvoice
 import matchingworkflow
 import processtransaction
 import process_bill
+import process_invoice
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1703,7 +1704,237 @@ def process_bill_health():
             "details": str(e)
         }), 503
 
-
+@app.route('/api/process-invoice', methods=['POST'])
+def process_invoice_endpoint():
+    """
+    Process multi-invoice PDF documents into structured customer invoice data
+    Combines document splitting and data extraction in one operation
+    
+    Expected JSON body:
+    {
+        "s3_key": "clients/Company Name/customer-invoices.pdf",
+        "company_name": "ACME Corporation Ltd",
+        "bucket_name": "company-documents-2025"  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "total_invoices": 3,
+        "invoices": [
+            {
+                "invoice_index": 1,
+                "page_range": "1-1",
+                "document_classification": {
+                    "document_type": "customer_invoice",
+                    "company_position": "issuer",
+                    "direction_confidence": "high",
+                    "detection_details": "Company found in 'From' section"
+                },
+                "company_validation": {
+                    "expected_company": "ACME Corporation Ltd",
+                    "found_companies": ["ACME Corporation Ltd", "Customer Inc"],
+                    "company_match": "exact_match",
+                    "match_details": "Exact match found in issuer address"
+                },
+                "company_data": {
+                    "name": "ACME Corporation Ltd",
+                    "email": "invoices@acme.com",
+                    "phone": "+1234567890",
+                    "street": "123 Business Ave",
+                    "city": "Business City",
+                    "zip": "12345",
+                    "country_code": "US"
+                },
+                "customer_data": {
+                    "name": "Customer Inc",
+                    "email": "billing@customer.com",
+                    "phone": "+0987654321",
+                    "street": "456 Customer St",
+                    "city": "Customer Town",
+                    "zip": "67890",
+                    "country_code": "US",
+                    "invoice_date": "2025-03-15",
+                    "due_date": "2025-04-15",
+                    "invoice_ref": "INV-2025-001",
+                    "payment_reference": "PAY-REF-12345",
+                    "description": "Professional Services - March 2025",
+                    "subtotal": 1000.00,
+                    "tax_amount": 100.00,
+                    "total_amount": 1100.00,
+                    "currency_code": "USD",
+                    "line_items": [
+                        {
+                            "description": "Professional Services - March 2025",
+                            "quantity": 1,
+                            "price_unit": 1000.00,
+                            "line_total": 1000.00,
+                            "tax_rate": 10.0
+                        }
+                    ]
+                },
+                "accounting_assignment": {
+                    "debit_account": "1100",
+                    "debit_account_name": "Accounts receivable",
+                    "credit_account": "4000",
+                    "credit_account_name": "Service revenue",
+                    "vat_treatment": "standard_vat",
+                    "requires_reverse_charge": false,
+                    "additional_entries": [
+                        {
+                            "account_code": "2201",
+                            "account_name": "Output VAT",
+                            "debit_amount": 0,
+                            "credit_amount": 100.00,
+                            "description": "Output VAT 10%"
+                        }
+                    ]
+                },
+                "extraction_confidence": {
+                    "customer_name": "high",
+                    "total_amount": "high",
+                    "line_items": "medium",
+                    "dates": "high",
+                    "company_validation": "high",
+                    "document_classification": "high"
+                },
+                "missing_fields": []
+            }
+            // Additional invoices...
+        ],
+        "processing_summary": {
+            "invoices_processed": 3,
+            "invoices_with_issues": 0,
+            "success_rate": "100.0%"
+        },
+        "validation_results": [
+            {
+                "invoice_index": 1,
+                "issues": [],
+                "warnings": [],
+                "mandatory_fields_present": true
+            }
+            // Additional validation results...
+        ],
+        "metadata": {
+            "company_name": "ACME Corporation Ltd",
+            "s3_key": "clients/Company Name/customer-invoices.pdf",
+            "token_usage": {
+                "input_tokens": 2500,
+                "output_tokens": 1800
+            }
+        }
+    }
+    
+    Error Response:
+    {
+        "success": false,
+        "error": "Missing required fields: company_name",
+        "details": "Additional error context if available"
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body is required"
+            }), 400
+        
+        required_fields = ['s3_key', 'company_name']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        
+        if missing_fields:
+            return jsonify({
+                "success": False,
+                "error": f"Missing required fields: {', '.join(missing_fields)}",
+                "details": f"Required fields are: {', '.join(required_fields)}"
+            }), 400
+        
+        # Validate field types and values
+        if not isinstance(data['s3_key'], str) or not data['s3_key'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid s3_key",
+                "details": "s3_key must be a non-empty string"
+            }), 400
+            
+        if not isinstance(data['company_name'], str) or not data['company_name'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid company_name", 
+                "details": "company_name must be a non-empty string"
+            }), 400
+        
+        # Optional bucket_name validation
+        if 'bucket_name' in data and (not isinstance(data['bucket_name'], str) or not data['bucket_name'].strip()):
+            return jsonify({
+                "success": False,
+                "error": "Invalid bucket_name",
+                "details": "bucket_name must be a non-empty string if provided"
+            }), 400
+        
+        # Log processing start
+        print(f"📋 Processing invoices for company: {data['company_name']}")
+        print(f"📄 S3 document: {data['s3_key']}")
+        
+        # Call the invoice processing function
+        result = process_invoice.main(data)
+        
+        # Handle successful processing
+        if result["success"]:
+            # Log success metrics
+            total_invoices = result.get("total_invoices", 0)
+            invoices_with_issues = result.get("processing_summary", {}).get("invoices_with_issues", 0)
+            success_rate = result.get("processing_summary", {}).get("success_rate", "0%")
+            
+            print(f"✅ Successfully processed {total_invoices} invoices")
+            print(f"📊 Success rate: {success_rate}")
+            if invoices_with_issues > 0:
+                print(f"⚠️  Invoices with issues: {invoices_with_issues}")
+            
+            # Return successful response
+            return jsonify(result), 200
+        else:
+            # Log processing failure
+            error_msg = result.get("error", "Unknown error")
+            print(f"❌ Invoice processing failed: {error_msg}")
+            
+            # Return error response with appropriate status code
+            status_code = 422 if "validation" in error_msg.lower() else 500
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "details": result.get("raw_response", "No additional details available")[:200] if result.get("raw_response") else None
+            }), status_code
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"❌ Process invoice endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "An unexpected error occurred while processing the request"
+        }), 500
 
 
 
