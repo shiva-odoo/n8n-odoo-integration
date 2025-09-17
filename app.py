@@ -1255,6 +1255,72 @@ def update_batch_status_endpoint(batch_id):
             "error": "Failed to update batch status"
         }), 500
     
+@app.route("/api/batches/<batch_id>/file-status", methods=["PUT"])
+def update_file_status_endpoint(batch_id):
+    """Update individual file status within a batch (called by n8n) - No auth required for n8n"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "JSON body is required"
+            }), 400
+        
+        # Validate required fields
+        file_id = data.get('file_id')
+        if not file_id:
+            return jsonify({
+                "success": False,
+                "error": "file_id is required in request body"
+            }), 400
+        
+        # Extract file status data (status and document_type)
+        file_status_data = {}
+        
+        if 'status' in data:
+            allowed_statuses = ['uploaded', 'processing', 'complete', 'pending', 'error']
+            if data['status'] in allowed_statuses:
+                file_status_data['status'] = data['status']
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": f"Invalid status. Must be one of: {allowed_statuses}"
+                }), 400
+        
+        if 'document_type' in data:
+            allowed_types = ['bill', 'invoice', 'bank_statement', 'legal_document', 'unknown']
+            if data['document_type'] in allowed_types:
+                file_status_data['document_type'] = data['document_type']
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": f"Invalid document_type. Must be one of: {allowed_types}"
+                }), 400
+        
+        if not file_status_data:
+            return jsonify({
+                "success": False,
+                "error": "At least one of 'status' or 'document_type' must be provided"
+            }), 400
+        
+        # Call the batchupdate function
+        result = batchupdate.update_file_status(batch_id, file_id, file_status_data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Update file status error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update file status"
+        }), 500
+
+
+    
 
 # ================================
 # CLAUDE ENDPOINTS
