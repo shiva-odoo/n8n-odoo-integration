@@ -20,42 +20,83 @@ def normalize_date(date_value):
         return datetime.now().strftime('%Y-%m-%d')
     return date_value
 
-def check_duplicate_invoice(models, db, uid, password, customer_id, invoice_date, total_amount, reference=None):
+def find_account_by_code(models, db, uid, password, account_code, company_id):
+    """Find account by account code for specific company"""
+    try:
+        accounts = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search_read',
+            [[('code', '=', account_code), ('company_id', '=', company_id)]],
+            {'fields': ['id', 'name', 'code'], 'limit': 1}
+        )
+        return accounts[0]['id'] if accounts else None
+    except Exception as e:
+        print(f"Error finding account {account_code}: {str(e)}")
+        return None
+
+def check_duplicate_invoice(models, db, uid, password, customer_id, invoice_date, total_amount, company_id, customer_ref=None):
     """
-    Check if an invoice with the same customer, date, total amount, and reference already exists
+    Check if an invoice with the same customer, date, total amount, and reference already exists in the specified company
     
     Returns:
         - None if no duplicate found
-        - Invoice data if duplicate found
+        - Invoice data with exists=True if duplicate found
     """
     try:
-        # Build search criteria
+        # Build search criteria for the specific company
         search_domain = [
             ('move_type', '=', 'out_invoice'),  # Customer invoices only
             ('partner_id', '=', customer_id),
             ('invoice_date', '=', invoice_date),
+            ('company_id', '=', company_id),   # Filter by company
             ('state', '!=', 'cancel'),  # Exclude cancelled invoices
         ]
         
         # Add reference to search criteria if provided
-        if reference:
-            search_domain.append(('ref', '=', reference))
-        else:
-            # If no reference provided, search for invoices without reference
-            search_domain.append(('ref', '=', False))
+        if customer_ref:
+            search_domain.append(('ref', '=', customer_ref))
         
         # Search for existing invoices
         existing_invoices = models.execute_kw(
             db, uid, password,
             'account.move', 'search_read',
             [search_domain],
-            {'fields': ['id', 'name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'ref', 'invoice_date_due']}
+            {'fields': ['id', 'name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'ref', 'partner_id']}
         )
         
         # Check if any invoice matches the total amount (with small tolerance for rounding)
         for invoice in existing_invoices:
             if abs(float(invoice['amount_total']) - float(total_amount)) < 0.01:
-                return invoice
+                # Get detailed invoice information including line items
+                line_items = models.execute_kw(
+                    db, uid, password,
+                    'account.move.line', 'search_read',
+                    [[('move_id', '=', invoice['id']), ('display_type', '=', False)]], 
+                    {'fields': ['id', 'name', 'quantity', 'price_unit', 'price_total']}
+                )
+                
+                # Get customer name
+                customer_info = models.execute_kw(
+                    db, uid, password,
+                    'res.partner', 'read',
+                    [[invoice['partner_id'][0]]], 
+                    {'fields': ['name']}
+                )[0]
+                
+                return {
+                    'success': True,
+                    'exists': True,
+                    'invoice_id': invoice['id'],
+                    'invoice_number': invoice['name'],
+                    'customer_name': customer_info['name'],
+                    'total_amount': invoice['amount_total'],
+                    'subtotal': invoice['amount_untaxed'],
+                    'tax_amount': invoice['amount_tax'],
+                    'state': invoice['state'],
+                    'customer_ref': invoice.get('ref'),
+                    'line_items': line_items,
+                    'message': 'Invoice already exists - no duplicate created'
+                }
         
         return None
         
@@ -82,11 +123,8 @@ def calculate_total_amount(data):
             total += line_subtotal + line_tax
         
         return total
-    elif data.get('description') and data.get('price_unit'):
-        # Single line item
-        quantity = float(data.get('quantity', 1.0))
-        price_unit = float(data['price_unit'])
-        return quantity * price_unit
+    elif 'amount' in data:
+        return float(data['amount'])
     else:
         return 0.0
 
@@ -96,34 +134,32 @@ def main(data):
     
     Expected data format:
     {
-        "customer_id": 123,                     # required (or customer_name for new)
-        "customer_name": "New Customer Name",   # optional, creates new customer
-        "customer_email": "contact@new.com",    # optional, for new customer
-        "company_id": 1,                        # optional, for multi-company setup
-        "invoice_date": "2025-01-15",          # optional, defaults to today
-        "due_date": "2025-02-15",              # optional, defaults to today if null/empty
-        "reference": "Customer reference",      # optional
-        "line_items": [                         # required
-            {
-                "description": "Product/Service",
-                "quantity": 2,
-                "price_unit": 150.00,
-                "tax_rate": 19
-            }
-        ],
-        "subtotal": 300.00,
-        "tax_amount": 57.00,
-        "total_amount": 357.00
+        "customer_id": 123,                  # Optional - Customer ID in Odoo
+        "customer_name": "ABC Company Ltd",  # Optional - Customer name (alternative to customer_id)
+        "company_id": 1,                     # MANDATORY - Company ID for invoice creation
+        "invoice_date": "2025-01-15",        # optional, defaults to today
+        "due_date": "2025-02-15",            # optional, defaults to today if null/empty
+        "customer_ref": "PO-001",            # optional
+        "description": "Consulting services",
+        "amount": 1500.50,
+        "accounting_assignment": {           # optional - for custom journal entries
+            "credit_account": "4000",        # Account code for credit (revenue)
+            "credit_account_name": "Sales Revenue",
+            "debit_account": "1200",         # Account code for debit (receivables)
+            "debit_account_name": "Accounts receivable",
+            "additional_entries": [          # Optional VAT entries
+                {
+                    "account_code": "2201",
+                    "account_name": "Output VAT/Sales", 
+                    "debit_amount": 0,
+                    "credit_amount": 285.10,
+                    "description": "VAT on sales"
+                }
+            ]
+        }
     }
     
-    Or with single line item:
-    {
-        "customer_id": 123,
-        "description": "Service provided",
-        "quantity": 1,
-        "price_unit": 500.00,
-        "invoice_date": "2025-01-15"
-    }
+    Note: Either customer_id OR customer_name is required (not both)
     """
     
     # Validate required fields
@@ -133,23 +169,20 @@ def main(data):
             'error': 'Either customer_id or customer_name is required'
         }
     
-    # Check for line items
-    has_line_items = data.get('line_items') and len(data['line_items']) > 0
-    has_single_item = data.get('description') and data.get('price_unit')
-    
-    if not has_line_items and not has_single_item:
+    if not data.get('company_id'):
         return {
             'success': False,
-            'error': 'Either provide line_items array or description and price_unit'
+            'error': 'company_id is required'
         }
     
-    # Accept extra fields for amount handling
+    # Accept extra fields
     payment_reference = data.get('payment_reference')
     subtotal = data.get('subtotal')
     tax_amount = data.get('tax_amount')
     total_amount = data.get('total_amount')
+    company_id = data['company_id']
     
-    # Connection details
+    # Odoo connection details  
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
@@ -174,29 +207,38 @@ def main(data):
                 'error': 'Odoo authentication failed'
             }
         
-        # Helper function to find tax by rate
-        def find_tax_by_rate(tax_rate, company_id=None):
-            """Find tax record by rate percentage"""
-            try:
-                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'sale')]
-                if company_id:
-                    domain.append(('company_id', '=', company_id))
-                
-                tax_ids = models.execute_kw(
-                    db, uid, password,
-                    'account.tax', 'search',
-                    [domain],
-                    {'limit': 1}
-                )
-                return tax_ids[0] if tax_ids else None
-            except:
-                return None
+        # Handle customer lookup - accept either customer_id or customer_name
+        customer_id = data.get('customer_id')
+        customer_name = data.get('customer_name')
         
-        # Handle customer
-        if data.get('customer_id'):
-            customer_id = data['customer_id']
+        if customer_name and not customer_id:
+            # Look up customer by name within the company
+            customer_search = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'search_read',
+                [[('name', '=', customer_name), ('customer_rank', '>', 0)]],
+                {'fields': ['id', 'name'], 'limit': 1}
+            )
             
-            # Verify customer exists
+            if not customer_search:
+                # Try partial match if exact match fails
+                customer_search = models.execute_kw(
+                    db, uid, password,
+                    'res.partner', 'search_read',
+                    [[('name', 'ilike', customer_name), ('customer_rank', '>', 0)]],
+                    {'fields': ['id', 'name'], 'limit': 1}
+                )
+            
+            if not customer_search:
+                return {
+                    'success': False,
+                    'error': f'Customer with name "{customer_name}" not found or is not a customer'
+                }
+            
+            customer_id = customer_search[0]['id']
+            customer_info = customer_search[0]
+        else:
+            # Verify customer exists by ID
             customer_exists = models.execute_kw(
                 db, uid, password,
                 'res.partner', 'search_count',
@@ -209,40 +251,26 @@ def main(data):
                     'error': f'Customer with ID {customer_id} not found or is not a customer'
                 }
             
-            # Get customer name
+            # Get customer name for response
             customer_info = models.execute_kw(
                 db, uid, password,
                 'res.partner', 'read',
                 [[customer_id]], 
                 {'fields': ['name']}
             )[0]
-            customer_name = customer_info['name']
-            
-        else:
-            # Create new customer
-            customer_data = {
-                'name': data['customer_name'],
-                'is_company': True,
-                'customer_rank': 1,
-                'supplier_rank': 0,
+        
+        # Verify company exists
+        company_exists = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_count',
+            [[('id', '=', company_id)]]
+        )
+        
+        if not company_exists:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
             }
-            
-            if data.get('customer_email'):
-                customer_data['email'] = data['customer_email']
-            
-            customer_id = models.execute_kw(
-                db, uid, password,
-                'res.partner', 'create',
-                [customer_data]
-            )
-            
-            if not customer_id:
-                return {
-                    'success': False,
-                    'error': 'Failed to create new customer'
-                }
-            
-            customer_name = data['customer_name']
         
         # Normalize and prepare dates
         invoice_date = normalize_date(data.get('invoice_date'))
@@ -268,56 +296,54 @@ def main(data):
         # Calculate expected total amount
         expected_total = calculate_total_amount(data)
         
-        # Check for duplicate invoice
-        reference = data.get('reference')
+        # Check for duplicate invoice in the specific company
+        customer_ref = data.get('customer_ref')
         existing_invoice = check_duplicate_invoice(
             models, db, uid, password, 
-            customer_id, invoice_date, expected_total, reference
+            customer_id, invoice_date, expected_total, company_id, customer_ref
         )
         
         if existing_invoice:
-            # Return existing invoice details instead of creating a duplicate
-            return {
-                'success': True,
-                'invoice_id': existing_invoice['id'],
-                'invoice_number': existing_invoice['name'],
-                'customer_name': customer_name,
-                'customer_id': customer_id,
-                'total_amount': existing_invoice['amount_total'],
-                'subtotal': existing_invoice['amount_untaxed'],
-                'tax_amount': existing_invoice['amount_tax'],
-                'state': existing_invoice['state'],
-                'invoice_date': invoice_date,
-                'due_date': existing_invoice.get('invoice_date_due'),
-                'reference': existing_invoice.get('ref'),
-                'message': 'Invoice already exists - no duplicate created'
-            }
+            # Return existing invoice details
+            return existing_invoice
         
+        # Helper function to find tax by rate
+        def find_tax_by_rate(tax_rate, company_id):
+            """Find tax record by rate percentage for specific company"""
+            try:
+                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'sale'), ('company_id', '=', company_id)]
+                
+                tax_ids = models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'search',
+                    [domain],
+                    {'limit': 1}
+                )
+                return tax_ids[0] if tax_ids else None
+            except:
+                return None
+        
+        # Prepare invoice data
         invoice_data = {
-            'move_type': 'out_invoice',  # Customer invoice
+            'move_type': 'out_invoice',
             'partner_id': customer_id,
             'invoice_date': invoice_date,
-            'invoice_date_due': due_date,  # Add due date to invoice data
+            'invoice_date_due': due_date,
+            'company_id': company_id,
         }
         
-        # Add company_id if provided (for multi-company setup)
-        company_id = None
-        if data.get('company_id'):
-            company_id = data['company_id']
-            invoice_data['company_id'] = company_id
-        
-        # Add reference if provided
-        if data.get('reference'):
-            invoice_data['ref'] = data['reference']
-        
+        # Add customer reference if provided
+        if data.get('customer_ref'):
+            invoice_data['ref'] = data['customer_ref']
+
         # Add payment_reference if provided
         if payment_reference and payment_reference != 'none':
             invoice_data['payment_reference'] = payment_reference
-        
+
         # Handle line items
         invoice_line_ids = []
         
-        if has_line_items:
+        if 'line_items' in data and data['line_items']:
             # Multiple line items
             for item in data['line_items']:
                 if not item.get('description'):
@@ -342,6 +368,13 @@ def main(data):
                     'price_unit': price_unit,
                 }
                 
+                # Set account from accounting_assignment if provided
+                accounting_assignment = data.get('accounting_assignment', {})
+                if accounting_assignment.get('credit_account'):
+                    account_id = find_account_by_code(models, db, uid, password, accounting_assignment['credit_account'], company_id)
+                    if account_id:
+                        line_item['account_id'] = account_id
+                
                 # Apply tax if tax_rate is provided
                 if tax_rate is not None and tax_rate > 0:
                     tax_id = find_tax_by_rate(tax_rate, company_id)
@@ -353,29 +386,41 @@ def main(data):
                 
                 invoice_line_ids.append((0, 0, line_item))
         
-        else:
-            # Single line item
+        elif data.get('description') and data.get('amount'):
+            # Single line item (backward compatibility)
             try:
-                quantity = float(data.get('quantity', 1.0))
-                price_unit = float(data['price_unit'])
+                amount = float(data['amount'])
             except (ValueError, TypeError):
                 return {
                     'success': False,
-                    'error': 'quantity and price_unit must be valid numbers'
+                    'error': 'amount must be a valid number'
                 }
             
             line_item = {
                 'name': data['description'],
-                'quantity': quantity,
-                'price_unit': price_unit,
+                'quantity': 1.0,
+                'price_unit': amount,
             }
+            
+            # Set account from accounting_assignment if provided
+            accounting_assignment = data.get('accounting_assignment', {})
+            if accounting_assignment.get('credit_account'):
+                account_id = find_account_by_code(models, db, uid, password, accounting_assignment['credit_account'], company_id)
+                if account_id:
+                    line_item['account_id'] = account_id
             
             invoice_line_ids.append((0, 0, line_item))
         
+        else:
+            return {
+                'success': False,
+                'error': 'Either provide line_items array or description and amount'
+            }
+        
         invoice_data['invoice_line_ids'] = invoice_line_ids
         
-        # Create invoice
-        context = {'allowed_company_ids': [company_id]} if company_id else {}
+        # Create the invoice
+        context = {'allowed_company_ids': [company_id]}
         invoice_id = models.execute_kw(
             db, uid, password,
             'account.move', 'create',
@@ -388,6 +433,46 @@ def main(data):
                 'success': False,
                 'error': 'Failed to create invoice in Odoo'
             }
+        
+        # Handle additional journal entries for VAT if provided
+        accounting_assignment = data.get('accounting_assignment', {})
+        if accounting_assignment.get('additional_entries'):
+            try:
+                # Get the created invoice to access its journal entries
+                invoice_info = models.execute_kw(
+                    db, uid, password,
+                    'account.move', 'read',
+                    [[invoice_id]], 
+                    {'fields': ['line_ids']}
+                )[0]
+                
+                # Prepare additional journal entries
+                additional_lines = []
+                for entry in accounting_assignment['additional_entries']:
+                    account_id = find_account_by_code(models, db, uid, password, entry['account_code'], company_id)
+                    if account_id:
+                        line_data = {
+                            'move_id': invoice_id,
+                            'account_id': account_id,
+                            'name': entry.get('description', entry.get('account_name', '')),
+                            'debit': float(entry.get('debit_amount', 0.0)),
+                            'credit': float(entry.get('credit_amount', 0.0)),
+                            'partner_id': customer_id,
+                        }
+                        additional_lines.append((0, 0, line_data))
+                    else:
+                        print(f"Warning: Account {entry['account_code']} not found, skipping additional entry")
+                
+                # Add additional lines to the invoice
+                if additional_lines:
+                    models.execute_kw(
+                        db, uid, password,
+                        'account.move', 'write',
+                        [[invoice_id], {'line_ids': additional_lines}]
+                    )
+                    
+            except Exception as e:
+                print(f"Warning: Could not add additional journal entries: {str(e)}")
         
         # Update with explicit amounts if provided
         update_data = {}
@@ -451,20 +536,7 @@ def main(data):
                 'error': f'Invoice created but failed to post: {str(e)}'
             }
         
-        # If posting succeeded but we need to update amounts after posting, do it now
-        if update_data:
-            try:
-                # Try to update amounts even after posting (some Odoo configurations allow this)
-                models.execute_kw(
-                    db, uid, password,
-                    'account.move', 'write',
-                    [[invoice_id], update_data]
-                )
-            except Exception as e:
-                # This is expected in some cases, amounts might be computed automatically
-                pass
-        
-        # Get final invoice information after posting
+        # Get final invoice information after posting including line items
         invoice_info = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
@@ -472,12 +544,20 @@ def main(data):
             {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
         )[0]
         
+        # Get line items
+        line_items = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [[('move_id', '=', invoice_id), ('display_type', '=', False)]], 
+            {'fields': ['id', 'name', 'quantity', 'price_unit', 'price_total']}
+        )
+        
         return {
             'success': True,
+            'exists': False,
             'invoice_id': invoice_id,
             'invoice_number': invoice_info.get('name'),
-            'customer_name': customer_name,
-            'customer_id': customer_id,
+            'customer_name': customer_info['name'],
             'total_amount': invoice_info.get('amount_total'),
             'subtotal': invoice_info.get('amount_untaxed'),
             'tax_amount': invoice_info.get('amount_tax'),
@@ -485,9 +565,7 @@ def main(data):
             'invoice_date': invoice_date,
             'due_date': due_date,
             'payment_reference': payment_reference if payment_reference != 'none' else None,
-            'company_id': company_id,
-            'line_items': data.get('line_items'),
-            'line_items_count': len(invoice_line_ids),
+            'line_items': line_items,
             'message': 'Customer invoice created and posted successfully'
         }
         
@@ -506,8 +584,8 @@ def create(data):
     """Alias for main function to maintain compatibility"""
     return main(data)
 
-def list_customer_invoices():
-    """Get list of customer invoices for reference"""
+def get_invoice_details(invoice_id, company_id=None):
+    """Get detailed invoice information including line items for a specific company"""
     
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -522,17 +600,129 @@ def list_customer_invoices():
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
-        invoices = models.execute_kw(
+        # Build search domain
+        domain = [('id', '=', invoice_id), ('move_type', '=', 'out_invoice')]
+        if company_id:
+            domain.append(('company_id', '=', company_id))
+        
+        # Get invoice info
+        invoice = models.execute_kw(
             db, uid, password,
             'account.move', 'search_read',
-            [[('move_type', '=', 'out_invoice')]], 
-            {'fields': ['id', 'name', 'partner_id', 'amount_total', 'state', 'invoice_date', 'invoice_date_due'], 'limit': 20}
+            [domain], 
+            {'fields': ['id', 'name', 'partner_id', 'invoice_date', 'ref', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'company_id']}
+        )
+        
+        if not invoice:
+            return {'success': False, 'error': 'Invoice not found or does not belong to specified company'}
+        
+        # Get line items
+        line_items = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [[('move_id', '=', invoice_id), ('display_type', '=', False)]], 
+            {'fields': ['id', 'name', 'quantity', 'price_unit', 'price_total', 'account_id', 'tax_ids']}
         )
         
         return {
             'success': True,
-            'invoices': invoices,
-            'count': len(invoices)
+            'invoice': invoice[0],
+            'line_items': line_items
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+# Helper function to list customers for specific company
+def list_customers(company_id=None):
+    """Get list of customers for reference, optionally filtered by company"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        domain = [('customer_rank', '>', 0)]
+        if company_id:
+            domain.append(('company_id', '=', company_id))
+        
+        customers = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search_read',
+            [domain], 
+            {'fields': ['id', 'name', 'email', 'company_id']}
+        )
+        
+        return {
+            'success': True,
+            'customers': customers,
+            'count': len(customers)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+# Helper function to search customers by name
+def search_customers_by_name(customer_name, company_id=None):
+    """Search for customers by name, optionally within a specific company"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Search for exact match first
+        domain = [('name', '=', customer_name), ('customer_rank', '>', 0)]
+        if company_id:
+            domain.append(('company_id', '=', company_id))
+        
+        customers = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search_read',
+            [domain], 
+            {'fields': ['id', 'name', 'email', 'company_id']}
+        )
+        
+        # If no exact match, try partial match
+        if not customers:
+            domain = [('name', 'ilike', customer_name), ('customer_rank', '>', 0)]
+            if company_id:
+                domain.append(('company_id', '=', company_id))
+            
+            customers = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'search_read',
+                [domain], 
+                {'fields': ['id', 'name', 'email', 'company_id']}
+            )
+        
+        return {
+            'success': True,
+            'customers': customers,
+            'count': len(customers),
+            'search_term': customer_name
         }
         
     except Exception as e:
