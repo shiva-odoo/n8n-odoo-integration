@@ -1,5 +1,7 @@
 import xmlrpc.client
 import os
+from difflib import SequenceMatcher
+
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
     try:
@@ -8,53 +10,145 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def similarity(a, b):
+    """Calculate similarity between two strings using SequenceMatcher"""
+    return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+def normalize_string(s):
+    """Normalize string for better comparison"""
+    if not s:
+        return ""
+    # Remove common suffixes and prefixes, extra spaces, punctuation
+    s = s.lower().strip()
+    # Remove common company suffixes
+    suffixes = [' inc', ' inc.', ' ltd', ' ltd.', ' llc', ' corp', ' corp.', ' co.', ' co', ' limited']
+    for suffix in suffixes:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+    # Remove extra punctuation and spaces
+    s = ''.join(c for c in s if c.isalnum() or c.isspace())
+    s = ' '.join(s.split())  # normalize whitespace
+    return s
+
+def get_customers_for_company(models, db, uid, password, company_id=None):
+    """
+    Fetch existing customers for a specific company or all customers if no company specified
+    """
+    try:
+        # Base domain for customers
+        domain = [('customer_rank', '>', 0)]
+        
+        # Add company filter if specified
+        if company_id:
+            # In Odoo multi-company setup:
+            # - Records with company_id = specific_company belong to that company
+            # - Records with company_id = False are shared across all companies
+            domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        
+        customers = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search_read',
+            [domain], 
+            {'fields': ['id', 'name', 'email', 'phone', 'company_id']}
+        )
+        
+        return customers
+        
+    except Exception as e:
+        print(f"Error fetching customers: {str(e)}")
+        return []
+
 def check_customer_exists_comprehensive(models, db, uid, password, data, company_id=None):
     """
-    Comprehensive check if customer already exists using multiple criteria
+    Comprehensive check if customer already exists using multiple criteria including fuzzy matching
     Returns customer_id if found, None otherwise
     """
     try:
-        base_domain = [('customer_rank', '>', 0)]
+        # First, get all existing customers for the company
+        existing_customers = get_customers_for_company(models, db, uid, password, company_id)
         
-        # Add company context to avoid cross-company matches
-        if company_id:
-            base_domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        if not existing_customers:
+            return None
+        
+        input_name = data.get('name', '').strip()
+        input_email = data.get('email', '').strip().lower() if data.get('email') else None
+        input_phone = data.get('phone', '').strip() if data.get('phone') else None
         
         # Priority order for matching:
-        # 1. Email + Name combination (most reliable for customers)
-        # 2. Email only
-        # 3. Exact name match
+        # 1. Email exact match (most reliable for customers)
+        # 2. Phone exact match
+        # 3. Email + Name combination (exact)
+        # 4. Fuzzy name matching (similarity > 85%)
+        # 5. Exact name match (fallback)
         
-        search_criteria = []
+        # 1. Check by email exact match
+        if input_email:
+            for customer in existing_customers:
+                customer_email = customer.get('email', '').strip().lower() if customer.get('email') else ''
+                if customer_email and customer_email == input_email:
+                    print(f"Found customer by email match: {customer['name']}")
+                    return customer['id']
         
-        # 1. Check by email + name combination if both provided
-        if data.get('email') and data.get('name'):
-            email_name_domain = base_domain + [
-                ('email', '=', data['email']),
-                ('name', '=', data['name'])
-            ]
-            search_criteria.append(email_name_domain)
+        # 2. Check by phone exact match
+        if input_phone:
+            # Normalize phone numbers by removing common separators
+            normalized_input_phone = ''.join(c for c in input_phone if c.isdigit())
+            for customer in existing_customers:
+                customer_phone = customer.get('phone', '').strip() if customer.get('phone') else ''
+                if customer_phone:
+                    normalized_customer_phone = ''.join(c for c in customer_phone if c.isdigit())
+                    if normalized_customer_phone and normalized_customer_phone == normalized_input_phone:
+                        print(f"Found customer by phone match: {customer['name']}")
+                        return customer['id']
         
-        # 2. Check by email only if provided (but no name match yet)
-        elif data.get('email'):
-            email_domain = base_domain + [('email', '=', data['email'])]
-            search_criteria.append(email_domain)
+        # 3. Check by email + name combination (both exact)
+        if input_email and input_name:
+            for customer in existing_customers:
+                customer_email = customer.get('email', '').strip().lower() if customer.get('email') else ''
+                customer_name = customer.get('name', '').strip()
+                if (customer_email == input_email and 
+                    customer_name.lower() == input_name.lower()):
+                    print(f"Found customer by email+name combination: {customer['name']}")
+                    return customer['id']
         
-        # 3. Check by exact name match as fallback
-        if data.get('name'):
-            name_domain = base_domain + [('name', '=', data['name'])]
-            search_criteria.append(name_domain)
-        
-        # Search using each criteria in priority order
-        for domain in search_criteria:
-            customer_ids = models.execute_kw(
-                db, uid, password,
-                'res.partner', 'search',
-                [domain], {'limit': 1}
-            )
+        # 4. Fuzzy name matching (similarity > 85%)
+        if input_name:
+            normalized_input = normalize_string(input_name)
+            best_match = None
+            best_similarity = 0
             
-            if customer_ids:
-                return customer_ids[0]
+            for customer in existing_customers:
+                customer_name = customer.get('name', '').strip()
+                if not customer_name:
+                    continue
+                    
+                normalized_customer = normalize_string(customer_name)
+                
+                # Calculate similarity
+                sim_score = similarity(normalized_input, normalized_customer)
+                
+                # Also check raw similarity without normalization
+                raw_sim_score = similarity(input_name, customer_name)
+                
+                # Take the higher of the two scores
+                final_score = max(sim_score, raw_sim_score)
+                
+                if final_score > best_similarity:
+                    best_similarity = final_score
+                    best_match = customer
+            
+            # If similarity is above threshold (85%), consider it a match
+            if best_similarity > 0.85:
+                print(f"Found customer by fuzzy match (similarity: {best_similarity:.2%}): {best_match['name']}")
+                return best_match['id']
+        
+        # 5. Exact name match (fallback)
+        if input_name:
+            for customer in existing_customers:
+                customer_name = customer.get('name', '').strip()
+                if customer_name.lower() == input_name.lower():
+                    print(f"Found customer by exact name match: {customer['name']}")
+                    return customer['id']
         
         return None
         
@@ -78,7 +172,8 @@ def main(data):
     
     Expected data format:
     {
-        "name": "Customer Name",                 # required
+        "name": "Customer Name",                 # REQUIRED
+        "company_id": 1,                         # REQUIRED - company ID for multi-company setup
         "is_company": true,                      # optional, defaults to true
         "email": "contact@customer.com",         # optional
         "phone": "+1234567890",                  # optional
@@ -86,8 +181,7 @@ def main(data):
         "street": "123 Main St",                 # optional
         "city": "City Name",                     # optional
         "zip": "12345",                          # optional
-        "country_code": "US",                    # optional, ISO country code
-        "company_id": 1                          # optional, for multi-company setup
+        "country_code": "US"                     # optional, ISO country code
     }
     """
     
@@ -98,16 +192,22 @@ def main(data):
             'error': 'name is required'
         }
     
+    if not data.get('company_id'):
+        return {
+            'success': False,
+            'error': 'company_id is required'
+        }
+    
     # Connection details
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
-    if not username or not password:
+    if not url or not db or not username or not password:
         return {
             'success': False,
-            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+            'error': 'Required Odoo environment variables are missing (ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_API_KEY)'
         }
     
     try:
@@ -124,43 +224,37 @@ def main(data):
             }
         
         # Handle company_id conversion from string to int if needed
-        company_id = None
-        if data.get('company_id'):
-            try:
-                company_id = int(data['company_id'])
-            except (ValueError, TypeError):
-                return {
-                    'success': False,
-                    'error': 'company_id must be a valid integer'
-                }
+        try:
+            company_id = int(data['company_id'])
+            data['company_id'] = company_id  # Update the data dict for later use
+        except (ValueError, TypeError):
+            return {
+                'success': False,
+                'error': 'company_id must be a valid integer'
+            }
         
-        # Check if customer already exists using comprehensive method
+        # Check if customer already exists using comprehensive method (including fuzzy matching)
         existing_customer_id = check_customer_exists_comprehensive(
             models, db, uid, password, data, company_id
         )
         
         if existing_customer_id:
             # Get existing customer info
-            customer_info = models.execute_kw(
-                db, uid, password,
-                'res.partner', 'read',
-                [[existing_customer_id]], 
-                {'fields': ['id', 'name', 'email', 'phone', 'street', 'city', 'country_id', 'is_company']}
-            )[0]
+            customer_info = get_customer_info(models, db, uid, password, existing_customer_id)
             
             return {
                 'success': True,
-                'customer_id': customer_info['id'],
-                'customer_name': customer_info['name'],
+                'customer_id': existing_customer_id,
+                'customer_name': customer_info.get('name') if customer_info else data['name'],
                 'company_id': company_id,
-                'email': customer_info.get('email'),
-                'phone': customer_info.get('phone'),
-                'street': customer_info.get('street'),
-                'city': customer_info.get('city'),
-                'country': customer_info.get('country_id', [None, 'N/A'])[1] if customer_info.get('country_id') else 'N/A',
-                'is_company': customer_info.get('is_company'),
+                'email': customer_info.get('email') if customer_info else None,
+                'phone': customer_info.get('phone') if customer_info else None,
+                'street': customer_info.get('street') if customer_info else None,
+                'city': customer_info.get('city') if customer_info else None,
+                'country': customer_info.get('country_id', [None, 'N/A'])[1] if customer_info and customer_info.get('country_id') else 'N/A',
+                'is_company': customer_info.get('is_company') if customer_info else None,
                 'message': 'Customer already exists - no duplicate created',
-                'existing': True,
+                'exists': True,
                 'customer_details': customer_info,
                 # Pass through any additional fields that might be used for invoice creation
                 "invoice_date": data.get('invoice_date'),
@@ -179,11 +273,8 @@ def main(data):
             'is_company': data.get('is_company', True),
             'customer_rank': 1,  # Mark as customer
             'supplier_rank': 0,  # Not a supplier
+            'company_id': company_id  # Now required for multi-company setup
         }
-        
-        # Add company_id if provided (for multi-company setup)
-        if company_id:
-            customer_data['company_id'] = company_id
         
         # Add optional fields, but only if they have valid values (not "none", "null", empty, etc.)
         optional_fields = ['email', 'phone', 'website', 'street', 'city', 'zip']
@@ -216,26 +307,21 @@ def main(data):
             }
         
         # Get created customer information
-        customer_info = models.execute_kw(
-            db, uid, password,
-            'res.partner', 'read',
-            [[customer_id]], 
-            {'fields': ['name', 'email', 'phone', 'street', 'city', 'country_id', 'is_company']}
-        )[0]
+        customer_info = get_customer_info(models, db, uid, password, customer_id)
         
         return {
             'success': True,
             'customer_id': customer_id,
-            'customer_name': customer_info['name'],
+            'customer_name': customer_info.get('name') if customer_info else data['name'],
             'company_id': company_id,
-            'email': customer_info.get('email'),
-            'phone': customer_info.get('phone'),
-            'street': customer_info.get('street'),
-            'city': customer_info.get('city'),
-            'country': customer_info.get('country_id', [None, 'N/A'])[1] if customer_info.get('country_id') else 'N/A',
-            'is_company': customer_info.get('is_company'),
+            'email': customer_info.get('email') if customer_info else None,
+            'phone': customer_info.get('phone') if customer_info else None,
+            'street': customer_info.get('street') if customer_info else None,
+            'city': customer_info.get('city') if customer_info else None,
+            'country': customer_info.get('country_id', [None, 'N/A'])[1] if customer_info and customer_info.get('country_id') else 'N/A',
+            'is_company': customer_info.get('is_company') if customer_info else None,
             'message': 'Customer created successfully',
-            'existing': False,
+            'exists': False,
             'customer_details': customer_info,
             # Pass through any additional fields that might be used for invoice creation
             "invoice_date": data.get('invoice_date'),
@@ -307,8 +393,21 @@ def get_country_id(models, db, uid, password, country_code):
     except Exception:
         return None
 
-def list_customers():
-    """Get list of customers for reference"""
+def get_customer_info(models, db, uid, password, customer_id):
+    """Get customer information by ID"""
+    try:
+        customer_data = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'read',
+            [[customer_id]], 
+            {'fields': ['name', 'email', 'phone', 'street', 'city', 'country_id', 'is_company', 'customer_rank']}
+        )
+        return customer_data[0] if customer_data else None
+    except Exception:
+        return None
+
+def list_customers(company_id=None):
+    """Get list of customers for reference, optionally filtered by company_id"""
     
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -323,11 +422,18 @@ def list_customers():
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
+        # Base domain for customers
+        domain = [('customer_rank', '>', 0)]
+        
+        # Add company filter if specified
+        if company_id:
+            domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        
         customers = models.execute_kw(
             db, uid, password,
             'res.partner', 'search_read',
-            [[('customer_rank', '>', 0)]], 
-            {'fields': ['id', 'name', 'email', 'phone', 'city', 'country_id', 'is_company'], 'limit': 20}
+            [domain], 
+            {'fields': ['id', 'name', 'email', 'phone', 'city', 'country_id', 'is_company', 'company_id'], 'order': 'name'}
         )
         
         return {

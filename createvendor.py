@@ -2,6 +2,8 @@ import xmlrpc.client
 import logging
 from typing import Dict, Optional, Union
 import os
+from difflib import SequenceMatcher
+
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
     try:
@@ -10,58 +12,140 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def similarity(a, b):
+    """Calculate similarity between two strings using SequenceMatcher"""
+    return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+def normalize_string(s):
+    """Normalize string for better comparison"""
+    if not s:
+        return ""
+    # Remove common suffixes and prefixes, extra spaces, punctuation
+    s = s.lower().strip()
+    # Remove common company suffixes
+    suffixes = [' inc', ' inc.', ' ltd', ' ltd.', ' llc', ' corp', ' corp.', ' co.', ' co', ' limited']
+    for suffix in suffixes:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+    # Remove extra punctuation and spaces
+    s = ''.join(c for c in s if c.isalnum() or c.isspace())
+    s = ' '.join(s.split())  # normalize whitespace
+    return s
+
+def get_vendors_for_company(models, db, uid, password, company_id=None):
+    """
+    Fetch existing vendors for a specific company or all vendors if no company specified
+    """
+    try:
+        # Base domain for vendors
+        domain = [('is_company', '=', True), ('supplier_rank', '>', 0)]
+        
+        # Add company filter if specified
+        if company_id:
+            # In Odoo multi-company setup:
+            # - Records with company_id = specific_company belong to that company
+            # - Records with company_id = False are shared across all companies
+            domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        
+        vendors = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search_read',
+            [domain], 
+            {'fields': ['id', 'name', 'email', 'vat', 'company_id']}
+        )
+        
+        return vendors
+        
+    except Exception as e:
+        print(f"Error fetching vendors: {str(e)}")
+        return []
+
 def check_vendor_exists_comprehensive(models, db, uid, password, data, company_id=None):
     """
-    Comprehensive check if vendor already exists using multiple criteria
+    Comprehensive check if vendor already exists using multiple criteria including fuzzy matching
     Returns vendor_id if found, None otherwise
     """
     try:
-        base_domain = [('is_company', '=', True), ('supplier_rank', '>', 0)]
+        # First, get all existing vendors for the company
+        existing_vendors = get_vendors_for_company(models, db, uid, password, company_id)
         
-        # Add company context to avoid cross-company matches
-        if company_id:
-            base_domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        if not existing_vendors:
+            return None
+        
+        input_name = data.get('name', '').strip()
+        input_email = data.get('email', '').strip().lower() if data.get('email') else None
+        input_vat = data.get('vat', '').strip() if data.get('vat') else None
         
         # Priority order for matching:
-        # 1. VAT number (most reliable)
-        # 2. Email + Name combination
-        # 3. Exact name match
+        # 1. VAT number (exact match - most reliable)
+        # 2. Email exact match
+        # 3. Email + Name combination (exact)
+        # 4. Fuzzy name matching (similarity > 85%)
+        # 5. Exact name match (fallback)
         
-        search_criteria = []
+        # 1. Check by VAT if provided (exact match)
+        if input_vat:
+            for vendor in existing_vendors:
+                if vendor.get('vat') and vendor['vat'].strip().lower() == input_vat.lower():
+                    print(f"Found vendor by VAT match: {vendor['name']}")
+                    return vendor['id']
         
-        # 1. Check by VAT if provided
-        if data.get('vat'):
-            vat_domain = base_domain + [('vat', '=', data['vat'])]
-            search_criteria.append(vat_domain)
+        # 2. Check by email exact match
+        if input_email:
+            for vendor in existing_vendors:
+                vendor_email = vendor.get('email', '').strip().lower() if vendor.get('email') else ''
+                if vendor_email and vendor_email == input_email:
+                    print(f"Found vendor by email match: {vendor['name']}")
+                    return vendor['id']
         
-        # 2. Check by email + name combination if both provided
-        if data.get('email') and data.get('name'):
-            email_name_domain = base_domain + [
-                ('email', '=', data['email']),
-                ('name', '=', data['name'])
-            ]
-            search_criteria.append(email_name_domain)
+        # 3. Check by email + name combination (both exact)
+        if input_email and input_name:
+            for vendor in existing_vendors:
+                vendor_email = vendor.get('email', '').strip().lower() if vendor.get('email') else ''
+                vendor_name = vendor.get('name', '').strip()
+                if (vendor_email == input_email and 
+                    vendor_name.lower() == input_name.lower()):
+                    print(f"Found vendor by email+name combination: {vendor['name']}")
+                    return vendor['id']
         
-        # 3. Check by email only if provided (but no name match)
-        elif data.get('email'):
-            email_domain = base_domain + [('email', '=', data['email'])]
-            search_criteria.append(email_domain)
-        
-        # 4. Check by exact name match as fallback
-        if data.get('name'):
-            name_domain = base_domain + [('name', '=', data['name'])]
-            search_criteria.append(name_domain)
-        
-        # Search using each criteria in priority order
-        for domain in search_criteria:
-            vendor_ids = models.execute_kw(
-                db, uid, password,
-                'res.partner', 'search',
-                [domain], {'limit': 1}
-            )
+        # 4. Fuzzy name matching (similarity > 85%)
+        if input_name:
+            normalized_input = normalize_string(input_name)
+            best_match = None
+            best_similarity = 0
             
-            if vendor_ids:
-                return vendor_ids[0]
+            for vendor in existing_vendors:
+                vendor_name = vendor.get('name', '').strip()
+                if not vendor_name:
+                    continue
+                    
+                normalized_vendor = normalize_string(vendor_name)
+                
+                # Calculate similarity
+                sim_score = similarity(normalized_input, normalized_vendor)
+                
+                # Also check raw similarity without normalization
+                raw_sim_score = similarity(input_name, vendor_name)
+                
+                # Take the higher of the two scores
+                final_score = max(sim_score, raw_sim_score)
+                
+                if final_score > best_similarity:
+                    best_similarity = final_score
+                    best_match = vendor
+            
+            # If similarity is above threshold (85%), consider it a match
+            if best_similarity > 0.85:
+                print(f"Found vendor by fuzzy match (similarity: {best_similarity:.2%}): {best_match['name']}")
+                return best_match['id']
+        
+        # 5. Exact name match (fallback)
+        if input_name:
+            for vendor in existing_vendors:
+                vendor_name = vendor.get('name', '').strip()
+                if vendor_name.lower() == input_name.lower():
+                    print(f"Found vendor by exact name match: {vendor['name']}")
+                    return vendor['id']
         
         return None
         
@@ -85,7 +169,8 @@ def main(data):
     
     Expected data format:
     {
-        "name": "Company Name",
+        "name": "Company Name",          # REQUIRED
+        "company_id": 1,                 # REQUIRED - company ID for multi-company setup
         "email": "contact@company.com",  # optional
         "phone": "+1234567890",          # optional
         "website": "https://website.com", # optional
@@ -107,16 +192,22 @@ def main(data):
             'error': 'name is required'
         }
     
+    if not data.get('company_id'):
+        return {
+            'success': False,
+            'error': 'company_id is required'
+        }
+    
     # Connection details
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
     password = os.getenv("ODOO_API_KEY")
     
-    if not username or not password:
+    if not url or not db or not username or not password:
         return {
             'success': False,
-            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+            'error': 'Required Odoo environment variables are missing (ODOO_URL, ODOO_DB, ODOO_USERNAME, ODOO_API_KEY)'
         }
     
     try:
@@ -133,18 +224,16 @@ def main(data):
             }
         
         # Handle company_id conversion from string to int if needed
-        company_id = None
-        if data.get('company_id'):
-            try:
-                company_id = int(data['company_id'])
-                data['company_id'] = company_id  # Update the data dict for later use
-            except (ValueError, TypeError):
-                return {
-                    'success': False,
-                    'error': 'company_id must be a valid integer'
-                }
+        try:
+            company_id = int(data['company_id'])
+            data['company_id'] = company_id  # Update the data dict for later use
+        except (ValueError, TypeError):
+            return {
+                'success': False,
+                'error': 'company_id must be a valid integer'
+            }
         
-        # Check if vendor already exists using comprehensive method
+        # Check if vendor already exists using comprehensive method (including fuzzy matching)
         existing_vendor = check_vendor_exists_comprehensive(
             models, db, uid, password, data, company_id
         )
@@ -159,7 +248,7 @@ def main(data):
                 'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
                 'company_id': company_id,
                 'message': 'Vendor already exists - no duplicate created',
-                'existing': True,
+                'exists': True,
                 'vendor_details': vendor_info,
                 # Pass through any additional fields that might be used for bill creation
                 "invoice_date": data.get('invoice_date'),
@@ -194,7 +283,7 @@ def main(data):
             'vendor_name': vendor_info.get('name') if vendor_info else data['name'],
             'company_id': company_id,
             'message': 'Vendor created successfully',
-            'existing': False,
+            'exists': False,
             'vendor_details': vendor_info,
             # Pass through any additional fields that might be used for bill creation
             "invoice_date": data.get('invoice_date'),
@@ -280,9 +369,8 @@ def create_vendor_basic(models, db, uid, password, data):
     if is_valid_value(data.get('website')):
         vendor_data['website'] = data['website']
 
-    # Add company_id if provided (for multi-company setup)
-    if data.get('company_id'):
-        vendor_data['company_id'] = data['company_id']
+    # Add company_id (now required for multi-company setup)
+    vendor_data['company_id'] = data['company_id']
         
     try:
         vendor_id = models.execute_kw(
@@ -436,8 +524,8 @@ def get_vendor_info(models, db, uid, password, vendor_id):
     except Exception:
         return None
 
-def list_vendors():
-    """Get list of all vendors for reference"""
+def list_vendors(company_id=None):
+    """Get list of vendors for reference, optionally filtered by company_id"""
     
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -452,11 +540,18 @@ def list_vendors():
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
+        # Base domain for vendors
+        domain = [('supplier_rank', '>', 0)]
+        
+        # Add company filter if specified
+        if company_id:
+            domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+        
         vendors = models.execute_kw(
             db, uid, password,
             'res.partner', 'search_read',
-            [[('supplier_rank', '>', 0)]], 
-            {'fields': ['id', 'name', 'email', 'vat', 'city', 'country_id'], 'order': 'name'}
+            [domain], 
+            {'fields': ['id', 'name', 'email', 'vat', 'city', 'country_id', 'company_id'], 'order': 'name'}
         )
         
         return {

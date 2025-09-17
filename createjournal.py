@@ -349,7 +349,7 @@ def list_journals():
             'error': str(e)
         }
 
-def list_accounts():
+def list_accounts(company_id=None):
     """Get list of chart of accounts for reference"""
     
     url = os.getenv("ODOO_URL")
@@ -365,17 +365,107 @@ def list_accounts():
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
+        company_name = None
+        
+        # If company_id is provided, fetch the company name first
+        if company_id:
+            company_data = models.execute_kw(
+                db, uid, password,
+                'res.company', 'search_read',
+                [[('id', '=', company_id)]], 
+                {'fields': ['name'], 'limit': 1}
+            )
+            
+            if not company_data:
+                return {'success': False, 'error': f'Company with ID {company_id} not found'}
+            
+            company_name = company_data[0]['name']
+        
+        # Build domain filter for accounts
+        domain = [('active', '=', True)]
+        
+        # If we have a company name, try to filter accounts by company name
+        if company_name:
+            # Check what fields are available on account.account
+            available_fields = models.execute_kw(
+                db, uid, password,
+                'account.account', 'fields_get',
+                [], {'attributes': ['string', 'type']}
+            )
+            
+            # Try different approaches to filter by company using the company name
+            if 'company_id' in available_fields:
+                # Standard approach: filter by company_id relation
+                domain.append(('company_id', '=', company_id))
+            elif 'company_ids' in available_fields:
+                # Multi-company field approach
+                domain.append(('company_ids', 'in', [company_id]))
+            elif 'name' in available_fields:
+                # Try to filter by account name containing company name
+                # This is a fallback approach - might not be very reliable
+                domain.append(('name', 'ilike', company_name))
+            else:
+                # If no suitable field found, get all accounts
+                # We'll note this in the response
+                pass
+        
         accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [[('deprecated', '=', False)]], 
+            [domain], 
             {'fields': ['id', 'code', 'name', 'account_type']}
         )
+        
+        # If we couldn't filter by company directly, try alternative approach
+        if company_name and not any(field in ['company_id', 'company_ids'] for field in models.execute_kw(
+            db, uid, password, 'account.account', 'fields_get', [], {'attributes': ['string', 'type']}
+        ).keys()):
+            
+            # Alternative: Search through account move lines or journal entries
+            # to find accounts used by this company
+            try:
+                # Get journals for this company
+                company_journals = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'search_read',
+                    [[('company_id', '=', company_id)]], 
+                    {'fields': ['id']}
+                )
+                
+                if company_journals:
+                    journal_ids = [j['id'] for j in company_journals]
+                    
+                    # Get account move lines from these journals to find relevant accounts
+                    account_moves = models.execute_kw(
+                        db, uid, password,
+                        'account.move.line', 'search_read',
+                        [[('journal_id', 'in', journal_ids)]], 
+                        {'fields': ['account_id'], 'limit': 1000}
+                    )
+                    
+                    if account_moves:
+                        # Get unique account IDs used by this company
+                        account_ids = list(set([move['account_id'][0] for move in account_moves if move.get('account_id')]))
+                        
+                        # Now get the actual account details
+                        if account_ids:
+                            accounts = models.execute_kw(
+                                db, uid, password,
+                                'account.account', 'search_read',
+                                [[('id', 'in', account_ids), ('active', '=', True)]], 
+                                {'fields': ['id', 'code', 'name', 'account_type']}
+                            )
+            except Exception as alt_error:
+                # If alternative approach fails, stick with original results
+                pass
         
         return {
             'success': True,
             'accounts': accounts,
-            'count': len(accounts)
+            'count': len(accounts),
+            'company_id': company_id,
+            'company_name': company_name,
+            'filter_method': 'company_name_based' if company_name else 'all_active'
         }
         
     except Exception as e:

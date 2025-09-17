@@ -314,7 +314,10 @@ def get_journals():
 def get_accounts():
     """Get list of chart of accounts"""
     try:
-        result = createjournal.list_accounts()
+        # Get company_id from query parameters
+        company_id = request.args.get('company_id', type=int)
+        
+        result = createjournal.list_accounts(company_id)
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
