@@ -48,6 +48,12 @@ def get_bill_processing_prompt(company_name):
 - Credit Account (Account to be credited based on bill type)
 - Debit Account (Account to be debited based on bill type)
 
+**CRITICAL VAT/TAX HANDLING RULE:**
+- If ANY tax amount is detected in the document (VAT, sales tax, etc.), you MUST create additional_entries for the tax handling
+- NEVER use standard vat_treatment field when tax is present - always use additional_entries
+- For Input VAT: Create entry with debit to account 2202 (Input VAT) and credit to account 2201 (Output VAT) for the tax amount
+- The main entry should be for the net amount only, with tax handled separately in additional_entries
+
 **DESCRIPTION FIELD:**
 - Create an overall description of the document that summarizes the goods/services provided
 - Include key details from line item descriptions
@@ -161,10 +167,21 @@ Each additional entry in the additional_entries array must have this exact struc
 }}
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Consultancy Bill: debit_account="6200", credit_account="2100"
+- Consultancy Bill (no tax): debit_account="7602", credit_account="2100"
+- Consultancy Bill (with VAT): debit_account="7602", credit_account="2100" + additional_entries for VAT
 - Bank Charges: debit_account="7901", credit_account="1204" 
 - Government Fees: debit_account="8200", credit_account="2100"
 - EU Service with Reverse Charge: Main entry + additional VAT entries in additional_entries array
+
+**VAT ADDITIONAL ENTRIES EXAMPLES:**
+When tax_amount > 0, always add:
+{{
+  "account_code": "2202",
+  "account_name": "Input VAT (Purchases)",
+  "debit_amount": <tax_amount>,
+  "credit_amount": 0,
+  "description": "Input VAT on purchase"
+}}
 
 **ABSOLUTE REQUIREMENTS:**
 1. Every field listed above MUST be present in every bill object
@@ -176,6 +193,8 @@ Each additional entry in the additional_entries array must have this exact struc
 7. Array fields default to empty array []
 8. Confidence levels: use "high", "medium", or "low" only
 9. Company match: use "exact_match", "close_match", "no_match", or "unclear" only
+10. **ACCOUNT CODE CONSISTENCY: The account codes and names you assign must exactly match the ones provided in the chart of accounts**
+11. **MANDATORY TAX HANDLING: Any detected tax amount MUST be processed through additional_entries, never through standard vat_treatment**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -229,7 +248,7 @@ def process_bills_with_claude(pdf_content, company_name):
             temperature=0.0,  # Maximum determinism for consistent parsing
             system="""You are an expert accountant and data extraction system. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping, VAT regulations, and proper account classification.
 
-CHART OF ACCOUNTS YOU MUST USE:
+CHART OF ACCOUNTS YOU MUST USE (EXACT CODES AND NAMES):
 • 1100 - Accounts receivable (Asset)
 • 1204 - Bank (Asset) 
 • 2100 - Accounts payable (Liability)
@@ -240,22 +259,32 @@ CHART OF ACCOUNTS YOU MUST USE:
 • 7901 - Bank charges (Expense)
 • 8200 - Other non-operating income/expenses (Expense)
 
+**CRITICAL ACCOUNT CODE RULE: You MUST use the exact account codes and names from the chart above. Never modify or create new account codes.**
+
 CORE ACCOUNTING BEHAVIOR:
 • Always think: "What did we receive?" (DEBIT) and "What do we owe?" (CREDIT)
 • Vendor bills: DEBIT expense account, CREDIT accounts payable (2100)
-• Professional services → 6200 (Consultancy fees)
-• Government/Registrar fees → 8200 (Other non-operating)
+• Professional services → 7602 (Consultancy fees)
+• Government/Registrar fees → 8200 (Other non-operating income/expenses)
 • Banking fees → 7901 (Bank charges)
 • Apply reverse charge VAT (19%) for EU services: Additional DEBIT 2202, CREDIT 2201
 • Ensure debits always equal credits
+
+**MANDATORY VAT PROCESSING RULE:**
+• When ANY tax/VAT amount is detected in a document, you MUST process it through additional_entries
+• NEVER use vat_treatment field when tax is present - always create additional_entries
+• For any detected tax: Create additional entry with debit_amount to "2202" (Input VAT Purchases) and corresponding entry
+• Main accounting entry should be for net amount only
+• Tax handling is ALWAYS through additional_entries when tax is detected
 
 VAT EXPERTISE:
 • EU suppliers of services = Reverse charge 19%
 • Government fees = Usually no VAT
 • Banking fees = No VAT
+• Any VAT detected = Mandatory additional_entries processing
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every bill.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every bill using ONLY the exact account codes provided.""",
             messages=[
                 {
                     "role": "user",
@@ -546,6 +575,27 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
+        # Check VAT handling compliance
+        accounting_assignment = bill.get("accounting_assignment", {})
+        additional_entries = accounting_assignment.get("additional_entries", [])
+        
+        if tax_amount > 0 and not additional_entries:
+            bill_validation["issues"].append(
+                "Tax amount detected but no additional_entries created - VAT must be handled through additional_entries"
+            )
+        
+        # Check account code consistency
+        debit_account = accounting_assignment.get("debit_account", "")
+        credit_account = accounting_assignment.get("credit_account", "")
+        
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
+        
+        if debit_account and debit_account not in valid_accounts:
+            bill_validation["issues"].append(f"Invalid debit account code: {debit_account}")
+        
+        if credit_account and credit_account not in valid_accounts:
+            bill_validation["issues"].append(f"Invalid credit account code: {credit_account}")
+        
         # Check confidence levels
         confidence = bill.get("extraction_confidence", {})
         low_confidence_fields = [
@@ -666,14 +716,16 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-bill-processing",
-            "version": "2.1",
+            "version": "2.2",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
                 "monetary_calculation",
                 "confidence_scoring",
                 "improved_json_parsing",
-                "guaranteed_structure_consistency"
+                "guaranteed_structure_consistency",
+                "mandatory_vat_additional_entries",
+                "strict_account_code_validation"
             ],
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),

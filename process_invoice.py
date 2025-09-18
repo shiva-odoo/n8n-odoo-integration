@@ -53,6 +53,12 @@ def get_invoice_processing_prompt(company_name):
 - Credit Account (Account to be credited based on transaction type)
 - Debit Account (Account to be debited based on transaction type)
 
+**CRITICAL VAT/TAX HANDLING RULE:**
+- If ANY tax amount is detected in the document (VAT, sales tax, etc.), you MUST create additional_entries for the tax handling
+- NEVER use standard vat_treatment field when tax is present - always use additional_entries
+- For Output VAT: Create entry with debit amount equal to tax amount and credit to account 2201 (Output VAT Sales)
+- The main entry should be for the net amount only, with tax handled separately in additional_entries
+
 **SHARE CAPITAL TRANSACTION HANDLING:**
 - Treat share allotments as invoices for accounting purposes
 - Shareholder becomes the "customer" receiving shares
@@ -173,11 +179,21 @@ Each additional entry in the additional_entries array must have this exact struc
 }}
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Consultancy Invoice: debit_account="1100", credit_account="6200"
-- Service Invoice: debit_account="1100", credit_account="4000" 
+- Consultancy Invoice (no tax): debit_account="1100", credit_account="6200"
+- Service Invoice (with VAT): debit_account="1100", credit_account="4000" + additional_entries for VAT
 - Product Sale: debit_account="1100", credit_account="4100"
 - Share Capital Transaction: debit_account="1204", credit_account="3000"
 - EU Customer with Reverse Charge: Main entry + additional VAT entries in additional_entries array
+
+**VAT ADDITIONAL ENTRIES EXAMPLES:**
+When tax_amount > 0, always add:
+{{
+  "account_code": "2201",
+  "account_name": "Output VAT (Sales)",
+  "debit_amount": <tax_amount>,
+  "credit_amount": 0,
+  "description": "Output VAT on sale"
+}}
 
 **ABSOLUTE REQUIREMENTS:**
 1. Every field listed above MUST be present in every invoice object
@@ -189,6 +205,8 @@ Each additional entry in the additional_entries array must have this exact struc
 7. Array fields default to empty array []
 8. Confidence levels: use "high", "medium", or "low" only
 9. Company match: use "exact_match", "close_match", "no_match", or "unclear" only
+10. **ACCOUNT CODE CONSISTENCY: The account codes and names you assign must exactly match the ones provided in the chart of accounts**
+11. **MANDATORY TAX HANDLING: Any detected tax amount MUST be processed through additional_entries, never through standard vat_treatment**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -242,16 +260,18 @@ def process_invoices_with_claude(pdf_content, company_name):
             temperature=0.0,  # Maximum determinism for consistent parsing
             system="""You are an expert accountant and data extraction system specialized in ALL CASH INFLOW transactions. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for REVENUE recognition, EQUITY transactions, VAT regulations, and proper account classification.
 
-CHART OF ACCOUNTS YOU MUST USE:
-• 1100 - Accounts receivable (Asset) - Customer owes us money
-• 1204 - Bank (Asset) - Cash received from customers or shareholders
-• 2201 - Output VAT/Sales (Liability) - VAT we owe to authorities
-• 2202 - Input VAT/Purchases (Asset) - VAT we paid on purchases
-• 3000 - Share Capital (Equity) - Shareholder investments and capital increases
-• 4000 - Service revenue (Revenue) - Income from services provided
-• 4100 - Sales revenue (Revenue) - Income from products sold
-• 6200 - Consultancy fees (Revenue when we provide consulting)
-• 7900 - Other income (Revenue) - Miscellaneous income
+CHART OF ACCOUNTS YOU MUST USE (EXACT CODES AND NAMES):
+• 1100 - Accounts receivable (Asset)
+• 1204 - Bank (Asset)
+• 2201 - Output VAT (Sales) (Liability)
+• 2202 - Input VAT (Purchases) (Asset)
+• 3000 - Share Capital (Equity)
+• 4000 - Service revenue (Revenue)
+• 4100 - Sales revenue (Revenue)
+• 7602 - Consultancy fees (Revenue)
+• 7900 - Other income (Revenue)
+
+**CRITICAL ACCOUNT CODE RULE: You MUST use the exact account codes and names from the chart above. Never modify or create new account codes.**
 
 CORE ACCOUNTING BEHAVIOR FOR ALL CASH INFLOW DOCUMENTS:
 • Always think: "What did we provide?" (CREDIT) and "What do we expect to receive?" (DEBIT)
@@ -266,6 +286,13 @@ CORE ACCOUNTING BEHAVIOR FOR ALL CASH INFLOW DOCUMENTS:
 • EU customers may require reverse charge treatment
 • Ensure debits always equal credits
 
+**MANDATORY VAT PROCESSING RULE:**
+• When ANY tax/VAT amount is detected in a document, you MUST process it through additional_entries
+• NEVER use vat_treatment field when tax is present - always create additional_entries
+• For any detected tax: Create additional entry with debit_amount to "2201" (Output VAT Sales) and corresponding entry
+• Main accounting entry should be for net amount only
+• Tax handling is ALWAYS through additional_entries when tax is detected
+
 DOCUMENT TYPES TO PROCESS AS INVOICES:
 • Traditional customer invoices for services/products
 • Share allotment documents and capital increase resolutions
@@ -277,6 +304,7 @@ VAT EXPERTISE FOR SALES:
 • EU business customers = May qualify for reverse charge (no VAT on invoice)
 • Non-EU customers = Usually no VAT
 • Share capital transactions = Usually no VAT
+• Any VAT detected = Mandatory additional_entries processing
 
 SHARE CAPITAL TRANSACTION HANDLING:
 • Treat share allotments as invoices for Odoo integration
@@ -286,7 +314,7 @@ SHARE CAPITAL TRANSACTION HANDLING:
 • Description should detail the share transaction
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every cash inflow transaction, whether traditional invoice or share capital.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every cash inflow transaction using ONLY the exact account codes provided.""",
             messages=[
                 {
                     "role": "user",
@@ -577,6 +605,27 @@ def validate_invoice_data(invoices):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
+        # Check VAT handling compliance
+        accounting_assignment = invoice.get("accounting_assignment", {})
+        additional_entries = accounting_assignment.get("additional_entries", [])
+        
+        if tax_amount > 0 and not additional_entries:
+            invoice_validation["issues"].append(
+                "Tax amount detected but no additional_entries created - VAT must be handled through additional_entries"
+            )
+        
+        # Check account code consistency
+        debit_account = accounting_assignment.get("debit_account", "")
+        credit_account = accounting_assignment.get("credit_account", "")
+        
+        valid_accounts = ["1100", "1204", "2201", "2202", "3000", "4000", "4100", "6200", "7900"]
+        
+        if debit_account and debit_account not in valid_accounts:
+            invoice_validation["issues"].append(f"Invalid debit account code: {debit_account}")
+        
+        if credit_account and credit_account not in valid_accounts:
+            invoice_validation["issues"].append(f"Invalid credit account code: {credit_account}")
+        
         # Check confidence levels
         confidence = invoice.get("extraction_confidence", {})
         low_confidence_fields = [
@@ -697,14 +746,16 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-invoice-processing",
-            "version": "1.0",
+            "version": "1.1",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
                 "monetary_calculation",
                 "confidence_scoring",
                 "revenue_accounting",
-                "customer_invoice_processing"
+                "customer_invoice_processing",
+                "mandatory_vat_additional_entries",
+                "strict_account_code_validation"
             ],
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),

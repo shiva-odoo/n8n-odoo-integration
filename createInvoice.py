@@ -20,16 +20,277 @@ def normalize_date(date_value):
         return datetime.now().strftime('%Y-%m-%d')
     return date_value
 
-def find_account_by_code(models, db, uid, password, account_code, company_id):
-    """Find account by account code for specific company"""
+def find_account_by_name(models, db, uid, password, account_name, company_id, account_code=None):
+    """Find account by matching name and/or code using improved company-aware approach"""
     try:
+        print(f"Searching for account: name='{account_name}', code='{account_code}', company_id={company_id}")
+        
+        # Get company name first
+        company_data = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('id', '=', company_id)]], 
+            {'fields': ['name'], 'limit': 1}
+        )
+        
+        if not company_data:
+            print(f"Company with ID {company_id} not found")
+            return None
+        
+        company_name = company_data[0]['name']
+        print(f"Found company: {company_name}")
+        
+        # Check what fields are available on account.account
+        available_fields = models.execute_kw(
+            db, uid, password,
+            'account.account', 'fields_get',
+            [], {'attributes': ['string', 'type']}
+        )
+        
+        print(f"Available account fields: {list(available_fields.keys())}")
+        
+        # Build domain filter for accounts - start with basic filters
+        domain = [('active', '=', True)]
+        
+        # Try different approaches based on available fields
+        company_filter_applied = False
+        
+        if 'company_id' in available_fields:
+            # Standard single-company approach
+            domain.append(('company_id', '=', company_id))
+            company_filter_applied = True
+            print(f"Using company_id filter for company {company_name}")
+        elif 'company_ids' in available_fields:
+            # Multi-company field approach
+            domain.append(('company_ids', 'in', [company_id]))
+            company_filter_applied = True
+            print(f"Using company_ids filter for company {company_name}")
+        else:
+            print(f"No direct company filter available on account.account model")
+        
+        # Get accounts using the available filters
+        try:
+            accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [domain], 
+                {'fields': ['id', 'code', 'name', 'account_type']}
+            )
+            print(f"Found {len(accounts)} accounts using direct search")
+        except Exception as search_error:
+            print(f"Direct search failed: {str(search_error)}")
+            accounts = []
+        
+        # If direct company filtering didn't work or returned no results, try alternative approach
+        if not accounts or not company_filter_applied:
+            print(f"Trying alternative approach - getting accounts from company journals...")
+            try:
+                # Get journals for this company
+                company_journals = models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'search_read',
+                    [[('company_id', '=', company_id)]], 
+                    {'fields': ['id', 'name']}
+                )
+                
+                if company_journals:
+                    journal_ids = [j['id'] for j in company_journals]
+                    print(f"Found {len(journal_ids)} journals for company {company_name}")
+                    
+                    # Get account move lines from these journals to find relevant accounts
+                    account_moves = models.execute_kw(
+                        db, uid, password,
+                        'account.move.line', 'search_read',
+                        [[('journal_id', 'in', journal_ids)]], 
+                        {'fields': ['account_id'], 'limit': 2000}
+                    )
+                    
+                    if account_moves:
+                        # Get unique account IDs used by this company
+                        account_ids = list(set([move['account_id'][0] for move in account_moves if move.get('account_id')]))
+                        print(f"Found {len(account_ids)} unique accounts used by company")
+                        
+                        # Now get the actual account details
+                        if account_ids:
+                            accounts = models.execute_kw(
+                                db, uid, password,
+                                'account.account', 'search_read',
+                                [[('id', 'in', account_ids), ('active', '=', True)]], 
+                                {'fields': ['id', 'code', 'name', 'account_type']}
+                            )
+                            print(f"Retrieved {len(accounts)} account details")
+                        
+                        # If still no accounts, get ALL accounts (fallback for shared account models)
+                        if not accounts:
+                            print("Falling back to searching all accounts...")
+                            accounts = models.execute_kw(
+                                db, uid, password,
+                                'account.account', 'search_read',
+                                [[('active', '=', True)]], 
+                                {'fields': ['id', 'code', 'name', 'account_type'], 'limit': 1000}
+                            )
+                            print(f"Retrieved {len(accounts)} accounts from fallback search")
+                            
+            except Exception as alt_error:
+                print(f"Alternative approach failed: {str(alt_error)}")
+                # Final fallback - get all accounts
+                try:
+                    print("Final fallback: searching all active accounts...")
+                    accounts = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search_read',
+                        [[('active', '=', True)]], 
+                        {'fields': ['id', 'code', 'name', 'account_type'], 'limit': 1000}
+                    )
+                    print(f"Final fallback retrieved {len(accounts)} accounts")
+                except Exception as final_error:
+                    print(f"Final fallback also failed: {str(final_error)}")
+                    return None
+        
+        print(f"Total accounts available for search: {len(accounts)}")
+        
+        if not accounts:
+            print(f"No accounts found for company {company_name}")
+            return None
+        
+        # Show sample of available accounts for debugging
+        print(f"Sample accounts available: {[{'id': acc['id'], 'name': acc['name'], 'code': acc['code']} for acc in accounts[:5]]}")
+        
+        # Now perform matching against retrieved accounts
+        
+        # Priority 1: Exact name match
+        for account in accounts:
+            if account['name'] == account_name:
+                print(f"Found exact name match: {account}")
+                return account['id']
+        
+        # Priority 2: Exact code match (if provided)
+        if account_code:
+            for account in accounts:
+                if account.get('code') == account_code:
+                    print(f"Found exact code match: {account}")
+                    return account['id']
+        
+        # Priority 3: Case-insensitive name match
+        account_name_lower = account_name.lower()
+        for account in accounts:
+            if account['name'].lower() == account_name_lower:
+                print(f"Found case-insensitive name match: {account}")
+                return account['id']
+        
+        # Priority 4: Name contains the search term (partial match)
+        for account in accounts:
+            if account_name_lower in account['name'].lower():
+                print(f"Found partial name match: {account} (contains '{account_name}')")
+                return account['id']
+        
+        # Priority 5: Name variations (sales/revenue variations for invoices)
+        name_variations = [
+            account_name.replace('Sales Revenue', 'Sales'),
+            account_name.replace('Sales', 'Sales Revenue'),
+            account_name.replace('Revenue', 'Sales'),
+            account_name.replace('Sales', 'Revenue'),
+            account_name.replace('Income', 'Revenue'),
+            account_name.replace('Revenue', 'Income'),
+            account_name.replace('Service Revenue', 'Services'),
+            account_name.replace('Services', 'Service Revenue'),
+            account_name.replace(' fees', ''),
+            account_name.replace(' fee', ''),
+            account_name.replace('fees', 'fee'),
+            account_name.replace('fee', 'fees'),
+        ]
+        
+        for variation in name_variations:
+            if variation != account_name:  # Skip original name
+                for account in accounts:
+                    if account['name'].lower() == variation.lower():
+                        print(f"Found name variation match: {account} (variation: '{variation}')")
+                        return account['id']
+        
+        # Priority 6: Search term appears in name (broader search)
+        keywords = account_name_lower.split()
+        for keyword in keywords:
+            if len(keyword) > 3:  # Only meaningful keywords
+                for account in accounts:
+                    if keyword in account['name'].lower():
+                        print(f"Found keyword match: {account} (keyword: '{keyword}')")
+                        return account['id']
+        
+        # Priority 7: Special handling for common revenue account patterns
+        revenue_patterns = {
+            'sales revenue': ['sales', 'revenue', 'income', 'service revenue', 'consulting revenue'],
+            'sales': ['sales', 'revenue', 'income', 'service revenue'],
+            'revenue': ['sales', 'revenue', 'income', 'service revenue'],
+            'service revenue': ['sales', 'revenue', 'services', 'consulting', 'professional'],
+            'consulting revenue': ['sales', 'revenue', 'consulting', 'professional', 'services'],
+        }
+        
+        account_name_lower = account_name.lower()
+        for pattern_key, patterns in revenue_patterns.items():
+            if pattern_key in account_name_lower:
+                for pattern in patterns:
+                    for account in accounts:
+                        if pattern in account['name'].lower():
+                            print(f"Found revenue pattern match: {account} (pattern: '{pattern}')")
+                            return account['id']
+        
+        # No match found - show debug info
+        print(f"No account found for name='{account_name}' or code='{account_code}' in company {company_name}")
+        
+        # Show accounts containing similar terms for debugging
+        similar_accounts = []
+        search_terms = ['sales', 'revenue', 'income', 'service', 'consulting', 'professional']
+        if account_code:
+            search_terms.append(account_code[:2] if len(account_code) >= 2 else account_code)
+        
+        for term in search_terms:
+            for account in accounts:
+                account_name_lower = account['name'].lower()
+                account_code_str = str(account.get('code', '')).lower()
+                
+                if (term.lower() in account_name_lower or term.lower() in account_code_str):
+                    if account not in similar_accounts:
+                        similar_accounts.append(account)
+        
+        if similar_accounts:
+            print(f"Similar accounts found: {similar_accounts[:10]}")
+        else:
+            print(f"No similar accounts found. Sample available accounts: {accounts[:10]}")
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error finding account '{account_name}': {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def find_account_by_code(models, db, uid, password, account_code, company_id):
+    """Find account by account code - improved version without company_id dependency"""
+    try:
+        # First try with company_id if the field exists
+        try:
+            accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('code', '=', account_code), ('company_id', '=', company_id)]],
+                {'fields': ['id', 'name', 'code'], 'limit': 1}
+            )
+            if accounts:
+                return accounts[0]['id']
+        except:
+            # company_id field doesn't exist, try without it
+            pass
+        
+        # Fallback: search by code only (for shared account models)
         accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [[('code', '=', account_code), ('company_id', '=', company_id)]],
+            [[('code', '=', account_code), ('active', '=', True)]],
             {'fields': ['id', 'name', 'code'], 'limit': 1}
         )
         return accounts[0]['id'] if accounts else None
+        
     except Exception as e:
         print(f"Error finding account {account_code}: {str(e)}")
         return None
@@ -370,19 +631,57 @@ def main(data):
                 
                 # Set account from accounting_assignment if provided
                 accounting_assignment = data.get('accounting_assignment', {})
-                if accounting_assignment.get('credit_account'):
-                    account_id = find_account_by_code(models, db, uid, password, accounting_assignment['credit_account'], company_id)
-                    if account_id:
-                        line_item['account_id'] = account_id
+                account_id = None
                 
-                # Apply tax if tax_rate is provided
-                if tax_rate is not None and tax_rate > 0:
+                # Try name-based lookup first
+                if accounting_assignment.get('credit_account_name'):
+                    account_id = find_account_by_name(
+                        models, db, uid, password, 
+                        accounting_assignment['credit_account_name'], 
+                        company_id, 
+                        accounting_assignment.get('credit_account')  # fallback code
+                    )
+                    print(f"Name-based lookup result for '{accounting_assignment['credit_account_name']}': {account_id}")
+                
+                # If name lookup failed, try code lookup
+                if not account_id and accounting_assignment.get('credit_account'):
+                    account_id = find_account_by_code(models, db, uid, password, accounting_assignment['credit_account'], company_id)
+                    print(f"Code-based lookup result for '{accounting_assignment['credit_account']}': {account_id}")
+                
+                # If we found an account, assign it
+                if account_id:
+                    line_item['account_id'] = account_id
+                    print(f"Successfully assigned account_id {account_id} to line item")
+                else:
+                    # Return error instead of proceeding with wrong account
+                    account_info = accounting_assignment.get('credit_account_name', accounting_assignment.get('credit_account', 'Unknown'))
+                    return {
+                        'success': False,
+                        'error': f'Could not find credit account "{account_info}" in company {company_id}. Please check the account name or code.'
+                    }
+                
+                # Check if manual VAT entries are provided to avoid double tax calculation
+                has_manual_vat = any(
+                    'vat' in entry.get('account_name', '').lower() or
+                    'tax' in entry.get('account_name', '').lower() or
+                    'input' in entry.get('account_name', '').lower() or
+                    'output' in entry.get('account_name', '').lower()
+                    for entry in accounting_assignment.get('additional_entries', [])
+                )
+                
+                # Apply tax if tax_rate is provided AND no manual VAT entries exist
+                if tax_rate is not None and tax_rate > 0 and not has_manual_vat:
                     tax_id = find_tax_by_rate(tax_rate, company_id)
                     if tax_id:
                         line_item['tax_ids'] = [(6, 0, [tax_id])]
+                        print(f"Applied automatic tax calculation: {tax_rate}%")
                     else:
                         # Log warning but continue - tax might be calculated differently
-                        print(f"Warning: No tax found for rate {tax_rate}%, continuing without tax")
+                        print(f"Warning: No tax found for rate {tax_rate}%, continuing without automatic tax")
+                elif has_manual_vat:
+                    print(f"Skipping automatic tax calculation - manual VAT entries detected in additional_entries")
+                elif tax_rate is None or tax_rate == 0:
+                    print(f"No tax rate provided or tax rate is 0%, skipping tax calculation")
                 
                 invoice_line_ids.append((0, 0, line_item))
         
@@ -404,10 +703,34 @@ def main(data):
             
             # Set account from accounting_assignment if provided
             accounting_assignment = data.get('accounting_assignment', {})
-            if accounting_assignment.get('credit_account'):
+            account_id = None
+            
+            # Try name-based lookup first
+            if accounting_assignment.get('credit_account_name'):
+                account_id = find_account_by_name(
+                    models, db, uid, password, 
+                    accounting_assignment['credit_account_name'], 
+                    company_id, 
+                    accounting_assignment.get('credit_account')  # fallback code
+                )
+                print(f"Name-based lookup result for '{accounting_assignment['credit_account_name']}': {account_id}")
+            
+            # If name lookup failed, try code lookup
+            if not account_id and accounting_assignment.get('credit_account'):
                 account_id = find_account_by_code(models, db, uid, password, accounting_assignment['credit_account'], company_id)
-                if account_id:
-                    line_item['account_id'] = account_id
+                print(f"Code-based lookup result for '{accounting_assignment['credit_account']}': {account_id}")
+            
+            # If we found an account, assign it
+            if account_id:
+                line_item['account_id'] = account_id
+                print(f"Successfully assigned account_id {account_id} to line item")
+            else:
+                # Return error instead of proceeding with wrong account
+                account_info = accounting_assignment.get('credit_account_name', accounting_assignment.get('credit_account', 'Unknown'))
+                return {
+                    'success': False,
+                    'error': f'Could not find credit account "{account_info}" in company {company_id}. Please check the account name or code.'
+                }
             
             invoice_line_ids.append((0, 0, line_item))
         
@@ -449,7 +772,18 @@ def main(data):
                 # Prepare additional journal entries
                 additional_lines = []
                 for entry in accounting_assignment['additional_entries']:
-                    account_id = find_account_by_code(models, db, uid, password, entry['account_code'], company_id)
+                    # Try to find account by name first, then by code
+                    account_id = None
+                    if entry.get('account_name'):
+                        account_id = find_account_by_name(
+                            models, db, uid, password, 
+                            entry['account_name'], 
+                            company_id, 
+                            entry.get('account_code')  # fallback code
+                        )
+                    elif entry.get('account_code'):
+                        account_id = find_account_by_code(models, db, uid, password, entry['account_code'], company_id)
+                    
                     if account_id:
                         line_data = {
                             'move_id': invoice_id,
@@ -461,7 +795,8 @@ def main(data):
                         }
                         additional_lines.append((0, 0, line_data))
                     else:
-                        print(f"Warning: Account {entry['account_code']} not found, skipping additional entry")
+                        account_identifier = entry.get('account_name', entry.get('account_code', 'Unknown'))
+                        print(f"Warning: Account '{account_identifier}' not found, skipping additional entry")
                 
                 # Add additional lines to the invoice
                 if additional_lines:
@@ -723,6 +1058,102 @@ def search_customers_by_name(customer_name, company_id=None):
             'customers': customers,
             'count': len(customers),
             'search_term': customer_name
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+# Helper function to search and list accounts by name pattern
+def search_accounts_by_pattern(company_id, pattern="sales", limit=20):
+    """Search for accounts matching a pattern in a specific company"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Search for accounts containing the pattern
+        try:
+            accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('name', 'ilike', pattern), ('company_id', '=', company_id)]],
+                {'fields': ['id', 'name', 'code', 'account_type'], 'limit': limit}
+            )
+        except:
+            # Fallback for shared account models
+            accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('name', 'ilike', pattern), ('active', '=', True)]],
+                {'fields': ['id', 'name', 'code', 'account_type'], 'limit': limit}
+            )
+        
+        return {
+            'success': True,
+            'pattern': pattern,
+            'company_id': company_id,
+            'accounts': accounts,
+            'count': len(accounts)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+# Helper function to list all income/revenue accounts 
+def list_revenue_accounts(company_id, limit=50):
+    """List all income/revenue-type accounts in a specific company"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Get income accounts (account_type = 'income')
+        try:
+            accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('account_type', '=', 'income'), ('company_id', '=', company_id)]],
+                {'fields': ['id', 'name', 'code', 'account_type'], 'limit': limit, 'order': 'code'}
+            )
+        except:
+            # Fallback for shared account models
+            accounts = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('account_type', '=', 'income'), ('active', '=', True)]],
+                {'fields': ['id', 'name', 'code', 'account_type'], 'limit': limit, 'order': 'code'}
+            )
+        
+        return {
+            'success': True,
+            'company_id': company_id,
+            'accounts': accounts,
+            'count': len(accounts),
+            'account_type': 'income'
         }
         
     except Exception as e:
