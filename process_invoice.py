@@ -56,7 +56,10 @@ def get_invoice_processing_prompt(company_name):
 **CRITICAL VAT/TAX HANDLING RULE:**
 - If ANY tax amount is detected in the document (VAT, sales tax, etc.), you MUST create additional_entries for the tax handling
 - NEVER use standard vat_treatment field when tax is present - always use additional_entries
-- For Output VAT: Create entry with debit amount equal to tax amount and credit to account 2201 (Output VAT Sales)
+- For ANY detected tax amount, you MUST create BOTH Input VAT AND Output VAT entries:
+  1. Input VAT entry: debit_amount = tax_amount, credit_amount = 0, account_code = "2202"
+  2. Output VAT entry: debit_amount = 0, credit_amount = tax_amount, account_code = "2201"
+- For customer invoices, the main VAT flow is Output VAT (we charge VAT to customer)
 - The main entry should be for the net amount only, with tax handled separately in additional_entries
 
 **SHARE CAPITAL TRANSACTION HANDLING:**
@@ -64,7 +67,7 @@ def get_invoice_processing_prompt(company_name):
 - Shareholder becomes the "customer" receiving shares
 - Amount represents cash to be received from shareholder
 - Description should detail share allotment (e.g., "15,000 ordinary shares at €1 each")
-- Use appropriate accounting codes: DEBIT 1204 (Bank), CREDIT 3000 (Share Capital)
+- Use appropriate accounting codes: DEBIT 1100 (Accounts receivable), CREDIT 3000 (Share Capital)
 
 **DESCRIPTION FIELD:**
 - Create an overall description of the services/goods provided to the customer
@@ -179,20 +182,29 @@ Each additional entry in the additional_entries array must have this exact struc
 }}
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Consultancy Invoice (no tax): debit_account="1100", credit_account="6200"
-- Service Invoice (with VAT): debit_account="1100", credit_account="4000" + additional_entries for VAT
-- Product Sale: debit_account="1100", credit_account="4100"
-- Share Capital Transaction: debit_account="1204", credit_account="3000"
-- EU Customer with Reverse Charge: Main entry + additional VAT entries in additional_entries array
+- Consultancy Invoice (no tax): debit_account="1100", credit_account="7602"
+- Service Invoice (with VAT): debit_account="1100", credit_account="7602" + additional_entries for VAT
+- Other Income: debit_account="1100", credit_account="8200"
+- Share Capital Transaction: debit_account="1100", credit_account="3000"
+- Customer Invoice with VAT: Main entry + additional VAT entries in additional_entries array
 
 **VAT ADDITIONAL ENTRIES EXAMPLES:**
-When tax_amount > 0, always add:
+When tax_amount > 0, you MUST create BOTH entries:
+1. Input VAT entry (for reverse charge scenarios):
+{{
+  "account_code": "2202",
+  "account_name": "Input VAT (Purchases)",
+  "debit_amount": <tax_amount>,
+  "credit_amount": 0,
+  "description": "VAT on customer invoice"
+}}
+2. Output VAT entry (standard customer VAT):
 {{
   "account_code": "2201",
   "account_name": "Output VAT (Sales)",
-  "debit_amount": <tax_amount>,
-  "credit_amount": 0,
-  "description": "Output VAT on sale"
+  "debit_amount": 0,
+  "credit_amount": <tax_amount>,
+  "description": "VAT on customer invoice"
 }}
 
 **ABSOLUTE REQUIREMENTS:**
@@ -262,36 +274,38 @@ def process_invoices_with_claude(pdf_content, company_name):
 
 CHART OF ACCOUNTS YOU MUST USE (EXACT CODES AND NAMES):
 • 1100 - Accounts receivable (Asset)
-• 1204 - Bank (Asset)
+• 1204 - Bank (Asset) 
+• 2100 - Accounts payable (Liability)
 • 2201 - Output VAT (Sales) (Liability)
 • 2202 - Input VAT (Purchases) (Asset)
 • 3000 - Share Capital (Equity)
-• 4000 - Service revenue (Revenue)
-• 4100 - Sales revenue (Revenue)
-• 7602 - Consultancy fees (Revenue)
-• 7900 - Other income (Revenue)
+• 7602 - Consultancy fees (Expense)
+• 7901 - Bank charges (Expense)
+• 8200 - Other non-operating income or expenses (Expense)
 
 **CRITICAL ACCOUNT CODE RULE: You MUST use the exact account codes and names from the chart above. Never modify or create new account codes.**
 
 CORE ACCOUNTING BEHAVIOR FOR ALL CASH INFLOW DOCUMENTS:
 • Always think: "What did we provide?" (CREDIT) and "What do we expect to receive?" (DEBIT)
 • Customer invoices: DEBIT accounts receivable (1100), CREDIT appropriate revenue account
-• Share capital transactions: DEBIT bank (1204), CREDIT share capital (3000)
-• Consultancy services → CREDIT 6200 (Consultancy fees)
-• Professional services → CREDIT 4000 (Service revenue)
-• Product sales → CREDIT 4100 (Sales revenue)
+• Share capital transactions: DEBIT accounts receivable (1100), CREDIT share capital (3000)
+• Consultancy services → CREDIT 7602 (Consultancy fees) - Note: This is an expense account used as revenue when we provide consulting
+• Professional services → CREDIT 7602 (Consultancy fees) 
+• Other income → CREDIT 8200 (Other non-operating income or expenses)
 • Share allotments/capital increases → CREDIT 3000 (Share Capital)
-• Other services → CREDIT 7900 (Other income)
-• Apply output VAT when applicable: Additional DEBIT amount, CREDIT 2201 (VAT portion)
+• Apply output VAT when applicable: Additional entries for VAT
 • EU customers may require reverse charge treatment
 • Ensure debits always equal credits
 
 **MANDATORY VAT PROCESSING RULE:**
 • When ANY tax/VAT amount is detected in a document, you MUST process it through additional_entries
 • NEVER use vat_treatment field when tax is present - always create additional_entries
-• For any detected tax: Create additional entry with debit_amount to "2201" (Output VAT Sales) and corresponding entry
+• For any detected tax amount, you MUST create BOTH VAT entries:
+  1. Input VAT: debit_amount = tax_amount to account "2202" (Input VAT Purchases) - for reverse charge scenarios
+  2. Output VAT: credit_amount = tax_amount to account "2201" (Output VAT Sales) - standard customer VAT
+• This ensures proper VAT accounting for all invoice scenarios
 • Main accounting entry should be for net amount only
-• Tax handling is ALWAYS through additional_entries when tax is detected
+• Tax handling is ALWAYS through additional_entries when tax is detected - create BOTH Input and Output VAT entries
 
 DOCUMENT TYPES TO PROCESS AS INVOICES:
 • Traditional customer invoices for services/products
@@ -301,7 +315,7 @@ DOCUMENT TYPES TO PROCESS AS INVOICES:
 
 VAT EXPERTISE FOR SALES:
 • Domestic customers = Standard VAT on invoice (CREDIT 2201)
-• EU business customers = May qualify for reverse charge (no VAT on invoice)
+• EU business customers = May qualify for reverse charge (additional entries for both 2201 and 2202)
 • Non-EU customers = Usually no VAT
 • Share capital transactions = Usually no VAT
 • Any VAT detected = Mandatory additional_entries processing
@@ -310,7 +324,7 @@ SHARE CAPITAL TRANSACTION HANDLING:
 • Treat share allotments as invoices for Odoo integration
 • Shareholder becomes the "customer" receiving shares
 • Extract share details: number of shares, nominal value, total amount
-• Use DEBIT 1204 (Bank), CREDIT 3000 (Share Capital)
+• Use DEBIT 1100 (Accounts receivable), CREDIT 3000 (Share Capital)
 • Description should detail the share transaction
 
 OUTPUT FORMAT:
@@ -605,20 +619,35 @@ def validate_invoice_data(invoices):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # Check VAT handling compliance
+        # Check VAT handling compliance - must have BOTH Input and Output VAT entries
         accounting_assignment = invoice.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         
-        if tax_amount > 0 and not additional_entries:
-            invoice_validation["issues"].append(
-                "Tax amount detected but no additional_entries created - VAT must be handled through additional_entries"
-            )
+        if tax_amount > 0:
+            if not additional_entries:
+                invoice_validation["issues"].append(
+                    "Tax amount detected but no additional_entries created - VAT must be handled through additional_entries"
+                )
+            else:
+                # Check for both Input VAT (2202) and Output VAT (2201) entries
+                input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
+                output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                
+                if not input_vat_entries:
+                    invoice_validation["issues"].append(
+                        "Tax amount detected but missing Input VAT (2202) entry in additional_entries"
+                    )
+                
+                if not output_vat_entries:
+                    invoice_validation["issues"].append(
+                        "Tax amount detected but missing Output VAT (2201) entry in additional_entries"
+                    )
         
         # Check account code consistency
         debit_account = accounting_assignment.get("debit_account", "")
         credit_account = accounting_assignment.get("credit_account", "")
         
-        valid_accounts = ["1100", "1204", "2201", "2202", "3000", "4000", "4100", "6200", "7900"]
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
         
         if debit_account and debit_account not in valid_accounts:
             invoice_validation["issues"].append(f"Invalid debit account code: {debit_account}")

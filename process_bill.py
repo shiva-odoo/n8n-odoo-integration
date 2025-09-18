@@ -51,7 +51,10 @@ def get_bill_processing_prompt(company_name):
 **CRITICAL VAT/TAX HANDLING RULE:**
 - If ANY tax amount is detected in the document (VAT, sales tax, etc.), you MUST create additional_entries for the tax handling
 - NEVER use standard vat_treatment field when tax is present - always use additional_entries
-- For Input VAT: Create entry with debit to account 2202 (Input VAT) and credit to account 2201 (Output VAT) for the tax amount
+- For ANY detected tax amount, you MUST create BOTH Input VAT AND Output VAT entries:
+  1. Input VAT entry: debit_amount = tax_amount, credit_amount = 0, account_code = "2202"
+  2. Output VAT entry: debit_amount = 0, credit_amount = tax_amount, account_code = "2201"
+- This represents the complete reverse charge VAT mechanism (we owe Input VAT and Output VAT)
 - The main entry should be for the net amount only, with tax handled separately in additional_entries
 
 **DESCRIPTION FIELD:**
@@ -174,13 +177,22 @@ Each additional entry in the additional_entries array must have this exact struc
 - EU Service with Reverse Charge: Main entry + additional VAT entries in additional_entries array
 
 **VAT ADDITIONAL ENTRIES EXAMPLES:**
-When tax_amount > 0, always add:
+When tax_amount > 0, you MUST create BOTH entries:
+1. Input VAT entry:
 {{
   "account_code": "2202",
   "account_name": "Input VAT (Purchases)",
   "debit_amount": <tax_amount>,
   "credit_amount": 0,
-  "description": "Input VAT on purchase"
+  "description": "Reverse charge VAT on EU services"
+}}
+2. Output VAT entry:
+{{
+  "account_code": "2201",
+  "account_name": "Output VAT (Sales)",
+  "debit_amount": 0,
+  "credit_amount": <tax_amount>,
+  "description": "Reverse charge VAT on EU services"
 }}
 
 **ABSOLUTE REQUIREMENTS:**
@@ -257,7 +269,7 @@ CHART OF ACCOUNTS YOU MUST USE (EXACT CODES AND NAMES):
 • 3000 - Share Capital (Equity)
 • 7602 - Consultancy fees (Expense)
 • 7901 - Bank charges (Expense)
-• 8200 - Other non-operating income/expenses (Expense)
+• 8200 - Other non-operating income or expenses (Expense)
 
 **CRITICAL ACCOUNT CODE RULE: You MUST use the exact account codes and names from the chart above. Never modify or create new account codes.**
 
@@ -265,7 +277,7 @@ CORE ACCOUNTING BEHAVIOR:
 • Always think: "What did we receive?" (DEBIT) and "What do we owe?" (CREDIT)
 • Vendor bills: DEBIT expense account, CREDIT accounts payable (2100)
 • Professional services → 7602 (Consultancy fees)
-• Government/Registrar fees → 8200 (Other non-operating income/expenses)
+• Government/Registrar fees → 8200 (Other non-operating income or expenses)
 • Banking fees → 7901 (Bank charges)
 • Apply reverse charge VAT (19%) for EU services: Additional DEBIT 2202, CREDIT 2201
 • Ensure debits always equal credits
@@ -273,9 +285,12 @@ CORE ACCOUNTING BEHAVIOR:
 **MANDATORY VAT PROCESSING RULE:**
 • When ANY tax/VAT amount is detected in a document, you MUST process it through additional_entries
 • NEVER use vat_treatment field when tax is present - always create additional_entries
-• For any detected tax: Create additional entry with debit_amount to "2202" (Input VAT Purchases) and corresponding entry
+• For any detected tax amount, you MUST create BOTH VAT entries:
+  1. Input VAT: debit_amount = tax_amount to account "2202" (Input VAT Purchases)
+  2. Output VAT: credit_amount = tax_amount to account "2201" (Output VAT Sales)
+• This represents complete reverse charge VAT mechanism for EU transactions
 • Main accounting entry should be for net amount only
-• Tax handling is ALWAYS through additional_entries when tax is detected
+• Tax handling is ALWAYS through additional_entries when tax is detected - create BOTH Input and Output VAT entries
 
 VAT EXPERTISE:
 • EU suppliers of services = Reverse charge 19%
@@ -575,14 +590,29 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # Check VAT handling compliance
+        # Check VAT handling compliance - must have BOTH Input and Output VAT entries
         accounting_assignment = bill.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         
-        if tax_amount > 0 and not additional_entries:
-            bill_validation["issues"].append(
-                "Tax amount detected but no additional_entries created - VAT must be handled through additional_entries"
-            )
+        if tax_amount > 0:
+            if not additional_entries:
+                bill_validation["issues"].append(
+                    "Tax amount detected but no additional_entries created - VAT must be handled through additional_entries"
+                )
+            else:
+                # Check for both Input VAT (2202) and Output VAT (2201) entries
+                input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
+                output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                
+                if not input_vat_entries:
+                    bill_validation["issues"].append(
+                        "Tax amount detected but missing Input VAT (2202) entry in additional_entries"
+                    )
+                
+                if not output_vat_entries:
+                    bill_validation["issues"].append(
+                        "Tax amount detected but missing Output VAT (2201) entry in additional_entries"
+                    )
         
         # Check account code consistency
         debit_account = accounting_assignment.get("debit_account", "")
