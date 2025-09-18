@@ -228,3 +228,146 @@ def list_vendor_bills():
             'success': False,
             'error': str(e)
         }
+    
+def get_vendor_bill_details(bill_id):
+    """Get complete details of a vendor bill including line items and accounting entries"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Get the main bill details
+        bill = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[('id', '=', bill_id), ('move_type', '=', 'in_invoice')]], 
+            {'fields': [
+                'id', 'name', 'partner_id', 'amount_total', 'amount_untaxed', 
+                'amount_tax', 'state', 'ref', 'invoice_date', 'invoice_date_due',
+                'payment_state', 'currency_id', 'journal_id', 'company_id',
+                'invoice_origin', 'narration', 'payment_reference',
+                'line_ids', 'invoice_line_ids'
+            ]}
+        )
+        
+        if not bill:
+            return {'success': False, 'error': 'Bill not found'}
+        
+        bill_data = bill[0]
+        
+        # Get invoice line items (product lines)
+        if bill_data.get('invoice_line_ids'):
+            invoice_lines = models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'search_read',
+                [[('id', 'in', bill_data['invoice_line_ids'])]], 
+                {'fields': [
+                    'id', 'name', 'product_id', 'quantity', 'price_unit',
+                    'price_subtotal', 'price_total', 'account_id', 'tax_ids',
+                    'analytic_distribution', 'discount', 'product_uom_id'
+                ]}
+            )
+            bill_data['invoice_lines'] = invoice_lines
+        else:
+            bill_data['invoice_lines'] = []
+        
+        # Get all accounting move lines (journal entries including tax lines)
+        if bill_data.get('line_ids'):
+            move_lines = models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'search_read',
+                [[('id', 'in', bill_data['line_ids'])]], 
+                {'fields': [
+                    'id', 'name', 'account_id', 'debit', 'credit', 'balance',
+                    'partner_id', 'product_id', 'quantity', 'price_unit',
+                    'tax_line_id', 'tax_ids', 'tax_base_amount', 'tax_repartition_line_id',
+                    'analytic_distribution', 'exclude_from_invoice_tab'
+                ]}
+            )
+            
+            # Separate different types of lines for clarity
+            product_lines = []
+            tax_lines = []
+            payable_lines = []
+            other_lines = []
+            
+            for line in move_lines:
+                if line.get('tax_line_id'):  # This is a tax line
+                    tax_lines.append(line)
+                elif line.get('exclude_from_invoice_tab') == False:  # Product/service lines
+                    product_lines.append(line)
+                elif line['credit'] > 0 and not line.get('tax_line_id'):  # Usually accounts payable
+                    payable_lines.append(line)
+                else:
+                    other_lines.append(line)
+            
+            bill_data['accounting_lines'] = {
+                'product_lines': product_lines,
+                'tax_lines': tax_lines,
+                'payable_lines': payable_lines,
+                'other_lines': other_lines,
+                'all_lines': move_lines
+            }
+        else:
+            bill_data['accounting_lines'] = {
+                'product_lines': [],
+                'tax_lines': [],
+                'payable_lines': [],
+                'other_lines': [],
+                'all_lines': []
+            }
+        
+        # Get tax details if there are taxes
+        tax_details = []
+        if bill_data.get('line_ids'):
+            # Get unique tax IDs from move lines
+            tax_ids = set()
+            for line in bill_data['accounting_lines']['all_lines']:
+                if line.get('tax_line_id'):
+                    tax_ids.add(line['tax_line_id'][0])
+                if line.get('tax_ids'):
+                    tax_ids.update(line['tax_ids'])
+            
+            if tax_ids:
+                taxes = models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'search_read',
+                    [[('id', 'in', list(tax_ids))]], 
+                    {'fields': ['id', 'name', 'amount', 'type_tax_use', 'tax_group_id']}
+                )
+                tax_details = taxes
+        
+        bill_data['tax_details'] = tax_details
+        
+        # Calculate totals summary
+        total_debit = sum(line['debit'] for line in bill_data['accounting_lines']['all_lines'])
+        total_credit = sum(line['credit'] for line in bill_data['accounting_lines']['all_lines'])
+        
+        return {
+            'success': True,
+            'bill': bill_data,
+            'summary': {
+                'total_debit': total_debit,
+                'total_credit': total_credit,
+                'balance_check': total_debit - total_credit,  # Should be 0
+                'line_count': len(bill_data['accounting_lines']['all_lines']),
+                'tax_count': len(tax_details),
+                'invoice_line_count': len(bill_data['invoice_lines'])
+            }
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+

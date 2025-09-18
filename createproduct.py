@@ -268,3 +268,202 @@ def list_products():
             'success': False,
             'error': str(e)
         }
+    
+def create_vendor_bill(bill_data):
+    """Create a vendor bill in Odoo based on JSON input"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Validate required fields
+        required_fields = ['partner_id', 'invoice_lines']
+        for field in required_fields:
+            if field not in bill_data:
+                return {'success': False, 'error': f'Required field "{field}" is missing'}
+        
+        if not bill_data['invoice_lines']:
+            return {'success': False, 'error': 'At least one invoice line is required'}
+        
+        # Prepare the bill data
+        bill_vals = {
+            'move_type': 'in_invoice',  # Vendor bill
+            'company_id': 60,  # Fixed company ID
+            'partner_id': bill_data['partner_id'],
+            'invoice_date': bill_data.get('invoice_date', False),
+            'invoice_date_due': bill_data.get('invoice_date_due', False),
+            'ref': bill_data.get('ref', False),
+            'narration': bill_data.get('narration', False),
+            'currency_id': bill_data.get('currency_id', False),
+            'journal_id': bill_data.get('journal_id', False),
+            'payment_reference': bill_data.get('payment_reference', False),
+        }
+        
+        # Prepare invoice lines
+        invoice_lines = []
+        for line in bill_data['invoice_lines']:
+            if 'account_id' not in line:
+                return {'success': False, 'error': 'account_id is required for each invoice line'}
+            
+            line_vals = {
+                'name': line.get('name', '/'),
+                'account_id': line['account_id'],
+                'quantity': line.get('quantity', 1.0),
+                'price_unit': line.get('price_unit', 0.0),
+                'product_id': line.get('product_id', False),
+                'product_uom_id': line.get('product_uom_id', False),
+                'tax_ids': [(6, 0, line.get('tax_ids', []))],
+                'analytic_distribution': line.get('analytic_distribution', False),
+                'discount': line.get('discount', 0.0),
+            }
+            
+            invoice_lines.append((0, 0, line_vals))
+        
+        bill_vals['invoice_line_ids'] = invoice_lines
+        
+        # Remove None/False values
+        bill_vals = {k: v for k, v in bill_vals.items() if v is not False and v is not None}
+        
+        # Create the bill
+        bill_id = models.execute_kw(
+            db, uid, password,
+            'account.move', 'create',
+            [bill_vals]
+        )
+        
+        if not bill_id:
+            return {'success': False, 'error': 'Failed to create bill'}
+        
+        # Get the created bill details
+        created_bill = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[('id', '=', bill_id)]], 
+            {'fields': [
+                'id', 'name', 'partner_id', 'amount_total', 'amount_untaxed',
+                'amount_tax', 'state', 'ref', 'invoice_date', 'invoice_date_due',
+                'payment_state', 'currency_id', 'journal_id'
+            ]}
+        )
+        
+        return {
+            'success': True,
+            'bill_id': bill_id,
+            'bill': created_bill[0] if created_bill else None,
+            'message': f'Vendor bill created successfully with ID: {bill_id}'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def create_customer_invoice(invoice_data):
+    """Create a customer invoice in Odoo based on JSON input"""
+    
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Validate required fields
+        required_fields = ['partner_id', 'invoice_lines']
+        for field in required_fields:
+            if field not in invoice_data:
+                return {'success': False, 'error': f'Required field "{field}" is missing'}
+        
+        if not invoice_data['invoice_lines']:
+            return {'success': False, 'error': 'At least one invoice line is required'}
+        
+        # Prepare the invoice data
+        invoice_vals = {
+            'move_type': 'out_invoice',  # Customer invoice
+            'company_id': 60,  # Fixed company ID
+            'partner_id': invoice_data['partner_id'],
+            'invoice_date': invoice_data.get('invoice_date', False),
+            'invoice_date_due': invoice_data.get('invoice_date_due', False),
+            'ref': invoice_data.get('ref', False),
+            'narration': invoice_data.get('narration', False),
+            'currency_id': invoice_data.get('currency_id', False),
+            'journal_id': invoice_data.get('journal_id', False),
+            'payment_reference': invoice_data.get('payment_reference', False),
+        }
+        
+        # Prepare invoice lines
+        invoice_lines = []
+        for line in invoice_data['invoice_lines']:
+            if 'account_id' not in line:
+                return {'success': False, 'error': 'account_id is required for each invoice line'}
+            
+            line_vals = {
+                'name': line.get('name', '/'),
+                'account_id': line['account_id'],
+                'quantity': line.get('quantity', 1.0),
+                'price_unit': line.get('price_unit', 0.0),
+                'product_id': line.get('product_id', False),
+                'product_uom_id': line.get('product_uom_id', False),
+                'tax_ids': [(6, 0, line.get('tax_ids', []))],
+                'analytic_distribution': line.get('analytic_distribution', False),
+                'discount': line.get('discount', 0.0),
+            }
+            
+            invoice_lines.append((0, 0, line_vals))
+        
+        invoice_vals['invoice_line_ids'] = invoice_lines
+        
+        # Remove None/False values
+        invoice_vals = {k: v for k, v in invoice_vals.items() if v is not False and v is not None}
+        
+        # Create the invoice
+        invoice_id = models.execute_kw(
+            db, uid, password,
+            'account.move', 'create',
+            [invoice_vals]
+        )
+        
+        if not invoice_id:
+            return {'success': False, 'error': 'Failed to create invoice'}
+        
+        # Get the created invoice details
+        created_invoice = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[('id', '=', invoice_id)]], 
+            {'fields': [
+                'id', 'name', 'partner_id', 'amount_total', 'amount_untaxed',
+                'amount_tax', 'state', 'ref', 'invoice_date', 'invoice_date_due',
+                'payment_state', 'currency_id', 'journal_id'
+            ]}
+        )
+        
+        return {
+            'success': True,
+            'invoice_id': invoice_id,
+            'invoice': created_invoice[0] if created_invoice else None,
+            'message': f'Customer invoice created successfully with ID: {invoice_id}'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }

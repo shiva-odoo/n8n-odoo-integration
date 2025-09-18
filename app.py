@@ -300,6 +300,78 @@ def get_bills():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/bills/<int:bill_id>', methods=['GET'])
+def get_detailed_bills(bill_id):
+    """Get detailed information for a specific vendor bill"""
+    try:
+        # Validate bill_id
+        if not bill_id or bill_id <= 0:
+            return jsonify({
+                'success': False, 
+                'error': 'Invalid bill ID provided'
+            }), 400
+        
+        # Call the function to get bill details
+        result = deletebill.get_vendor_bill_details(bill_id)
+        
+        # Return appropriate HTTP status based on result
+        if result['success']:
+            return jsonify(result), 200
+        else:
+            # Check if it's a "not found" error
+            if 'not found' in result.get('error', '').lower():
+                return jsonify(result), 404
+            else:
+                return jsonify(result), 500
+                
+    except ValueError:
+        return jsonify({
+            'success': False, 
+            'error': 'Bill ID must be a valid integer'
+        }), 400
+    except Exception as e:
+        return jsonify({
+            'success': False, 
+            'error': f'Server error: {str(e)}'
+        }), 500
+    
+
+@app.route('/api/invoices/<int:invoice_id>', methods=['GET'])
+def get_detailed_invoice(invoice_id):
+    """Get detailed information for a specific customer invoice"""
+    try:
+        # Validate invoice_id
+        if not invoice_id or invoice_id <= 0:
+            return jsonify({
+                'success': False, 
+                'error': 'Invalid invoice ID provided'
+            }), 400
+        
+        # Call the function to get invoice details
+        result = createproduct.get_customer_invoice_details(invoice_id)
+        
+        # Return appropriate HTTP status based on result
+        if result['success']:
+            return jsonify(result), 200
+        else:
+            # Check if it's a "not found" error
+            if 'not found' in result.get('error', '').lower():
+                return jsonify(result), 404
+            else:
+                return jsonify(result), 500
+                
+    except ValueError:
+        return jsonify({
+            'success': False, 
+            'error': 'Invoice ID must be a valid integer'
+        }), 400
+    except Exception as e:
+        return jsonify({
+            'success': False, 
+            'error': f'Server error: {str(e)}'
+        }), 500
+
 
 @app.route('/api/journals', methods=['GET'])
 def get_journals():
@@ -2010,6 +2082,32 @@ def process_invoice_endpoint():
 # ================================
 # HELPER FUNCTIONS
 # ================================
+
+@app.route('/api/invoices/create', methods=['POST'])
+def create_customer_invoice_endpoint():
+    """Create a new customer invoice"""
+    try:
+        invoice_data = request.get_json()
+        
+        if not invoice_data:
+            return jsonify({
+                'success': False, 
+                'error': 'No JSON data provided'
+            }), 400
+        
+        result = createproduct.create_customer_invoice(invoice_data)
+        
+        if result['success']:
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        return jsonify({
+            'success': False, 
+            'error': f'Server error: {str(e)}'
+        }), 500
+
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
