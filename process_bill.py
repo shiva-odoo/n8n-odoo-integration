@@ -233,10 +233,10 @@ CHART OF ACCOUNTS YOU MUST USE:
 • 1100 - Accounts receivable (Asset)
 • 1204 - Bank (Asset) 
 • 2100 - Accounts payable (Liability)
-• 2201 - Output VAT/Sales (Liability)
-• 2202 - Input VAT/Purchases (Asset)
+• 2201 - Output VAT (Sales) (Liability)
+• 2202 - Input VAT (Purchases) (Asset)
 • 3000 - Share Capital (Equity)
-• 6200 - Consultancy fees (Expense)
+• 7602 - Consultancy fees (Expense)
 • 7901 - Bank charges (Expense)
 • 8200 - Other non-operating income/expenses (Expense)
 
