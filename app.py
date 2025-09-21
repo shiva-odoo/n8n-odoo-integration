@@ -1363,7 +1363,7 @@ def update_file_status_endpoint(batch_id):
                 }), 400
         
         if 'document_type' in data:
-            allowed_types = ['bill', 'invoice', 'bank_statement', 'legal_document', 'unknown']
+            allowed_types = ['bill', 'invoice', 'bank_statement', 'share_document', 'unknown']
             if data['document_type'] in allowed_types:
                 file_status_data['document_type'] = data['document_type']
             else:
