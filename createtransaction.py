@@ -14,111 +14,207 @@ if os.path.exists('.env'):
 
 def main(data):
     """
-    Create bank transaction entry in Odoo using flexible line items structure
+    Create multiple bank transaction entries in Odoo using flexible line items structure
     
     Expected data format:
     {
-        "company_id": 1,
-        "date": "2025-07-20",
-        "ref": "BOC Transfer 09444",
-        "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice 34",
-        "partner": "New Share Capital of Kyrastel Investments Ltd",
-        "line_items": [
+        "transactions": [
             {
-                "name": "Bank of Cyprus",
-                "debit": 15000.00,
-                "credit": 0.00
+                "company_id": 1,
+                "date": "2025-07-20",
+                "ref": "BOC Transfer 09444",
+                "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice 34",
+                "partner": "New Share Capital of Kyrastel Investments Ltd",
+                "line_items": [
+                    {
+                        "name": "Bank of Cyprus",
+                        "debit": 15000.00,
+                        "credit": 0.00
+                    },
+                    {
+                        "name": "Share Capital",
+                        "debit": 0.00,
+                        "credit": 15000.00
+                    }
+                ]
             },
             {
-                "name": "Share Capital",
-                "debit": 0.00,
-                "credit": 15000.00
+                "company_id": 1,
+                "date": "2025-07-21",
+                "ref": "BOC Transfer 09445",
+                "narration": "Additional investment from partner",
+                "partner": "Investment Partner Ltd",
+                "line_items": [
+                    {
+                        "name": "Bank of Cyprus",
+                        "debit": 10000.00,
+                        "credit": 0.00
+                    },
+                    {
+                        "name": "Share Capital",
+                        "debit": 0.00,
+                        "credit": 10000.00
+                    }
+                ]
             }
         ]
     }
     """
     
-    # Validate required fields ( important )
-    required_fields = ['company_id', 'date', 'ref', 'narration', 'line_items']
+    # Validate input structure
+    if not isinstance(data, dict) or 'transactions' not in data:
+        return {
+            'success': False,
+            'error': 'Input must be a dictionary with "transactions" array'
+        }
     
-    missing_fields = [field for field in required_fields if not data.get(field)]
-    if missing_fields:
+    if not isinstance(data['transactions'], list) or len(data['transactions']) == 0:
         return {
             'success': False,
-            'error': f'Missing required fields: {", ".join(missing_fields)}'
+            'error': 'transactions must be a non-empty array'
         }
+    
+    # Process each transaction
+    results = []
+    successful_transactions = 0
+    failed_transactions = 0
+    
+    print(f"=== PROCESSING {len(data['transactions'])} TRANSACTIONS ===")
+    
+    for i, transaction_data in enumerate(data['transactions']):
+        print(f"\n--- Processing Transaction {i+1}/{len(data['transactions'])} ---")
+        
+        # Process single transaction
+        result = process_single_transaction(transaction_data, i+1)
+        results.append(result)
+        
+        if result['success']:
+            successful_transactions += 1
+            print(f"✅ Transaction {i+1} completed successfully")
+        else:
+            failed_transactions += 1
+            print(f"❌ Transaction {i+1} failed: {result['error']}")
+    
+    # Calculate success rate
+    total_transactions = len(data['transactions'])
+    success_rate = (successful_transactions / total_transactions * 100) if total_transactions > 0 else 0
+    
+    print(f"\n=== BATCH PROCESSING SUMMARY ===")
+    print(f"Total Transactions: {total_transactions}")
+    print(f"Successful: {successful_transactions}")
+    print(f"Failed: {failed_transactions}")
+    print(f"Success Rate: {success_rate:.1f}%")
+    
+    return {
+        'success': failed_transactions == 0,  # Only true if all transactions succeeded
+        'batch_summary': {
+            'total_transactions': total_transactions,
+            'successful_transactions': successful_transactions,
+            'failed_transactions': failed_transactions,
+            'success_rate': f"{success_rate:.1f}%"
+        },
+        'transaction_results': results,
+        'message': f'Processed {total_transactions} transactions: {successful_transactions} successful, {failed_transactions} failed'
+    }
 
-    # Validate line_items
-    if not isinstance(data['line_items'], list) or len(data['line_items']) < 2:
-        return {
-            'success': False,
-            'error': 'line_items must be a list with at least 2 entries'
-        }
-
-    # Validate each line item
-    for i, line in enumerate(data['line_items']):
-        required_line_fields = ['name', 'debit', 'credit']
-        missing_line_fields = [field for field in required_line_fields if field not in line]
-        if missing_line_fields:
+def process_single_transaction(transaction_data, transaction_index):
+    """
+    Process a single transaction and create journal entry
+    """
+    try:
+        # Validate required fields for this transaction
+        required_fields = ['company_id', 'date', 'ref', 'narration', 'line_items']
+        
+        missing_fields = [field for field in required_fields if not transaction_data.get(field)]
+        if missing_fields:
             return {
                 'success': False,
-                'error': f'Line item {i+1} missing fields: {", ".join(missing_line_fields)}'
+                'transaction_index': transaction_index,
+                'error': f'Missing required fields: {", ".join(missing_fields)}',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
-        
-        # Validate debit/credit are numbers
+
+        # Validate line_items
+        if not isinstance(transaction_data['line_items'], list) or len(transaction_data['line_items']) < 2:
+            return {
+                'success': False,
+                'transaction_index': transaction_index,
+                'error': 'line_items must be a list with at least 2 entries',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
+            }
+
+        # Validate each line item
+        for i, line in enumerate(transaction_data['line_items']):
+            required_line_fields = ['name', 'debit', 'credit']
+            missing_line_fields = [field for field in required_line_fields if field not in line]
+            if missing_line_fields:
+                return {
+                    'success': False,
+                    'transaction_index': transaction_index,
+                    'error': f'Line item {i+1} missing fields: {", ".join(missing_line_fields)}',
+                    'transaction_ref': transaction_data.get('ref', 'Unknown')
+                }
+            
+            # Validate debit/credit are numbers
+            try:
+                float(line['debit'])
+                float(line['credit'])
+            except (ValueError, TypeError):
+                return {
+                    'success': False,
+                    'transaction_index': transaction_index,
+                    'error': f'Line item {i+1} debit/credit must be valid numbers',
+                    'transaction_ref': transaction_data.get('ref', 'Unknown')
+                }
+
+        # Validate company_id is a number
         try:
-            float(line['debit'])
-            float(line['credit'])
+            company_id = int(transaction_data['company_id'])
         except (ValueError, TypeError):
             return {
                 'success': False,
-                'error': f'Line item {i+1} debit/credit must be valid numbers'
+                'transaction_index': transaction_index,
+                'error': 'company_id must be a valid integer',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
 
-    # Validate company_id is a number
-    try:
-        company_id = int(data['company_id'])
-    except (ValueError, TypeError):
-        return {
-            'success': False,
-            'error': 'company_id must be a valid integer'
-        }
+        # Validate that debits equal credits
+        total_debits = sum(float(line['debit']) for line in transaction_data['line_items'])
+        total_credits = sum(float(line['credit']) for line in transaction_data['line_items'])
+        
+        if abs(total_debits - total_credits) > 0.01:  # Allow for small rounding differences
+            return {
+                'success': False,
+                'transaction_index': transaction_index,
+                'error': f'Debits ({total_debits}) must equal credits ({total_credits})',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
+            }
 
-    # Validate that debits equal credits
-    total_debits = sum(float(line['debit']) for line in data['line_items'])
-    total_credits = sum(float(line['credit']) for line in data['line_items'])
-    
-    if abs(total_debits - total_credits) > 0.01:  # Allow for small rounding differences
-        return {
-            'success': False,
-            'error': f'Debits ({total_debits}) must equal credits ({total_credits})'
-        }
+        # STEP 1: Store original date for comparison and fix future dates
+        original_date = transaction_data['date']
+        transaction_data['date'] = validate_and_fix_date(transaction_data['date'])
+        date_was_modified = original_date != transaction_data['date']
 
-    # STEP 1: Store original date for comparison and fix future dates
-    original_date = data['date']
-    data['date'] = validate_and_fix_date(data['date'])
-    date_was_modified = original_date != data['date']
-
-    # Connection details
-    url = os.getenv("ODOO_URL")
-    db = os.getenv("ODOO_DB")
-    username = os.getenv("ODOO_USERNAME")
-    password = os.getenv("ODOO_API_KEY")
-    
-    if not all([url, db, username, password]):
-        return {
-            'success': False,
-            'error': 'Missing Odoo connection environment variables'
-        }
-    
-    try:
-        print(f"=== PROCESSING FLEXIBLE TRANSACTION ===")
+        # Connection details
+        url = os.getenv("ODOO_URL")
+        db = os.getenv("ODOO_DB")
+        username = os.getenv("ODOO_USERNAME")
+        password = os.getenv("ODOO_API_KEY")
+        
+        if not all([url, db, username, password]):
+            return {
+                'success': False,
+                'transaction_index': transaction_index,
+                'error': 'Missing Odoo connection environment variables',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
+            }
+        
         print(f"Company ID: {company_id}")
-        print(f"Date: {data['date']}")
-        print(f"Reference: {data['ref']}")
-        print(f"Narration: {data['narration']}")
-        print(f"Partner: {data.get('partner', 'None')}")
-        print(f"Line Items: {len(data['line_items'])}")
+        print(f"Date: {transaction_data['date']}")
+        print(f"Reference: {transaction_data['ref']}")
+        print(f"Narration: {transaction_data['narration']}")
+        print(f"Partner: {transaction_data.get('partner', 'None')}")
+        print(f"Line Items: {len(transaction_data['line_items'])}")
         
         # Initialize connection
         common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
@@ -129,7 +225,9 @@ def main(data):
         if not uid:
             return {
                 'success': False,
-                'error': 'Odoo authentication failed'
+                'transaction_index': transaction_index,
+                'error': 'Odoo authentication failed',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
         print("✅ Odoo authentication successful")
@@ -139,7 +237,9 @@ def main(data):
         if not company_details:
             return {
                 'success': False,
-                'error': f'Company with ID {company_id} not found'
+                'transaction_index': transaction_index,
+                'error': f'Company with ID {company_id} not found',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
         print(f"✅ Found Company: {company_details['name']}")
@@ -149,18 +249,20 @@ def main(data):
         
         # Step 2: Check for duplicate transaction by reference
         duplicate_check = check_for_duplicate_by_ref(
-            models, db, uid, password, data['ref'], company_id, context
+            models, db, uid, password, transaction_data['ref'], company_id, context
         )
         
         if duplicate_check['is_duplicate']:
             return {
                 'success': False,
+                'transaction_index': transaction_index,
                 'error': 'Duplicate transaction',
-                'message': f'Transaction with reference "{data["ref"]}" already exists',
+                'message': f'Transaction with reference "{transaction_data["ref"]}" already exists',
                 'existing_entry_id': duplicate_check['existing_entry_id'],
                 'company_id': company_id,
                 'company_name': company_details['name'],
-                'duplicate_details': duplicate_check
+                'duplicate_details': duplicate_check,
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
         print("✅ No duplicate found, proceeding with transaction creation")
@@ -169,8 +271,8 @@ def main(data):
         partner_id = None
         partner_info = None
         
-        if data.get('partner'):
-            partner_result = find_or_create_partner(models, db, uid, password, data['partner'], context)
+        if transaction_data.get('partner'):
+            partner_result = find_or_create_partner(models, db, uid, password, transaction_data['partner'], context)
             if partner_result:
                 partner_id = partner_result['id']
                 partner_info = partner_result
@@ -178,7 +280,9 @@ def main(data):
             else:
                 return {
                     'success': False,
-                    'error': f'Failed to find or create partner: {data["partner"]}'
+                    'transaction_index': transaction_index,
+                    'error': f'Failed to find or create partner: {transaction_data["partner"]}',
+                    'transaction_ref': transaction_data.get('ref', 'Unknown')
                 }
         
         # Step 4: Pre-create all accounts first (batch creation)
@@ -186,13 +290,15 @@ def main(data):
         created_accounts = []
         
         # First pass: Create all accounts that don't exist
-        for i, line_item in enumerate(data['line_items']):
+        for i, line_item in enumerate(transaction_data['line_items']):
             account_result = find_or_create_account_with_retry(models, db, uid, password, line_item['name'], context)
             
             if not account_result:
                 return {
                     'success': False,
-                    'error': f'Could not find or create account for: "{line_item["name"]}"'
+                    'transaction_index': transaction_index,
+                    'error': f'Could not find or create account for: "{line_item["name"]}"',
+                    'transaction_ref': transaction_data.get('ref', 'Unknown')
                 }
             
             account_id = account_result['id']
@@ -201,7 +307,7 @@ def main(data):
             
             resolved_line = {
                 'account_id': account_id,
-                'name': data['narration'],  # Use narration as line description
+                'name': transaction_data['narration'],  # Use narration as line description
                 'debit': float(line_item['debit']),
                 'credit': float(line_item['credit']),
             }
@@ -230,12 +336,14 @@ def main(data):
             print("✅ Account cache refreshed")
         
         # Step 5: Get default journal (or determine from line items)
-        journal_id = get_default_journal_for_transaction(models, db, uid, password, data, context)
+        journal_id = get_default_journal_for_transaction(models, db, uid, password, transaction_data, context)
         
         if not journal_id:
             return {
                 'success': False,
-                'error': 'Could not find appropriate journal'
+                'transaction_index': transaction_index,
+                'error': 'Could not find appropriate journal',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
         # Step 6: Get journal details including code
@@ -243,7 +351,9 @@ def main(data):
         if not journal_details:
             return {
                 'success': False,
-                'error': 'Could not retrieve journal details'
+                'transaction_index': transaction_index,
+                'error': 'Could not retrieve journal details',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
         print(f"✅ Using Journal: {journal_details['name']} (Code: {journal_details['code']})")
@@ -253,7 +363,7 @@ def main(data):
             models, db, uid, password,
             journal_id,
             resolved_line_items,
-            data,
+            transaction_data,
             partner_id,
             context
         )
@@ -261,7 +371,9 @@ def main(data):
         if not journal_entry_id:
             return {
                 'success': False,
-                'error': 'Failed to create journal entry'
+                'transaction_index': transaction_index,
+                'error': 'Failed to create journal entry',
+                'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
         print(f"✅ Journal Entry ID: {journal_entry_id}")
@@ -270,8 +382,9 @@ def main(data):
         # Step 8: Prepare enhanced return response
         return {
             'success': True,
+            'transaction_index': transaction_index,
             'journal_entry_id': journal_entry_id,
-            'date': data['date'],
+            'date': transaction_data['date'],
             'original_date': original_date,
             'date_was_modified': date_was_modified,
             'company_id': company_id,
@@ -280,21 +393,21 @@ def main(data):
             'journal_code': journal_details['code'],
             'journal_name': journal_details['name'],
             'journal_type': journal_details['type'],
-            'reference': data['ref'],
-            'description': data['narration'],
+            'reference': transaction_data['ref'],
+            'description': transaction_data['narration'],
             'partner': partner_info,
             'total_amount': total_debits,
-            'line_count': len(data['line_items']),
+            'line_count': len(transaction_data['line_items']),
             'created_accounts': created_accounts,
             'line_items_processed': [
                 {
-                    'account_name': data['line_items'][i]['name'],
+                    'account_name': transaction_data['line_items'][i]['name'],
                     'account_id': resolved_line_items[i]['account_id'],
                     'debit': resolved_line_items[i]['debit'],
                     'credit': resolved_line_items[i]['credit'],
                     'partner_id': partner_id
                 }
-                for i in range(len(data['line_items']))
+                for i in range(len(transaction_data['line_items']))
             ],
             'message': 'Flexible bank transaction entry created successfully'
         }
@@ -304,7 +417,9 @@ def main(data):
         print(f"❌ {error_msg}")
         return {
             'success': False,
-            'error': error_msg
+            'transaction_index': transaction_index,
+            'error': error_msg,
+            'transaction_ref': transaction_data.get('ref', 'Unknown')
         }
     except Exception as e:
         error_msg = f'Unexpected error: {str(e)}'
@@ -313,7 +428,9 @@ def main(data):
         traceback.print_exc()
         return {
             'success': False,
-            'error': error_msg
+            'transaction_index': transaction_index,
+            'error': error_msg,
+            'transaction_ref': transaction_data.get('ref', 'Unknown')
         }
 
 def find_or_create_account_with_retry(models, db, uid, password, account_name, context, max_retries=3):
@@ -604,11 +721,6 @@ def create_journal_entry_flexible_with_retry(models, db, uid, password, journal_
                 time.sleep(0.5)
     
     return None
-
-# [Rest of the functions remain the same - determine_account_type_and_code, generate_unique_account_code, 
-#  find_or_create_partner, get_journal_details, check_for_duplicate_by_ref, verify_company_exists,
-#  get_default_journal_for_transaction, validate_and_fix_date, create_journal_entry_flexible, 
-#  list_available_accounts]
 
 def determine_account_type_and_code(models, db, uid, password, account_name, context):
     """

@@ -1,970 +1,1572 @@
-import boto3
-import base64
-import anthropic
 import os
-import json
-import re
+import xmlrpc.client
+from datetime import datetime
+import hashlib
+import time
 
-def get_bank_statement_extraction_prompt(matched_id=None):
-    """Create bank statement transaction extraction prompt for financial data extraction"""
-    # Use the matched_id if provided, otherwise use placeholder
-    company_id_value = matched_id if matched_id is not None else "{{ $json.matched_id }}"
-    
-    return f"""# Bank Statement Transaction Extraction
-
-## Task
-Extract ALL transactions from bank statement text and convert each transaction into the exact JSON format required for double-entry accounting. Process every single transaction found in the statement.
-
-## INPUT ANALYSIS
-You will receive bank statement text. Extract:
-1. **Bank Information**: Bank name, account holder, account number
-2. **All Transactions**: Date, description, amounts, references, transaction type
-3. **Currency Information**: Identify the currency used in transactions
-
-## CRITICAL OUTPUT REQUIREMENTS
-- Return ONLY a valid JSON array
-- No markdown code blocks (no ```json```)
-- No explanatory text before or after the JSON
-- No comments or additional formatting
-- Start response with [ and end with ]
-- Ensure valid JSON syntax with proper escaping
-- All string values must be properly escaped (quotes, backslashes, etc.)
-
-## Required Output Format
-For EACH transaction found, create a JSON object with this EXACT structure:
-
-[
-  {{
-    "company_id": {company_id_value},
-    "date": "YYYY-MM-DD",
-    "ref": "string",
-    "narration": "string", 
-    "partner": "string",
-    "accounting_assignment": {{
-      "debit_account": "1204",
-      "debit_account_name": "Bank",
-      "credit_account": "3000",
-      "credit_account_name": "Share Capital",
-      "transaction_type": "share_capital_receipt",
-      "requires_vat": false,
-      "additional_entries": []
-    }},
-    "line_items": [
-      {{
-        "name": "Bank",
-        "debit": 15000.00,
-        "credit": 0.00
-      }},
-      {{
-        "name": "Share Capital",
-        "debit": 0.00,
-        "credit": 15000.00
-      }}
-    ]
-  }}
-]
-
-## Accounting Assignment Rules
-
-### Transaction Type Classification:
-1. **share_capital_receipt**: Share capital payments, capital increases
-   - DEBIT: 1204 (Bank), CREDIT: 3000 (Share Capital)
-
-2. **customer_payment**: Payments received from customers
-   - DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
-
-3. **supplier_payment**: Payments made to suppliers/vendors
-   - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
-
-4. **consultancy_payment**: Payments for consultancy services
-   - DEBIT: 6200 (Consultancy fees), CREDIT: 1204 (Bank)
-
-5. **bank_charges**: Bank fees and charges
-   - DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
-
-6. **other_expense**: Government fees, registrar fees, etc.
-   - DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
-
-7. **other_income**: Reimbursements, miscellaneous income
-   - DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
-
-### Transaction Pattern Recognition:
-
-**Share Capital Indicators:**
-- "share capital", "capital increase", "new share capital"
-- "shareholder investment", "equity injection"
-- DEBIT: 1204 (Bank), CREDIT: 3000 (Share Capital)
-
-**Supplier/Vendor Payment Indicators:**
-- "payment to [vendor name]", "invoice payment"
-- Specific vendor names (Architecture Design, Hadjioikonomou, etc.)
-- DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
-
-**Consultancy Payment Indicators:**
-- "consultancy", "professional services", "design services"
-- "architecture", "engineering", "advisory"
-- DEBIT: 6200 (Consultancy fees), CREDIT: 1204 (Bank)
-
-**Bank Charges Indicators:**
-- "bank fee", "card fee", "membership fee", "maintenance fee"
-- "commission", "service charge"
-- DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
-
-**Government/Registrar Fee Indicators:**
-- "registrar", "government fee", "license fee"
-- "regulatory fee", "filing fee"
-- DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
-
-**Reimbursement Indicators:**
-- "reimbursement", "refund received"
-- DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
-
-## Field Generation Rules
-
-### Standard Fields
-- **company_id**: Always set to `{company_id_value}` (as number, not string)
-- **date**: Convert to YYYY-MM-DD format (string)
-- **ref**: Use actual transaction reference if available, otherwise generate from description (string)
-- **narration**: Clean, business-friendly description of the transaction (string)
-- **partner**: Use the actual partner/counterparty name if found. If no partner name found, set to "unknown"
-
-### Accounting Assignment Fields
-- **debit_account**: Account code being debited (string)
-- **debit_account_name**: Full name of debit account (string)
-- **credit_account**: Account code being credited (string)
-- **credit_account_name**: Full name of credit account (string)
-- **transaction_type**: Classification of transaction type (string)
-- **requires_vat**: Whether transaction involves VAT (boolean)
-- **additional_entries**: Array for complex transactions requiring multiple entries (array)
-
-### Reference (ref) Generation Rules
-
-**Priority 1 - Use Actual Transaction Reference:**
-- Look for transaction references, reference numbers, or unique identifiers
-- Use the exact reference as provided (e.g., "255492965", "TXN123456", "REF789")
-
-**Priority 2 - Generate from Description:**
-- Create unique reference using transaction description
-- Convert to lowercase, replace spaces with underscores
-- Remove special characters except underscores and numbers
-- Examples:
-  - "FEE REGISTRAR COMPANIES" → "fee_registrar_companies"
-  - "CARD PYT SUPERMARKET XYZ" → "card_pyt_supermarket_xyz"
-
-### Narration Rules
-- Remove internal bank reference numbers and codes
-- Make descriptions business-friendly and readable
-- Keep essential information like payee names, purpose
-- Examples:
-  - "FEE REGISTRAR COMPANIES REF:12345" → "Registrar of companies fee"
-  - "TRF TO JOHN SMITH REF:ABC123" → "Transfer to John Smith"
-
-## Line Items Rules
-
-### For Money LEAVING the Bank Account (Outgoing payments):
-```json
-"line_items": [
-  {{
-    "name": "{{Expense/Asset Account Name}}",
-    "debit": {{amount}},
-    "credit": 0.00
-  }},
-  {{
-    "name": "Bank",
-    "debit": 0.00,
-    "credit": {{amount}}
-  }}
-]
-```
-
-### For Money ENTERING the Bank Account (Incoming payments):
-```json
-"line_items": [
-  {{
-    "name": "Bank",
-    "debit": {{amount}},
-    "credit": 0.00
-  }},
-  {{
-    "name": "{{Revenue/Liability Account Name}}",
-    "debit": 0.00,
-    "credit": {{amount}}
-  }}
-]
-```
-
-## Processing Instructions
-
-1. **Extract ALL transactions** from the statement (both inflows and outflows)
-2. **Classify each transaction** using the pattern recognition rules
-3. **Assign correct debit/credit accounts** based on transaction type
-4. **Generate appropriate accounting_assignment** object
-5. **Create balanced line_items** ensuring debits = credits
-6. **Clean descriptions** and create business-friendly narrations
-7. **Set company_id** to `{company_id_value}` for every transaction
-8. **Ensure all numeric values are numbers, not strings**
-9. **Use ONLY the account codes and names from the chart of accounts**
-
-## Example Transactions:
-
-### Share Capital Receipt:
-```json
-{{
-  "company_id": {company_id_value},
-  "date": "2025-07-16",
-  "ref": "255492965",
-  "narration": "New Share Capital of Kyrastel Investments Ltd - Bank Credit Advice",
-  "partner": "Kyrastel Investments Ltd",
-  "accounting_assignment": {{
-    "debit_account": "1204",
-    "debit_account_name": "Bank",
-    "credit_account": "3000",
-    "credit_account_name": "Share Capital",
-    "transaction_type": "share_capital_receipt",
-    "requires_vat": false,
-    "additional_entries": []
-  }},
-  "line_items": [
-    {{
-      "name": "Bank",
-      "debit": 15000.00,
-      "credit": 0.00
-    }},
-    {{
-      "name": "Share Capital",
-      "debit": 0.00,
-      "credit": 15000.00
-    }}
-  ]
-}}
-```
-
-### Consultancy/Professional Service Payment:
-```json
-{{
-  "company_id": {company_id_value},
-  "date": "2025-07-18",
-  "ref": "255634959",
-  "narration": "Payment to Architecture Design - Andreas Spanos, Invoice 621467",
-  "partner": "Architecture Design Andreas Spanos",
-  "accounting_assignment": {{
-    "debit_account": "7602",
-    "debit_account_name": "Consultancy fees",
-    "credit_account": "1204",
-    "credit_account_name": "Bank",
-    "transaction_type": "consultancy_payment",
-    "requires_vat": false,
-    "additional_entries": []
-  }},
-  "line_items": [
-    {{
-      "name": "Consultancy fees",
-      "debit": 400.00,
-      "credit": 0.00
-    }},
-    {{
-      "name": "Bank",
-      "debit": 0.00,
-      "credit": 400.00
-    }}
-  ]
-}}
-```
-
-### Supplier Payment (for goods/equipment):
-```json
-{{
-  "company_id": {company_id_value},
-  "date": "2025-07-18",
-  "ref": "supplier_payment_001",
-  "narration": "Payment for office equipment purchase",
-  "partner": "Office Supplies Ltd",
-  "accounting_assignment": {{
-    "debit_account": "2100",
-    "debit_account_name": "Accounts payable",
-    "credit_account": "1204",
-    "credit_account_name": "Bank",
-    "transaction_type": "supplier_payment",
-    "requires_vat": false,
-    "additional_entries": []
-  }},
-  "line_items": [
-    {{
-      "name": "Accounts payable",
-      "debit": 400.00,
-      "credit": 0.00
-    }},
-    {{
-      "name": "Bank",
-      "debit": 0.00,
-      "credit": 400.00
-    }}
-  ]
-}}
-```
-
-### Bank Charges:
-```json
-{{
-  "company_id": {company_id_value},
-  "date": "2025-07-15",
-  "ref": "bank_card_fee",
-  "narration": "Card membership fee",
-  "partner": "Bank of Cyprus",
-  "accounting_assignment": {{
-    "debit_account": "7901",
-    "debit_account_name": "Bank charges",
-    "credit_account": "1204",
-    "credit_account_name": "Bank",
-    "transaction_type": "bank_charges",
-    "requires_vat": false,
-    "additional_entries": []
-  }},
-  "line_items": [
-    {{
-      "name": "Bank charges",
-      "debit": 25.00,
-      "credit": 0.00
-    }},
-    {{
-      "name": "Bank",
-      "debit": 0.00,
-      "credit": 25.00
-    }}
-  ]
-}}
-```
-
-**CRITICAL: Return ONLY the JSON array. No markdown formatting, no code blocks, no explanatory text. The response must start with '[' and end with ']'. Use ONLY the exact account codes and names from the chart of accounts provided.**
-"""
-
-def extract_json_from_response(response_text):
-    """Extract JSON from Claude's response, handling various formats"""
+# Load .env only in development (when .env file exists)
+if os.path.exists('.env'):
     try:
-        # Remove any leading/trailing whitespace
-        response_text = response_text.strip()
-        
-        # Try to parse directly first
-        try:
-            parsed = json.loads(response_text)
-            return parsed
-        except json.JSONDecodeError:
-            pass
-        
-        # Look for JSON wrapped in markdown code blocks
-        json_pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
-        matches = re.findall(json_pattern, response_text, re.IGNORECASE)
-        
-        if matches:
-            # Try each match
-            for match in matches:
-                try:
-                    parsed = json.loads(match.strip())
-                    return parsed
-                except json.JSONDecodeError:
-                    continue
-        
-        # Look for JSON arrays/objects without code blocks
-        # Find content between first '[' and last ']'
-        if '[' in response_text and ']' in response_text:
-            start_idx = response_text.find('[')
-            
-            # Find matching closing bracket
-            bracket_count = 0
-            end_idx = -1
-            
-            for i in range(start_idx, len(response_text)):
-                char = response_text[i]
-                if char == '[':
-                    bracket_count += 1
-                elif char == ']':
-                    bracket_count -= 1
-                    if bracket_count == 0:
-                        end_idx = i + 1
-                        break
-            
-            if end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx]
-                try:
-                    parsed = json.loads(json_str)
-                    return parsed
-                except json.JSONDecodeError:
-                    pass
-        
-        # Look for JSON objects if no arrays found
-        if '{' in response_text and '}' in response_text:
-            start_idx = response_text.find('{')
-            
-            # Find matching closing brace
-            brace_count = 0
-            end_idx = -1
-            
-            for i in range(start_idx, len(response_text)):
-                char = response_text[i]
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        end_idx = i + 1
-                        break
-            
-            if end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx]
-                try:
-                    parsed = json.loads(json_str)
-                    # If it's a single object, wrap it in an array
-                    if isinstance(parsed, dict):
-                        return [parsed]
-                    return parsed
-                except json.JSONDecodeError:
-                    pass
-        
-        # If all else fails, raise an error with the raw response
-        raise json.JSONDecodeError(f"Could not extract valid JSON from response. Response starts with: {response_text[:200]}...")
-        
-    except Exception as e:
-        raise Exception(f"JSON extraction failed: {str(e)}")
-
-def validate_transaction_json(transactions):
-    """Validate the extracted transaction JSON structure including accounting assignment"""
-    try:
-        if not isinstance(transactions, list):
-            raise ValueError("Expected JSON array of transactions")
-        
-        # Validate account codes
-        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
-        
-        for i, transaction in enumerate(transactions):
-            if not isinstance(transaction, dict):
-                raise ValueError(f"Transaction {i} is not a JSON object")
-            
-            # Check required fields
-            required_fields = ['company_id', 'date', 'ref', 'narration', 'partner', 'accounting_assignment', 'line_items']
-            for field in required_fields:
-                if field not in transaction:
-                    raise ValueError(f"Transaction {i} missing required field: {field}")
-            
-            # Validate accounting_assignment structure
-            accounting = transaction['accounting_assignment']
-            required_accounting_fields = ['debit_account', 'debit_account_name', 'credit_account', 'credit_account_name', 'transaction_type', 'requires_vat', 'additional_entries']
-            for field in required_accounting_fields:
-                if field not in accounting:
-                    raise ValueError(f"Transaction {i} accounting_assignment missing field: {field}")
-            
-            # Validate account codes
-            debit_account = accounting['debit_account']
-            credit_account = accounting['credit_account']
-            
-            if debit_account not in valid_accounts:
-                raise ValueError(f"Transaction {i} invalid debit_account: {debit_account}")
-            
-            if credit_account not in valid_accounts:
-                raise ValueError(f"Transaction {i} invalid credit_account: {credit_account}")
-            
-            # Validate line_items
-            line_items = transaction['line_items']
-            if not isinstance(line_items, list) or len(line_items) < 2:
-                raise ValueError(f"Transaction {i} must have at least 2 line items")
-            
-            # Validate double-entry balancing
-            total_debits = sum(item.get('debit', 0) for item in line_items)
-            total_credits = sum(item.get('credit', 0) for item in line_items)
-            
-            if abs(total_debits - total_credits) > 0.01:  # Allow small rounding differences
-                raise ValueError(f"Transaction {i} debits ({total_debits}) don't balance with credits ({total_credits})")
-        
-        return True
-        
-    except Exception as e:
-        raise Exception(f"Transaction validation failed: {str(e)}")
-
-def ensure_transaction_structure(transaction):
-    """Ensure each transaction has the complete required structure with default values"""
-    
-    # Define the complete structure with default values
-    default_transaction = {
-        "company_id": 0,
-        "date": "",
-        "ref": "",
-        "narration": "",
-        "partner": "unknown",
-        "accounting_assignment": {
-            "debit_account": "",
-            "debit_account_name": "",
-            "credit_account": "",
-            "credit_account_name": "",
-            "transaction_type": "",
-            "requires_vat": False,
-            "additional_entries": []
-        },
-        "line_items": []
-    }
-    
-    def merge_with_defaults(source, defaults):
-        """Recursively merge source with defaults, ensuring all fields are present"""
-        if isinstance(defaults, dict):
-            result = {}
-            for key, default_value in defaults.items():
-                if key in source and source[key] is not None:
-                    if isinstance(default_value, dict):
-                        result[key] = merge_with_defaults(source[key], default_value)
-                    elif isinstance(default_value, list):
-                        result[key] = source[key] if isinstance(source[key], list) else default_value
-                    else:
-                        result[key] = source[key]
-                else:
-                    result[key] = default_value
-            return result
-        else:
-            return source if source is not None else defaults
-    
-    return merge_with_defaults(transaction, default_transaction)
-
-def download_from_s3(s3_key, bucket_name=None):
-    """Download file from S3 using key"""
-    try:
-        if not bucket_name:
-            bucket_name = os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
-        
-        # Initialize S3 client
-        aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
-        aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-        aws_region = os.getenv('AWS_REGION', 'eu-north-1')
-        
-        if aws_access_key and aws_secret_key:
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=aws_access_key,
-                aws_secret_access_key=aws_secret_key,
-                region_name=aws_region
-            )
-        else:
-            s3_client = boto3.client('s3', region_name=aws_region)
-        
-        print(f"Downloading from bucket: {bucket_name}, key: {s3_key}")
-        
-        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-        return response['Body'].read()
-        
-    except Exception as e:
-        raise Exception(f"Error downloading from S3: {str(e)}")
-
-def process_bank_statement_extraction(pdf_content, company_id=None):
-    """Process bank statement with Claude for transaction extraction with accounting assignment"""
-    try:
-        # Initialize Anthropic client
-        anthropic_client = anthropic.Anthropic(
-            api_key=os.getenv('ANTHROPIC_API_KEY')
-        )
-        
-        # Encode to base64
-        pdf_base64 = base64.b64encode(pdf_content).decode('utf-8')
-        
-        # Get bank statement extraction prompt
-        prompt = get_bank_statement_extraction_prompt(company_id)
-        
-        # Send to Claude with parameters optimized for structured output
-        message = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=12000,  # Increased for accounting assignment
-            temperature=0.0,  # Maximum determinism for consistent parsing
-            system="""You are an expert accountant and bank statement analyzer specialized in transaction classification and double-entry bookkeeping. Your core behavior is to think and act like a professional accountant who understands ALL CASH FLOW transactions, proper account classification, and double-entry accounting principles.
-
-CHART OF ACCOUNTS (EXACT CODES AND NAMES):
-• 1100 - Accounts receivable (Asset)
-• 1204 - Bank (Asset) 
-• 2100 - Accounts payable (Liability)
-• 2201 - Output VAT (Sales) (Liability)
-• 2202 - Input VAT (Purchases) (Asset)
-• 3000 - Share Capital (Equity)
-• 7602 - Consultancy fees (Expense)
-• 7901 - Bank charges (Expense)
-• 8200 - Other non-operating income or expenses (Income/Expense)
-
-**CRITICAL ACCOUNT CODE RULE: You MUST use the exact account codes and names from the chart above. Never modify or create new account codes.**
-
-CORE ACCOUNTING BEHAVIOR FOR BANK TRANSACTIONS:
-• Always think: "What account is being debited?" and "What account is being credited?"
-• Bank transactions always involve the Bank account (1204) as either debit or credit
-• Money coming into bank = DEBIT Bank (1204), CREDIT appropriate source account
-• Money leaving bank = DEBIT appropriate destination account, CREDIT Bank (1204)
-• Apply proper double-entry principles: debits must equal credits for every transaction
-• Classify transactions based on business purpose and counterparty
-
-TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
-
-**Share Capital Receipts:**
-• Indicators: "share capital", "capital increase", "new share capital", "shareholder investment", "equity injection"
-• DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
-• This represents cash received for shares issued - customer/shareholder owes us money which we collect
-
-**Customer Payments:**
-• Indicators: "payment received", "customer payment", "invoice settlement"
-• DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
-• Money received from customers paying their outstanding invoices
-
-**Consultancy/Professional Service Payments (DIRECT EXPENSE):**
-• Indicators: "consultancy", "professional services", "design services", "architecture", "engineering", "advisory", "topographical work", "surveying", "legal services"
-• Keywords: "Architecture Design", "Andreas Spanos", "Hadjioikonomou", "topografikes ergasies", invoice references for services
-• DEBIT: 7602 (Consultancy fees), CREDIT: 1204 (Bank)
-• Direct payment for professional services - expense recognition when payment is made
-• Use this for: architectural services, engineering services, surveying, legal work, consulting
-
-**Supplier/Vendor Payments (ACCOUNTS PAYABLE):**
-• Indicators: "payment to supplier", "goods purchased", "equipment purchase", "office supplies"
-• For tangible goods, equipment, or when explicitly stated as payable settlement
-• DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
-• Payment of amounts owed to suppliers for goods already received
-• Use this ONLY for physical goods/equipment, not professional services
-
-**Bank Charges and Fees:**
-• Indicators: "bank fee", "card fee", "membership fee", "maintenance fee", "commission", "service charge"
-• DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
-• All banking-related fees and charges
-
-**Government/Regulatory Fees:**
-• Indicators: "registrar", "government fee", "license fee", "regulatory fee", "filing fee", "capital increase fee"
-• DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
-• Fees paid to government entities and regulatory bodies
-
-**Reimbursements and Other Income:**
-• Indicators: "reimbursement", "refund received", miscellaneous income
-• DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
-• Money received as reimbursements or other non-operating income
-
-**CRITICAL DISTINCTION - Services vs. Goods:**
-• Professional services (architecture, engineering, consulting, legal) → 7602 (Consultancy fees)
-• Physical goods, equipment, supplies → 2100 (Accounts payable)
-• When in doubt about service payments, default to 7602 (Consultancy fees)
-
-**VAT/TAX Handling:**
-• Most bank transactions don't involve VAT directly
-• VAT is typically handled through separate tax accounts
-• Set requires_vat to false unless VAT is explicitly mentioned in transaction
-
-TRANSACTION PATTERN RECOGNITION EXPERTISE:
-• Analyze transaction descriptions to identify business purpose and payment type
-• Extract counterparty names accurately from transaction descriptions
-• Apply proper classification hierarchy:
-  1. Check for professional service indicators first (architecture, engineering, consulting, surveying)
-  2. Then check for physical goods/equipment purchases
-  3. Finally classify as general supplier payment if unclear
-• Recognize share capital transactions vs. regular customer payments
-• Identify government and regulatory fees accurately
-• Classify banking fees and charges appropriately
-• Distinguish between expense recognition (7602) vs. payable settlement (2100)
-
-**SERVICE PAYMENT IDENTIFICATION PRIORITY:**
-• Architecture services, engineering, surveying, legal, consulting → 7602 (Consultancy fees)
-• Professional service provider names (Andreas Spanos, Hadjioikonomou, etc.) → 7602 (Consultancy fees)
-• Invoice payments for services → 7602 (Consultancy fees)
-• Equipment, supplies, goods purchases → 2100 (Accounts payable)
-• Default for professional services: Use 7602 unless explicitly goods/equipment
-
-ACCOUNTING ASSIGNMENT RULES:
-• Every transaction must have proper debit_account and credit_account assignments
-• Use transaction_type to classify business purpose
-• Generate additional_entries only for complex multi-account transactions
-• Ensure line_items match the accounting_assignment entries
-• Account names in line_items must match the debit_account_name and credit_account_name
-
-OUTPUT FORMAT REQUIREMENTS:
-• Respond only with valid JSON arrays containing transaction objects
-• Never include explanatory text, analysis, or commentary
-• Always include ALL required fields with proper default values
-• Apply accounting expertise to assign correct debit/credit accounts for every transaction
-• Use ONLY the exact account codes and names provided in the chart of accounts
-• Ensure perfect double-entry balancing: total debits = total credits for each transaction
-
-CRITICAL REMINDERS:
-• Share capital receipts: DEBIT 1204 (Bank), CREDIT 1100 (Accounts receivable)
-• Consultancy fees: Use account code 7602, not 6200
-• Bank account is always 1204, never use other bank account codes
-• Government fees go to 8200 (Other non-operating income or expenses)
-• Supplier payments: DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)
-• All bank transactions involve account 1204 (Bank) as either debit or credit""",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ]
-        )
-        
-        # Extract response
-        response_text = message.content[0].text.strip()
-        
-        # Log the raw response for debugging (first 500 chars)
-        print(f"Raw Claude response (first 500 chars): {response_text[:500]}...")
-        
-        # Extract and parse JSON
-        try:
-            extracted_json = extract_json_from_response(response_text)
-            
-            # Ensure each transaction has complete structure
-            validated_transactions = []
-            for transaction in extracted_json:
-                validated_transaction = ensure_transaction_structure(transaction)
-                validated_transactions.append(validated_transaction)
-            
-            # Validate the JSON structure
-            validate_transaction_json(validated_transactions)
-            
-            # Log token usage for monitoring
-            print(f"Token usage - Input: {message.usage.input_tokens}, Output: {message.usage.output_tokens}")
-            print(f"Successfully extracted and validated {len(validated_transactions)} transactions")
-            
-            return {
-                "success": True,
-                "extraction_result": validated_transactions,
-                "raw_response": response_text,
-                "token_usage": {
-                    "input_tokens": message.usage.input_tokens,
-                    "output_tokens": message.usage.output_tokens
-                },
-                "transaction_count": len(validated_transactions)
-            }
-            
-        except Exception as json_error:
-            print(f"JSON processing failed: {str(json_error)}")
-            return {
-                "success": False,
-                "error": f"JSON processing failed: {str(json_error)}",
-                "raw_response": response_text
-            }
-        
-    except Exception as e:
-        print(f"Claude API error: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Claude API error: {str(e)}"
-        }
-
-def validate_accounting_assignments(transactions):
-    """Validate accounting assignments for extracted transactions"""
-    validation_results = []
-    
-    for i, transaction in enumerate(transactions):
-        transaction_validation = {
-            "transaction_index": i + 1,
-            "issues": [],
-            "warnings": [],
-            "accounting_valid": True
-        }
-        
-        accounting = transaction.get("accounting_assignment", {})
-        
-        # Check for proper account assignment
-        debit_account = accounting.get("debit_account", "")
-        credit_account = accounting.get("credit_account", "")
-        transaction_type = accounting.get("transaction_type", "")
-        
-        # Validate account codes
-        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
-        
-        if debit_account not in valid_accounts:
-            transaction_validation["issues"].append(f"Invalid debit account code: {debit_account}")
-            transaction_validation["accounting_valid"] = False
-        
-        if credit_account not in valid_accounts:
-            transaction_validation["issues"].append(f"Invalid credit account code: {credit_account}")
-            transaction_validation["accounting_valid"] = False
-        
-        # Check transaction type consistency
-        if not transaction_type:
-            transaction_validation["warnings"].append("Missing transaction type classification")
-        
-        # Check line items consistency with accounting assignment
-        line_items = transaction.get("line_items", [])
-        if len(line_items) >= 2:
-            # Check if line items match accounting assignment
-            debit_items = [item for item in line_items if item.get('debit', 0) > 0]
-            credit_items = [item for item in line_items if item.get('credit', 0) > 0]
-            
-            if len(debit_items) == 0 or len(credit_items) == 0:
-                transaction_validation["issues"].append("Line items don't follow double-entry principles")
-        
-        validation_results.append(transaction_validation)
-    
-    return validation_results
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass  # dotenv not installed, use system env vars
 
 def main(data):
     """
-    Main function for bank statement transaction extraction with accounting assignment
+    Create bank transaction entry in Odoo using enhanced structure with accounting assignment
     
-    Args:
-        data (dict): Request data containing:
-            - s3_key (str): S3 key path to the document
-            - bucket_name (str, optional): S3 bucket name
-            - company_id (str/int, optional): Company ID for transaction extraction
+    Expected data format (from bank statement processing):
+    {
+        "company_id": 60,
+        "date": "2025-07-20",
+        "ref": "255492965",
+        "narration": "New Share Capital of Kyrastel Investments Ltd",
+        "partner": "Kyrastel Investments Ltd",
+        "accounting_assignment": {
+            "debit_account": "1204",
+            "debit_account_name": "Bank",
+            "credit_account": "1100",
+            "credit_account_name": "Accounts receivable",
+            "transaction_type": "share_capital_receipt",
+            "requires_vat": false,
+            "additional_entries": []
+        },
+        "line_items": [
+            {
+                "name": "Bank",
+                "debit": 15000.00,
+                "credit": 0.00
+            },
+            {
+                "name": "Accounts receivable",
+                "debit": 0.00,
+                "credit": 15000.00
+            }
+        ]
+    }
     
-    Returns:
-        dict: Processing result with success status and extracted data
+    Also supports legacy format for backward compatibility:
+    {
+        "company_id": 1,
+        "date": "2025-07-20",
+        "ref": "BOC Transfer 09444",
+        "narration": "Transaction description",
+        "partner": "Partner Name",
+        "line_items": [...]
+    }
     """
-    try:
-        # Validate required fields
-        if 's3_key' not in data:
+    
+    # Validate required fields
+    required_fields = ['company_id', 'date', 'ref', 'narration', 'line_items']
+    
+    missing_fields = [field for field in required_fields if not data.get(field)]
+    if missing_fields:
+        return {
+            'success': False,
+            'error': f'Missing required fields: {", ".join(missing_fields)}'
+        }
+
+    # Validate line_items
+    if not isinstance(data['line_items'], list) or len(data['line_items']) < 2:
+        return {
+            'success': False,
+            'error': 'line_items must be a list with at least 2 entries'
+        }
+
+    # Validate each line item
+    for i, line in enumerate(data['line_items']):
+        required_line_fields = ['name', 'debit', 'credit']
+        missing_line_fields = [field for field in required_line_fields if field not in line]
+        if missing_line_fields:
             return {
-                "success": False,
-                "error": "s3_key is required"
+                'success': False,
+                'error': f'Line item {i+1} missing fields: {", ".join(missing_line_fields)}'
             }
         
-        s3_key = data['s3_key']
-        bucket_name = data.get('bucket_name')  # Optional
-        company_id = data.get('company_id')  # For bank statement extraction
-        
-        print(f"Processing bank statement for transaction extraction with accounting assignment")
-        print(f"S3 key: {s3_key}")
-        print(f"Company ID: {company_id}")
-        
-        # Download PDF from S3
-        pdf_content = download_from_s3(s3_key, bucket_name)
-        print(f"Downloaded PDF, size: {len(pdf_content)} bytes")
-        
-        # Process bank statement for transaction extraction
-        result = process_bank_statement_extraction(pdf_content, company_id)
-        
-        if result["success"]:
-            transactions = result["extraction_result"]
-            
-            # Validate accounting assignments
-            validation_results = validate_accounting_assignments(transactions)
-            
-            # Count transactions with issues
-            transactions_with_issues = sum(1 for v in validation_results if not v["accounting_valid"])
-            total_transactions = len(transactions)
-            
+        # Validate debit/credit are numbers
+        try:
+            float(line['debit'])
+            float(line['credit'])
+        except (ValueError, TypeError):
             return {
-                "success": True,
-                "total_transactions": total_transactions,
-                "transactions": transactions,
-                "processing_summary": {
-                    "transactions_processed": total_transactions,
-                    "transactions_with_issues": transactions_with_issues,
-                    "success_rate": f"{((total_transactions - transactions_with_issues) / total_transactions * 100):.1f}%" if total_transactions > 0 else "0%"
-                },
-                "validation_results": validation_results,
-                "metadata": {
-                    "company_id": company_id,
-                    "s3_key": s3_key,
-                    "token_usage": result["token_usage"]
+                'success': False,
+                'error': f'Line item {i+1} debit/credit must be valid numbers'
+            }
+
+    # Validate company_id is a number
+    try:
+        company_id = int(data['company_id'])
+    except (ValueError, TypeError):
+        return {
+            'success': False,
+            'error': 'company_id must be a valid integer'
+        }
+
+    # Validate that debits equal credits
+    total_debits = sum(float(line['debit']) for line in data['line_items'])
+    total_credits = sum(float(line['credit']) for line in data['line_items'])
+    
+    if abs(total_debits - total_credits) > 0.01:  # Allow for small rounding differences
+        return {
+            'success': False,
+            'error': f'Debits ({total_debits}) must equal credits ({total_credits})'
+        }
+
+    # Validate accounting assignment if present
+    accounting_assignment = data.get('accounting_assignment', {})
+    if accounting_assignment:
+        # Validate account codes if provided
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
+        
+        debit_account = accounting_assignment.get('debit_account', '')
+        credit_account = accounting_assignment.get('credit_account', '')
+        
+        if debit_account and debit_account not in valid_accounts:
+            return {
+                'success': False,
+                'error': f'Invalid debit account code: {debit_account}. Must be one of: {", ".join(valid_accounts)}'
+            }
+        
+        if credit_account and credit_account not in valid_accounts:
+            return {
+                'success': False,
+                'error': f'Invalid credit account code: {credit_account}. Must be one of: {", ".join(valid_accounts)}'
+            }
+        
+        # Validate accounting assignment consistency
+        if not validate_accounting_assignment_consistency(data):
+            return {
+                'success': False,
+                'error': 'Accounting assignment accounts do not match line item accounts'
+            }
+
+    # Store original date for comparison and fix future dates
+    original_date = data['date']
+    data['date'] = validate_and_fix_date(data['date'])
+    date_was_modified = original_date != data['date']
+
+    # Connection details
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    if not all([url, db, username, password]):
+        return {
+            'success': False,
+            'error': 'Missing Odoo connection environment variables'
+        }
+    
+    try:
+        print(f"=== PROCESSING ENHANCED BANK TRANSACTION ===")
+        print(f"Company ID: {company_id}")
+        print(f"Date: {data['date']}")
+        print(f"Reference: {data['ref']}")
+        print(f"Narration: {data['narration']}")
+        print(f"Partner: {data.get('partner', 'None')}")
+        print(f"Line Items: {len(data['line_items'])}")
+        
+        # Log accounting assignment details if present
+        if accounting_assignment:
+            print(f"Transaction Type: {accounting_assignment.get('transaction_type', 'Not specified')}")
+            print(f"Debit Account: {accounting_assignment.get('debit_account')} - {accounting_assignment.get('debit_account_name')}")
+            print(f"Credit Account: {accounting_assignment.get('credit_account')} - {accounting_assignment.get('credit_account_name')}")
+            print(f"Requires VAT: {accounting_assignment.get('requires_vat', False)}")
+            
+            additional_entries = accounting_assignment.get('additional_entries', [])
+            if additional_entries:
+                print(f"Additional Entries: {len(additional_entries)}")
+        
+        # Initialize connection
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        # Authenticate
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {
+                'success': False,
+                'error': 'Odoo authentication failed'
+            }
+        
+        print("✅ Odoo authentication successful")
+        
+        # Step 1: Verify company exists and get its details
+        company_details = verify_company_exists(models, db, uid, password, company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
+        print(f"✅ Found Company: {company_details['name']}")
+        
+        # Update context to work with specific company
+        context = {'allowed_company_ids': [company_id]}
+        
+        # Step 2: Check for duplicate transaction by reference
+        duplicate_check = check_for_duplicate_by_ref(
+            models, db, uid, password, data['ref'], company_id, context
+        )
+        
+        if duplicate_check['is_duplicate']:
+            return {
+                'success': False,
+                'error': 'Duplicate transaction',
+                'message': f'Transaction with reference "{data["ref"]}" already exists',
+                'existing_entry_id': duplicate_check['existing_entry_id'],
+                'company_id': company_id,
+                'company_name': company_details['name'],
+                'duplicate_details': duplicate_check
+            }
+        
+        print("✅ No duplicate found, proceeding with transaction creation")
+        
+        # Step 3: Handle partner information
+        partner_id = None
+        partner_info = None
+        
+        if data.get('partner'):
+            partner_result = find_or_create_partner(models, db, uid, password, data['partner'], context)
+            if partner_result:
+                partner_id = partner_result['id']
+                partner_info = partner_result
+                print(f"✅ Partner resolved: {partner_info['name']} (ID: {partner_id})")
+            else:
+                return {
+                    'success': False,
+                    'error': f'Failed to find or create partner: {data["partner"]}'
                 }
+        
+        # Step 4: Enhanced account resolution using accounting assignment
+        resolved_line_items = []
+        created_accounts = []
+        account_mapping = {}
+        
+        # First, try to map accounts using accounting assignment codes if available
+        if accounting_assignment:
+            debit_account_code = accounting_assignment.get('debit_account')
+            credit_account_code = accounting_assignment.get('credit_account')
+            debit_account_name = accounting_assignment.get('debit_account_name')
+            credit_account_name = accounting_assignment.get('credit_account_name')
+            
+            # Create mapping from account codes to names
+            if debit_account_code and debit_account_name:
+                account_mapping[debit_account_code] = debit_account_name
+            if credit_account_code and credit_account_name:
+                account_mapping[credit_account_code] = credit_account_name
+        
+        # Process each line item with enhanced account resolution
+        for i, line_item in enumerate(data['line_items']):
+            account_name = line_item['name']
+            
+            # Enhanced account resolution strategy
+            account_result = find_or_create_account_enhanced(
+                models, db, uid, password, 
+                account_name, 
+                accounting_assignment, 
+                account_mapping, 
+                context
+            )
+            
+            if not account_result:
+                return {
+                    'success': False,
+                    'error': f'Could not find or create account for: "{account_name}"'
+                }
+            
+            account_id = account_result['id']
+            if account_result.get('created'):
+                created_accounts.append(account_result)
+            
+            resolved_line = {
+                'account_id': account_id,
+                'name': data['narration'],  # Use narration as line description
+                'debit': float(line_item['debit']),
+                'credit': float(line_item['credit']),
+            }
+            
+            # Add partner only to receivable/payable accounts
+            if partner_id and account_result.get('account_type') in ['asset_receivable', 'liability_payable']:
+                resolved_line['partner_id'] = partner_id
+            
+            resolved_line_items.append(resolved_line)
+            
+            status = "created" if account_result.get('created') else "found"
+            print(f"✅ Line {i+1}: {account_name} -> Account ID {account_id} ({status})")
+        
+        # Handle additional entries from accounting assignment
+        if accounting_assignment and accounting_assignment.get('additional_entries'):
+            additional_entries = accounting_assignment['additional_entries']
+            print(f"📝 Processing {len(additional_entries)} additional entries...")
+            
+            for j, entry in enumerate(additional_entries):
+                try:
+                    entry_account_name = entry.get('account_name', f"Account {entry.get('account_code', 'Unknown')}")
+                    
+                    # Find or create account for additional entry
+                    entry_account_result = find_or_create_account_enhanced(
+                        models, db, uid, password,
+                        entry_account_name,
+                        accounting_assignment,
+                        account_mapping,
+                        context
+                    )
+                    
+                    if not entry_account_result:
+                        print(f"⚠️  Warning: Could not resolve account for additional entry: {entry_account_name}")
+                        continue
+                    
+                    entry_account_id = entry_account_result['id']
+                    if entry_account_result.get('created'):
+                        created_accounts.append(entry_account_result)
+                    
+                    additional_line = {
+                        'account_id': entry_account_id,
+                        'name': entry.get('description', data['narration']),
+                        'debit': float(entry.get('debit_amount', 0)),
+                        'credit': float(entry.get('credit_amount', 0)),
+                    }
+                    
+                    # Add partner only to receivable/payable accounts
+                    if partner_id and entry_account_result.get('account_type') in ['asset_receivable', 'liability_payable']:
+                        additional_line['partner_id'] = partner_id
+                    
+                    resolved_line_items.append(additional_line)
+                    
+                    status = "created" if entry_account_result.get('created') else "found"
+                    print(f"✅ Additional Entry {j+1}: {entry_account_name} -> Account ID {entry_account_id} ({status})")
+                    
+                except Exception as e:
+                    print(f"❌ Error processing additional entry {j+1}: {e}")
+                    continue
+        
+        # If we created any accounts, wait and refresh cache
+        if created_accounts:
+            print(f"⏳ Created {len(created_accounts)} new accounts, waiting for database sync...")
+            time.sleep(1)  # Brief wait for database consistency
+            
+            # Force cache refresh by doing a simple search
+            try:
+                models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search',
+                    [[('id', 'in', [acc['id'] for acc in created_accounts])]], 
+                    {'limit': len(created_accounts), 'context': context}
+                )
+                print("✅ Account cache refreshed")
+            except Exception as e:
+                print(f"⚠️  Account cache refresh failed: {e}")
+        
+        # Step 5: Get appropriate journal based on transaction type
+        journal_id = get_journal_for_transaction_type(
+            models, db, uid, password, 
+            accounting_assignment.get('transaction_type', 'general'), 
+            data, 
+            context
+        )
+        
+        if not journal_id:
+            return {
+                'success': False,
+                'error': 'Could not find appropriate journal'
+            }
+        
+        # Step 6: Get journal details including code
+        journal_details = get_journal_details(models, db, uid, password, journal_id, context)
+        if not journal_details:
+            return {
+                'success': False,
+                'error': 'Could not retrieve journal details'
+            }
+        
+        print(f"✅ Using Journal: {journal_details['name']} (Code: {journal_details['code']})")
+        
+        # Step 7: Final validation of resolved line items
+        final_total_debits = sum(line['debit'] for line in resolved_line_items)
+        final_total_credits = sum(line['credit'] for line in resolved_line_items)
+        
+        if abs(final_total_debits - final_total_credits) > 0.01:
+            return {
+                'success': False,
+                'error': f'Final line items do not balance: Debits {final_total_debits} vs Credits {final_total_credits}'
+            }
+        
+        print(f"✅ Final validation passed: {len(resolved_line_items)} line items, balanced at {final_total_debits}")
+        
+        # Step 8: Create Journal Entry with retry mechanism
+        journal_entry_id = create_journal_entry_enhanced_with_retry(
+            models, db, uid, password,
+            journal_id,
+            resolved_line_items,
+            data,
+            partner_id,
+            accounting_assignment,
+            context
+        )
+        
+        if not journal_entry_id:
+            return {
+                'success': False,
+                'error': 'Failed to create journal entry'
+            }
+        
+        print(f"✅ Journal Entry ID: {journal_entry_id}")
+        print(f"✅ Transaction completed successfully")
+        
+        # Step 9: Prepare enhanced return response
+        return {
+            'success': True,
+            'journal_entry_id': journal_entry_id,
+            'date': data['date'],
+            'original_date': original_date,
+            'date_was_modified': date_was_modified,
+            'company_id': company_id,
+            'company_name': company_details['name'],
+            'journal_id': journal_id,
+            'journal_code': journal_details['code'],
+            'journal_name': journal_details['name'],
+            'journal_type': journal_details['type'],
+            'reference': data['ref'],
+            'description': data['narration'],
+            'partner': partner_info,
+            'total_amount': final_total_debits,
+            'line_count': len(resolved_line_items),
+            'created_accounts': created_accounts,
+            'accounting_assignment': accounting_assignment,
+            'transaction_type': accounting_assignment.get('transaction_type', 'general'),
+            'line_items_processed': [
+                {
+                    'account_name': data['line_items'][i]['name'] if i < len(data['line_items']) else f"Additional Entry {i - len(data['line_items']) + 1}",
+                    'account_id': resolved_line_items[i]['account_id'],
+                    'debit': resolved_line_items[i]['debit'],
+                    'credit': resolved_line_items[i]['credit'],
+                    'partner_id': resolved_line_items[i].get('partner_id')
+                }
+                for i in range(len(resolved_line_items))
+            ],
+            'message': 'Enhanced bank transaction entry created successfully with accounting assignment'
+        }
+        
+    except xmlrpc.client.Fault as e:
+        error_msg = f'Odoo API error: {str(e)}'
+        print(f"❌ {error_msg}")
+        return {
+            'success': False,
+            'error': error_msg
+        }
+    except Exception as e:
+        error_msg = f'Unexpected error: {str(e)}'
+        print(f"❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': error_msg
+        }
+
+def validate_accounting_assignment_consistency(data):
+    """Validate that accounting assignment accounts match line item accounts"""
+    try:
+        accounting = data.get('accounting_assignment', {})
+        line_items = data.get('line_items', [])
+        
+        if not accounting:
+            return True
+        
+        debit_account_name = accounting.get('debit_account_name', '')
+        credit_account_name = accounting.get('credit_account_name', '')
+        
+        if not debit_account_name and not credit_account_name:
+            return True
+        
+        # Get line item account names
+        line_account_names = [item['name'].lower().strip() for item in line_items]
+        
+        # Check if accounting assignment accounts exist in line items
+        consistency_check = True
+        
+        if debit_account_name:
+            debit_name_lower = debit_account_name.lower().strip()
+            if not any(debit_name_lower in line_name or line_name in debit_name_lower for line_name in line_account_names):
+                print(f"⚠️  Debit account '{debit_account_name}' not found in line items")
+                consistency_check = False
+        
+        if credit_account_name:
+            credit_name_lower = credit_account_name.lower().strip()
+            if not any(credit_name_lower in line_name or line_name in credit_name_lower for line_name in line_account_names):
+                print(f"⚠️  Credit account '{credit_account_name}' not found in line items")
+                consistency_check = False
+        
+        return consistency_check
+        
+    except Exception as e:
+        print(f"❌ Error validating accounting assignment consistency: {e}")
+        return True  # Allow processing to continue if validation fails
+
+def find_or_create_account_enhanced(models, db, uid, password, account_name, accounting_assignment, account_mapping, context):
+    """Enhanced account resolution using accounting assignment information"""
+    try:
+        print(f"🔍 Enhanced account lookup for: '{account_name}'")
+        
+        # First, try to find by exact name match
+        account_result = find_or_create_account_with_retry(models, db, uid, password, account_name, context)
+        if account_result:
+            return account_result
+        
+        # If accounting assignment is available, try to find by account code mapping
+        if accounting_assignment and account_mapping:
+            # Try to find account name in the mapping
+            for account_code, mapped_name in account_mapping.items():
+                if (account_name.lower().strip() in mapped_name.lower().strip() or 
+                    mapped_name.lower().strip() in account_name.lower().strip()):
+                    print(f"🔍 Trying account code mapping: {account_code} -> {mapped_name}")
+                    
+                    # Try to find by code first
+                    try:
+                        account_ids = models.execute_kw(
+                            db, uid, password,
+                            'account.account', 'search',
+                            [[('code', '=', account_code)]], 
+                            {'limit': 1, 'context': context}
+                        )
+                        
+                        if account_ids:
+                            account_details = models.execute_kw(
+                                db, uid, password,
+                                'account.account', 'read',
+                                [account_ids, ['name', 'code', 'account_type']], 
+                                {'context': context}
+                            )
+                            account = account_details[0]
+                            print(f"✅ Found by code mapping: {account['name']} ({account['code']})")
+                            return {
+                                'id': account_ids[0],
+                                'name': account['name'],
+                                'code': account['code'],
+                                'account_type': account['account_type'],
+                                'created': False
+                            }
+                    except Exception as e:
+                        print(f"❌ Error in code mapping search: {e}")
+                        continue
+        
+        # If still not found, use enhanced account type detection
+        if accounting_assignment:
+            transaction_type = accounting_assignment.get('transaction_type', '')
+            print(f"🔍 Using transaction type '{transaction_type}' for account creation")
+            
+            # Create account with enhanced type detection
+            return create_account_from_transaction_type(
+                models, db, uid, password, 
+                account_name, 
+                transaction_type, 
+                context
+            )
+        
+        # Fallback to standard account creation
+        return find_or_create_account_with_retry(models, db, uid, password, account_name, context)
+        
+    except Exception as e:
+        print(f"❌ Enhanced account lookup failed: {e}")
+        return find_or_create_account_with_retry(models, db, uid, password, account_name, context)
+
+def create_account_from_transaction_type(models, db, uid, password, account_name, transaction_type, context):
+    """Create account with type detection based on transaction type and account name"""
+    try:
+        account_name_lower = account_name.lower().strip()
+        
+        # Enhanced type mapping based on transaction type and account name
+        if transaction_type == 'share_capital_receipt':
+            if 'bank' in account_name_lower:
+                account_type = 'asset_current'
+            elif 'receivable' in account_name_lower or 'accounts receivable' in account_name_lower:
+                account_type = 'asset_receivable'
+            else:
+                account_type = 'equity'
+        elif transaction_type == 'consultancy_payment':
+            if 'bank' in account_name_lower:
+                account_type = 'asset_current'
+            elif 'consultancy' in account_name_lower or 'fees' in account_name_lower:
+                account_type = 'expense'
+            else:
+                account_type = 'expense'
+        elif transaction_type == 'supplier_payment':
+            if 'bank' in account_name_lower:
+                account_type = 'asset_current'
+            elif 'payable' in account_name_lower:
+                account_type = 'liability_payable'
+            else:
+                account_type = 'expense'
+        elif transaction_type == 'bank_charges':
+            if 'bank' in account_name_lower and 'charge' not in account_name_lower:
+                account_type = 'asset_current'
+            else:
+                account_type = 'expense'
+        elif transaction_type == 'other_income':
+            if 'bank' in account_name_lower:
+                account_type = 'asset_current'
+            else:
+                account_type = 'income'  # Fixed: was 'income_other'
+        elif transaction_type == 'other_expense':
+            if 'bank' in account_name_lower:
+                account_type = 'asset_current'
+            else:
+                account_type = 'expense'
+        else:
+            # Default type detection
+            if 'bank' in account_name_lower:
+                account_type = 'asset_current'
+            elif 'receivable' in account_name_lower:
+                account_type = 'asset_receivable'
+            elif 'payable' in account_name_lower:
+                account_type = 'liability_payable'
+            elif 'capital' in account_name_lower or 'equity' in account_name_lower:
+                account_type = 'equity'
+            elif 'income' in account_name_lower or 'revenue' in account_name_lower:
+                account_type = 'income'
+            else:
+                account_type = 'expense'
+        
+        print(f"📝 Creating account '{account_name}' with type '{account_type}' based on transaction type '{transaction_type}'")
+        
+        # Generate account code based on type
+        account_code = generate_account_code_by_type(models, db, uid, password, account_name, account_type, context)
+        
+        # Prepare account data
+        account_data = {
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'reconcile': account_type in ['asset_receivable', 'liability_payable'],
+        }
+        
+        # Create the account
+        create_context = context.copy()
+        create_context.update({
+            'check_move_validity': False,
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
+        new_account_id = models.execute_kw(
+            db, uid, password,
+            'account.account', 'create',
+            [account_data], 
+            {'context': create_context}
+        )
+        
+        if new_account_id:
+            print(f"✅ Created account with enhanced type detection: ID {new_account_id}")
+            return {
+                'id': new_account_id,
+                'name': account_name,
+                'code': account_code,
+                'account_type': account_type,
+                'created': True
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"❌ Enhanced account creation failed: {e}")
+        return None
+
+def generate_account_code_by_type(models, db, uid, password, account_name, account_type, context):
+    """Generate account code based on account type with predefined ranges"""
+    try:
+        # Predefined account code ranges based on chart of accounts
+        type_code_mapping = {
+            'asset_current': '1200',        # 1200-1299 for current assets  
+            'asset_receivable': '1100',     # 1100-1199 for receivables
+            'asset_non_current': '1500',    # 1500-1599 for fixed assets
+            'liability_payable': '2100',    # 2100-2199 for payables
+            'liability_current': '2200',    # 2200-2299 for current liabilities
+            'liability_non_current': '2500', # 2500-2599 for long-term liabilities
+            'equity': '3000',               # 3000-3099 for equity
+            'income': '4000',               # 4000-4099 for income
+            'expense': '5000',              # 5000-5999 for expenses
+        }
+        
+        # Map specific account names to codes if they match our chart of accounts
+        specific_mappings = {
+            'bank': '1204',
+            'accounts receivable': '1100', 
+            'accounts payable': '2100',
+            'share capital': '3000',
+            'consultancy fees': '7602',
+            'bank charges': '7901',
+            'other non-operating income or expenses': '8200',
+            'output vat': '2201',
+            'input vat': '2202'
+        }
+        
+        account_name_lower = account_name.lower().strip()
+        
+        # First check for specific mappings
+        for key, code in specific_mappings.items():
+            if key in account_name_lower:
+                # Check if this exact code already exists
+                try:
+                    existing = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search',
+                        [[('code', '=', code)]], 
+                        {'limit': 1, 'context': context}
+                    )
+                    
+                    if not existing:
+                        return code
+                except Exception as e:
+                    print(f"❌ Error checking existing code {code}: {e}")
+        
+        # Use type-based code generation
+        base_code = type_code_mapping.get(account_type, '9000')
+        
+        # Generate unique code within the range
+        for i in range(100):  # Try up to 100 variations
+            try:
+                # Fixed: Better code generation logic
+                if base_code.isdigit() and len(base_code) == 4:
+                    # For 4-digit base codes, increment intelligently
+                    base_num = int(base_code)
+                    test_code = str(base_num + i)
+                else:
+                    # For other formats, append increment
+                    test_code = f"{base_code}{i:02d}" if i < 100 else f"{base_code}{i}"
+                
+                # Check if code exists
+                existing = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search',
+                    [[('code', '=', test_code)]], 
+                    {'limit': 1, 'context': context}
+                )
+                
+                if not existing:
+                    return test_code
+                    
+            except Exception as e:
+                print(f"❌ Error checking code {test_code}: {e}")
+                continue
+        
+        # Fallback to timestamp-based code
+        timestamp_suffix = str(int(datetime.now().timestamp()))[-3:]
+        fallback_code = f"{base_code[:2]}{timestamp_suffix}" if len(base_code) >= 2 else f"9{timestamp_suffix}"
+        return fallback_code
+        
+    except Exception as e:
+        print(f"❌ Error generating account code: {e}")
+        return f"9{str(int(datetime.now().timestamp()))[-3:]}"
+
+def get_journal_for_transaction_type(models, db, uid, password, transaction_type, data, context):
+    """Get appropriate journal based on transaction type"""
+    try:
+        print(f"🔍 Finding journal for transaction type: {transaction_type}")
+        
+        # Map transaction types to preferred journal types
+        journal_type_mapping = {
+            'share_capital_receipt': 'bank',
+            'customer_payment': 'bank', 
+            'supplier_payment': 'bank',
+            'consultancy_payment': 'bank',
+            'bank_charges': 'bank',
+            'other_income': 'general',
+            'other_expense': 'general'
+        }
+        
+        preferred_journal_type = journal_type_mapping.get(transaction_type, 'bank')
+        
+        # Try to find journal of preferred type
+        try:
+            journal_ids = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search',
+                [[('type', '=', preferred_journal_type)]], 
+                {'limit': 1, 'context': context}
+            )
+            
+            if journal_ids:
+                return journal_ids[0]
+        except Exception as e:
+            print(f"❌ Error finding {preferred_journal_type} journal: {e}")
+        
+        # Fallback to any bank journal
+        try:
+            journal_ids = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search',
+                [[('type', '=', 'bank')]], 
+                {'limit': 1, 'context': context}
+            )
+            
+            if journal_ids:
+                return journal_ids[0]
+        except Exception as e:
+            print(f"❌ Error finding bank journal: {e}")
+        
+        # Final fallback to general journal
+        try:
+            journal_ids = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search',
+                [[('type', '=', 'general')]], 
+                {'limit': 1, 'context': context}
+            )
+            
+            if journal_ids:
+                return journal_ids[0]
+        except Exception as e:
+            print(f"❌ Error finding general journal: {e}")
+        
+        # Last resort - any journal
+        try:
+            journal_ids = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search',
+                [[]], 
+                {'limit': 1, 'context': context}
+            )
+            
+            if journal_ids:
+                return journal_ids[0]
+        except Exception as e:
+            print(f"❌ Error finding any journal: {e}")
+        
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error finding journal: {e}")
+        return None
+
+def create_journal_entry_enhanced_with_retry(models, db, uid, password, journal_id, line_items, data, partner_id, accounting_assignment, context, max_retries=3):
+    """Create journal entry with enhanced features and retry mechanism"""
+    
+    for attempt in range(max_retries):
+        try:
+            return create_journal_entry_enhanced(
+                models, db, uid, password, 
+                journal_id, line_items, data, 
+                partner_id, accounting_assignment, 
+                context
+            )
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Check if it's an account-related error
+            if any(keyword in error_str for keyword in ['account', 'not found', 'invalid', 'missing']):
+                if attempt < max_retries - 1:
+                    print(f"⚠️  Journal entry creation attempt {attempt + 1} failed (account issue), retrying...")
+                    time.sleep(1)  # Longer wait for account issues
+                    
+                    # Refresh account cache by searching for all used accounts
+                    try:
+                        account_ids = [line['account_id'] for line in line_items]
+                        models.execute_kw(
+                            db, uid, password,
+                            'account.account', 'search',
+                            [[('id', 'in', account_ids)]], 
+                            {'context': context}
+                        )
+                        print("✅ Account cache refreshed before retry")
+                    except Exception as cache_error:
+                        print(f"⚠️  Account cache refresh failed: {cache_error}")
+                    continue
+            
+            # If not an account error or final attempt, re-raise
+            if attempt == max_retries - 1:
+                raise e
+            else:
+                print(f"⚠️  Journal entry creation attempt {attempt + 1} failed: {e}, retrying...")
+                time.sleep(0.5)
+    
+    return None
+
+def create_journal_entry_enhanced(models, db, uid, password, journal_id, line_items, data, partner_id, accounting_assignment, context):
+    """Create journal entry with enhanced features from accounting assignment"""
+    try:
+        print(f"📝 Creating enhanced journal entry...")
+        
+        # Prepare line_ids for Odoo (using (0, 0, values) format)
+        line_ids = []
+        for line_item in line_items:
+            line_ids.append((0, 0, line_item))
+        
+        # Create enhanced context for journal entry creation
+        journal_context = context.copy()
+        journal_context.update({
+            'check_move_validity': True,  # Enable move validation
+            'skip_invoice_sync': True,    # Skip invoice synchronization if applicable
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
+        # Create journal entry with enhanced data
+        move_data = {
+            'journal_id': journal_id,
+            'date': data['date'],
+            'ref': data['ref'],
+            'narration': data['narration'],
+            'line_ids': line_ids,
+            'move_type': 'entry',  # Explicitly set as journal entry
+        }
+        
+        # Add partner to the main journal entry if available
+        if partner_id:
+            move_data['partner_id'] = partner_id
+            print(f"📝 Adding partner ID {partner_id} to journal entry")
+        
+        # Add transaction type as internal note if available
+        if accounting_assignment and accounting_assignment.get('transaction_type'):
+            transaction_type = accounting_assignment['transaction_type']
+            if move_data.get('narration'):
+                move_data['narration'] += f" (Type: {transaction_type})"
+            print(f"📝 Added transaction type: {transaction_type}")
+        
+        print(f"📝 Creating move with reference: {data['ref']}")
+        print(f"📝 Narration: {move_data['narration']}")
+        print(f"📝 Line items count: {len(line_items)}")
+        
+        move_id = models.execute_kw(
+            db, uid, password,
+            'account.move', 'create',
+            [move_data], {'context': journal_context}
+        )
+        
+        if not move_id:
+            raise Exception("Failed to create account move")
+        
+        print(f"✅ Move created with ID: {move_id}")
+        
+        # Verify the move was created properly before posting
+        try:
+            move_verification = models.execute_kw(
+                db, uid, password,
+                'account.move', 'read',
+                [[move_id], ['id', 'state', 'ref', 'line_ids']], 
+                {'context': journal_context}
+            )
+            
+            if not move_verification or not move_verification[0].get('line_ids'):
+                raise Exception(f"Move {move_id} was not created properly - missing line items")
+            
+            print(f"✅ Move verification passed - {len(move_verification[0]['line_ids'])} lines created")
+        except Exception as verify_error:
+            print(f"⚠️  Move verification failed: {verify_error}")
+            # Continue anyway, the move was created
+        
+        # Post the journal entry
+        try:
+            print(f"📝 Posting journal entry...")
+            models.execute_kw(
+                db, uid, password,
+                'account.move', 'action_post',
+                [[move_id]], {'context': journal_context}
+            )
+            print(f"✅ Journal entry posted successfully")
+        except Exception as post_error:
+            print(f"⚠️  Journal entry posting failed: {post_error}")
+            print(f"✅ Journal entry created but not posted (ID: {move_id})")
+        
+        return move_id
+        
+    except Exception as e:
+        print(f"❌ Error creating enhanced journal entry: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# Keep all the existing utility functions from the original code
+def find_or_create_account_with_retry(models, db, uid, password, account_name, context, max_retries=3):
+    """Find existing account by name/code or create new one with retry mechanism"""
+    for attempt in range(max_retries):
+        try:
+            result = find_or_create_account(models, db, uid, password, account_name, context)
+            if result:
+                return result
+            
+            if attempt < max_retries - 1:
+                print(f"⚠️  Attempt {attempt + 1} failed for account '{account_name}', retrying...")
+                time.sleep(0.5)  # Brief wait before retry
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"⚠️  Attempt {attempt + 1} failed with error: {e}, retrying...")
+                time.sleep(0.5)
+            else:
+                raise e
+    
+    return None
+
+def find_or_create_account(models, db, uid, password, account_name, context):
+    """Find existing account by name/code or create new one"""
+    try:
+        print(f"🔍 Looking for account: '{account_name}'")
+        
+        # First try exact match on name
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', '=', account_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code', 'account_type']], 
+                {'context': context}
+            )
+            account = account_details[0]
+            print(f"✅ Exact name match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
+        
+        # Try exact match on code
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('code', '=', account_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code', 'account_type']], 
+                {'context': context}
+            )
+            account = account_details[0]
+            print(f"✅ Exact code match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
+        
+        # Try partial match on name (case insensitive)
+        account_ids = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', 'ilike', account_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if account_ids:
+            account_details = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [account_ids, ['name', 'code', 'account_type']], 
+                {'context': context}
+            )
+            account = account_details[0]
+            print(f"✅ Partial name match: {account['name']} ({account['code']})")
+            return {
+                'id': account_ids[0],
+                'name': account['name'],
+                'code': account['code'],
+                'account_type': account['account_type'],
+                'created': False
+            }
+        
+        # Account not found, create new one
+        print(f"📝 Creating new account: {account_name}")
+        return create_new_account_with_verification(models, db, uid, password, account_name, context)
+        
+    except Exception as e:
+        print(f"❌ Error finding/creating account '{account_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def create_new_account_with_verification(models, db, uid, password, account_name, context):
+    """Create a new account with verification that it was successfully created"""
+    try:
+        # Determine account type and code based on name patterns
+        account_type, account_code = determine_account_type_and_code(models, db, uid, password, account_name, context)
+        
+        # Prepare account data
+        account_data = {
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'reconcile': False,  # Default to False, can be True for receivables/payables
+        }
+        
+        # Set reconcile to True for specific account types
+        if account_type in ['asset_receivable', 'liability_payable']:
+            account_data['reconcile'] = True
+        
+        print(f"📝 Creating account with data: {account_data}")
+        
+        # Create the account with explicit context
+        create_context = context.copy()
+        create_context.update({
+            'check_move_validity': False,  # Skip some validations during creation
+            'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
+        })
+        
+        new_account_id = models.execute_kw(
+            db, uid, password,
+            'account.account', 'create',
+            [account_data], 
+            {'context': create_context}
+        )
+        
+        if not new_account_id:
+            print(f"❌ Failed to create account: {account_name}")
+            return None
+        
+        print(f"✅ Account created with ID: {new_account_id}")
+        
+        # Verify the account was created by reading it back
+        max_verification_attempts = 3
+        for attempt in range(max_verification_attempts):
+            try:
+                verification_context = context.copy()
+                account_details = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'read',
+                    [[new_account_id], ['id', 'name', 'code', 'account_type']], 
+                    {'context': verification_context}
+                )
+                
+                if account_details:
+                    account = account_details[0]
+                    print(f"✅ Account verified: {account['name']} (ID: {new_account_id}, Code: {account['code']}, Type: {account['account_type']})")
+                    return {
+                        'id': new_account_id,
+                        'name': account['name'],
+                        'code': account['code'],
+                        'account_type': account['account_type'],
+                        'created': True
+                    }
+                else:
+                    if attempt < max_verification_attempts - 1:
+                        print(f"⚠️  Account verification attempt {attempt + 1} failed, retrying...")
+                        time.sleep(0.3)
+                    else:
+                        print(f"❌ Account verification failed after {max_verification_attempts} attempts")
+                        
+            except Exception as verify_error:
+                if attempt < max_verification_attempts - 1:
+                    print(f"⚠️  Account verification error on attempt {attempt + 1}: {verify_error}, retrying...")
+                    time.sleep(0.3)
+                else:
+                    print(f"❌ Account verification failed with error: {verify_error}")
+        
+        # If verification failed but creation succeeded, return basic info
+        print(f"⚠️  Using account without full verification")
+        return {
+            'id': new_account_id,
+            'name': account_name,
+            'code': account_code,
+            'account_type': account_type,
+            'created': True
+        }
+            
+    except Exception as e:
+        print(f"❌ Error creating account '{account_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def determine_account_type_and_code(models, db, uid, password, account_name, context):
+    """Intelligently determine account type and generate unique code based on account name"""
+    try:
+        account_name_lower = account_name.lower()
+        
+        # Account type mapping based on keywords
+        type_mapping = {
+            # Assets
+            'asset_current': [
+                'bank', 'cash', 'current account', 'checking', 'savings', 'petty cash',
+                'inventory', 'stock', 'prepaid', 'deposits'
+            ],
+            'asset_receivable': [
+                'accounts receivable', 'receivable', 'debtors'
+            ],
+            'asset_non_current': [
+                'fixed asset', 'equipment', 'building', 'land', 'machinery', 'vehicle',
+                'furniture', 'computer', 'depreciation'
+            ],
+            # Liabilities
+            'liability_payable': [
+                'accounts payable', 'payable', 'creditors'
+            ],
+            'liability_current': [
+                'accrued', 'wages payable', 'tax payable', 'short term loan'
+            ],
+            'liability_non_current': [
+                'long term loan', 'mortgage', 'bonds', 'deferred tax'
+            ],
+            # Equity
+            'equity': [
+                'share capital', 'capital', 'equity', 'retained earnings', 'reserves',
+                'common stock', 'preferred stock', 'owner equity'
+            ],
+            # Income
+            'income': [
+                'revenue', 'sales', 'income', 'service income', 'interest income',
+                'rental income', 'fees', 'commission'
+            ],
+            # Expenses
+            'expense': [
+                'expense', 'cost', 'salary', 'wage', 'rent', 'utilities', 'insurance',
+                'supplies', 'travel', 'marketing', 'advertising', 'office', 'telephone',
+                'professional fees', 'maintenance', 'repair', 'consultancy'
+            ]
+        }
+        
+        # Find matching account type
+        detected_type = 'asset_current'  # Default fallback
+        
+        for account_type, keywords in type_mapping.items():
+            for keyword in keywords:
+                if keyword in account_name_lower:
+                    detected_type = account_type
+                    print(f"🔍 Detected account type '{detected_type}' from keyword '{keyword}'")
+                    break
+            if detected_type != 'asset_current':
+                break
+        
+        # Generate unique account code
+        account_code = generate_unique_account_code(models, db, uid, password, account_name, detected_type, context)
+        
+        return detected_type, account_code
+        
+    except Exception as e:
+        print(f"❌ Error determining account type: {e}")
+        return 'asset_current', '999999'  # Safe fallback
+
+def generate_unique_account_code(models, db, uid, password, account_name, account_type, context):
+    """Generate a unique account code based on account type and name"""
+    try:
+        # Base code mapping for different account types
+        base_codes = {
+            'asset_current': '1200',
+            'asset_receivable': '1100',
+            'asset_non_current': '1500',
+            'liability_payable': '2100',
+            'liability_current': '2200',
+            'liability_non_current': '2500',
+            'equity': '3000',
+            'income': '4000',
+            'expense': '5000'
+        }
+        
+        base_code = base_codes.get(account_type, '9000')
+        
+        # Create a numeric suffix based on account name
+        name_hash = hashlib.md5(account_name.encode()).hexdigest()
+        numeric_suffix = ''.join(filter(str.isdigit, name_hash))[:3]
+        
+        # If no digits in hash, use a default
+        if not numeric_suffix:
+            numeric_suffix = '001'
+        
+        # Pad to ensure 3 digits
+        numeric_suffix = numeric_suffix.zfill(3)
+        
+        # Combine base code with suffix
+        if len(base_code) >= 4:
+            proposed_code = f"{base_code[:-3]}{numeric_suffix}"
+        else:
+            proposed_code = f"{base_code}{numeric_suffix}"
+        
+        # Check if code already exists and find a unique one
+        attempt = 0
+        while attempt < 100:  # Prevent infinite loop
+            try:
+                existing_accounts = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'search',
+                    [[('code', '=', proposed_code)]], 
+                    {'limit': 1, 'context': context}
+                )
+                
+                if not existing_accounts:
+                    print(f"✅ Generated unique account code: {proposed_code}")
+                    return proposed_code
+                
+                # Code exists, try with incremented suffix
+                attempt += 1
+                incremented_suffix = str(int(numeric_suffix) + attempt).zfill(3)
+                if len(base_code) >= 4:
+                    proposed_code = f"{base_code[:-3]}{incremented_suffix}"
+                else:
+                    proposed_code = f"{base_code}{incremented_suffix}"
+                    
+            except Exception as e:
+                print(f"❌ Error checking code {proposed_code}: {e}")
+                attempt += 1
+        
+        # If all attempts failed, use timestamp-based code
+        timestamp_suffix = str(int(datetime.now().timestamp()))[-3:]
+        if len(base_code) >= 4:
+            proposed_code = f"{base_code[:-3]}{timestamp_suffix}"
+        else:
+            proposed_code = f"{base_code}{timestamp_suffix}"
+        
+        print(f"✅ Generated fallback account code: {proposed_code}")
+        return proposed_code
+        
+    except Exception as e:
+        print(f"❌ Error generating account code: {e}")
+        # Ultimate fallback
+        return f"9{str(int(datetime.now().timestamp()))[-3:]}"
+
+def find_or_create_partner(models, db, uid, password, partner_name, context):
+    """Find existing partner by name or create new one"""
+    try:
+        print(f"🔍 Looking for partner: '{partner_name}'")
+        
+        # First check if partner_name is actually an ID (integer)
+        try:
+            partner_id = int(partner_name)
+            # If it's an ID, try to fetch the partner details
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [[partner_id], ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            if partner_data:
+                partner = partner_data[0]
+                print(f"✅ Found partner by ID: {partner['name']} (ID: {partner['id']})")
+                return {
+                    'id': partner['id'],
+                    'name': partner['name'],
+                    'email': partner.get('email'),
+                    'phone': partner.get('phone'),
+                    'is_company': partner.get('is_company'),
+                    'vat': partner.get('vat'),
+                    'created': False
+                }
+        except ValueError:
+            # Not an integer, continue with name search
+            pass
+        
+        # Search for existing partner by exact name match
+        partner_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [[('name', '=', partner_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if partner_ids:
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [partner_ids, ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            partner = partner_data[0]
+            print(f"✅ Found existing partner: {partner['name']} (ID: {partner['id']})")
+            return {
+                'id': partner['id'],
+                'name': partner['name'],
+                'email': partner.get('email'),
+                'phone': partner.get('phone'),
+                'is_company': partner.get('is_company'),
+                'vat': partner.get('vat'),
+                'created': False
+            }
+        
+        # Try partial match (case insensitive)
+        partner_ids = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'search',
+            [[('name', 'ilike', partner_name)]], 
+            {'limit': 1, 'context': context}
+        )
+        
+        if partner_ids:
+            partner_data = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [partner_ids, ['id', 'name', 'email', 'phone', 'is_company', 'vat']], 
+                {'context': context}
+            )
+            
+            partner = partner_data[0]
+            print(f"✅ Found partner by partial match: {partner['name']} (ID: {partner['id']})")
+            return {
+                'id': partner['id'],
+                'name': partner['name'],
+                'email': partner.get('email'),
+                'phone': partner.get('phone'),
+                'is_company': partner.get('is_company'),
+                'vat': partner.get('vat'),
+                'created': False
+            }
+        
+        # Partner not found, create new one
+        print(f"📝 Creating new partner: {partner_name}")
+        
+        # Determine if it's a company based on name patterns
+        is_company = any(keyword in partner_name.lower() for keyword in 
+                        ['ltd', 'limited', 'corp', 'corporation', 'inc', 'llc', 'plc', 'sa', 'bv', 'gmbh'])
+        
+        partner_data = {
+            'name': partner_name,
+            'is_company': is_company,
+            'customer_rank': 1,  # Mark as customer
+            'supplier_rank': 1,  # Mark as supplier (can be both)
+        }
+        
+        new_partner_id = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'create',
+            [partner_data], 
+            {'context': context}
+        )
+        
+        if new_partner_id:
+            print(f"✅ Created new partner: {partner_name} (ID: {new_partner_id})")
+            return {
+                'id': new_partner_id,
+                'name': partner_name,
+                'email': None,
+                'phone': None,
+                'is_company': is_company,
+                'vat': None,
+                'created': True
             }
         else:
-            return {
-                "success": False,
-                "error": result["error"],
-                "raw_response": result.get("raw_response")
-            }
+            print(f"❌ Failed to create partner: {partner_name}")
+            return None
             
     except Exception as e:
-        print(f"Bank statement processing error: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Internal processing error: {str(e)}"
-        }
+        print(f"❌ Error finding/creating partner '{partner_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
-def health_check():
-    """Health check for the bank statement processing service"""
+def get_journal_details(models, db, uid, password, journal_id, context):
+    """Fetch journal details including code, name, and type"""
     try:
-        # Check if required environment variables are set
-        required_vars = ['ANTHROPIC_API_KEY']
-        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        journal_data = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'read',
+            [[journal_id], ['id', 'name', 'code', 'type']], 
+            {'context': context}
+        )
         
-        if missing_vars:
+        if not journal_data:
+            print(f"❌ Journal with ID {journal_id} not found")
+            return None
+        
+        journal = journal_data[0]
+        print(f"✅ Journal details retrieved: {journal['name']} ({journal['code']}) - Type: {journal['type']}")
+        
+        return journal
+        
+    except Exception as e:
+        print(f"❌ Error retrieving journal details: {e}")
+        return None
+
+def check_for_duplicate_by_ref(models, db, uid, password, ref, company_id, context):
+    """Check if a duplicate transaction exists by reference"""
+    try:
+        print(f"🔍 Checking for duplicate by reference: {ref}")
+        
+        existing_moves = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[
+                ('company_id', '=', company_id),
+                ('ref', '=', ref)
+            ]], 
+            {'fields': ['id', 'ref', 'date', 'state', 'amount_total'], 'limit': 1, 'context': context}
+        )
+        
+        if existing_moves:
+            move = existing_moves[0]
+            print(f"❌ Duplicate found by reference:")
+            print(f"   Existing: Move ID {move['id']}, Ref: {move['ref']}")
+            print(f"   Date: {move['date']}, Amount: {move['amount_total']}")
             return {
-                "healthy": False,
-                "error": f"Missing environment variables: {', '.join(missing_vars)}"
+                'is_duplicate': True,
+                'existing_entry_id': move['id'],
+                'method': 'exact_reference_match',
+                'existing_ref': move['ref'],
+                'existing_amount': move['amount_total'],
+                'existing_date': move['date']
             }
         
+        print("✅ No duplicate reference found")
         return {
-            "healthy": True,
-            "service": "claude-bank-statement-extraction",
-            "version": "1.2",
-            "capabilities": [
-                "transaction_extraction",
-                "accounting_assignment",
-                "double_entry_validation",
-                "transaction_classification",
-                "account_code_mapping",
-                "structured_json_output"
-            ],
-            "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
-            "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
-            "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
+            'is_duplicate': False,
+            'existing_entry_id': None,
+            'method': None
         }
         
     except Exception as e:
+        print(f"❌ Error checking for duplicates: {e}")
+        import traceback
+        traceback.print_exc()
         return {
-            "healthy": False,
-            "error": str(e)
+            'is_duplicate': True,
+            'existing_entry_id': None,
+            'method': 'error_safe_mode',
+            'error': str(e)
         }
 
-# Example usage for testing
-if __name__ == "__main__":
-    # Test the JSON extraction function with accounting assignment
-    test_response = '''[
-  {
-    "company_id": 123,
-    "date": "2025-07-16",
-    "ref": "share_capital_payment",
-    "narration": "New Share Capital receipt",
-    "partner": "Shareholder ABC",
-    "accounting_assignment": {
-      "debit_account": "1204",
-      "debit_account_name": "Bank",
-      "credit_account": "1100", 
-      "credit_account_name": "Accounts receivable",
-      "transaction_type": "share_capital_receipt",
-      "requires_vat": false,
-      "additional_entries": []
-    },
-    "line_items": [
-      {
-        "name": "Bank",
-        "debit": 15000.00,
-        "credit": 0.00
-      },
-      {
-        "name": "Accounts receivable",
-        "debit": 0.00,
-        "credit": 15000.00
-      }
-    ]
-  }
-]'''
-    
+def verify_company_exists(models, db, uid, password, company_id):
+    """Verify that the company exists and return its details"""
     try:
-        result = extract_json_from_response(test_response)
-        print("JSON extraction test successful:")
-        print(json.dumps(result, indent=2))
+        print(f"🔍 Verifying company with ID: {company_id}")
         
-        validate_transaction_json(result)
-        print("Validation test successful!")
+        company_data = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('id', '=', company_id)]], 
+            {'fields': ['id', 'name', 'country_id', 'currency_id'], 'limit': 1}
+        )
         
-        # Test accounting validation
-        validation_results = validate_accounting_assignments(result)
-        print("Accounting validation results:")
-        for validation in validation_results:
-            print(f"Transaction {validation['transaction_index']}: {'Valid' if validation['accounting_valid'] else 'Invalid'}")
-            if validation['issues']:
-                print(f"  Issues: {validation['issues']}")
-            if validation['warnings']:
-                print(f"  Warnings: {validation['warnings']}")
+        if not company_data:
+            print(f"❌ Company with ID {company_id} not found")
+            return None
+        
+        company = company_data[0]
+        print(f"✅ Company verified: {company['name']}")
+        print(f"   Country: {company.get('country_id', 'Not set')}")
+        print(f"   Currency: {company.get('currency_id', 'Not set')}")
+        
+        return company
         
     except Exception as e:
-        print(f"Test failed: {str(e)}")
+        print(f"❌ Error verifying company: {e}")
+        return None
+
+def validate_and_fix_date(date_str):
+    """Ensure date is not in the future and is valid"""
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        today = datetime.now()
+        
+        # If date is in the future, use today's date
+        if date_obj > today:
+            corrected_date = today.strftime('%Y-%m-%d')
+            print(f"⚠️  Future date {date_str} corrected to {corrected_date}")
+            return corrected_date
+        
+        return date_str
+    except ValueError:
+        # If invalid format, use today
+        corrected_date = datetime.now().strftime('%Y-%m-%d')
+        print(f"⚠️  Invalid date format {date_str} corrected to {corrected_date}")
+        return corrected_date
