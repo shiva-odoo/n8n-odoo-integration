@@ -384,19 +384,24 @@ def process_single_transaction(transaction_data, transaction_index):
             'success': True,
             'transaction_index': transaction_index,
             'journal_entry_id': journal_entry_id,
+            
+            # Required fields as requested
+            'amount': total_debits,
+            'company_name': company_details['name'],
             'date': transaction_data['date'],
+            'description': transaction_data['narration'],
+            'partner': partner_info['name'] if partner_info else None,
+            'reference': transaction_data['ref'],
+            
+            # Additional detailed fields
             'original_date': original_date,
             'date_was_modified': date_was_modified,
             'company_id': company_id,
-            'company_name': company_details['name'],
             'journal_id': journal_id,
             'journal_code': journal_details['code'],
             'journal_name': journal_details['name'],
             'journal_type': journal_details['type'],
-            'reference': transaction_data['ref'],
-            'description': transaction_data['narration'],
-            'partner': partner_info,
-            'total_amount': total_debits,
+            'partner_details': partner_info,
             'line_count': len(transaction_data['line_items']),
             'created_accounts': created_accounts,
             'line_items_processed': [
