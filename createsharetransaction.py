@@ -351,17 +351,20 @@ def check_duplicate_share_transaction(models, db, uid, password, partner_id, tra
 
 def main(data):
     """
-    Create share capital transaction from HTTP request data
+    Create share capital transaction from HTTP request data (updated for new input format)
     
-    Expected data format:
+    Expected data format (flattened from N8N transformation):
     {
-        "customer_name": "STELIOS KYRANIDES",    # Optional - Partner name (can be None for company transactions)
+        "customer_name": "STELIOS KYRANIDES",    # Partner name (can be None for company transactions)
         "company_id": 60,                        # MANDATORY - Company ID for transaction
-        "invoice_date": "2025-07-15",            # optional, defaults to today
-        "due_date": "2025-07-15",                # optional, defaults to today if null/empty
-        "journal_id": 386,                       # MANDATORY - Journal ID for the transaction
-        "customer_ref": "Share Allotment Resolution 15/07/2025",  # optional
-        "payment_reference": "HE 474078",       # optional
+        "journal_id": 419,                       # MANDATORY - Journal ID for the transaction
+        "invoice_date": "2025-07-15",            # Transaction date
+        "due_date": "2025-07-15",                # Due date (optional, defaults to invoice_date)
+        "customer_ref": "Director's Resolution dated 15/07/2025",  # Transaction reference
+        "payment_reference": "",                 # Payment reference (optional)
+        "subtotal": 15000.0,
+        "tax_amount": 0.0,
+        "total_amount": 15000.0,
         "line_items": [                          # Line items for the transaction
             {
                 "description": "15,000 ordinary shares of nominal value €1 each",
@@ -370,14 +373,11 @@ def main(data):
                 "tax_rate": 0
             }
         ],
-        "subtotal": 15000.0,
-        "tax_amount": 0.0,
-        "total_amount": 15000.0,
         "accounting_assignment": {               # Accounting assignment for journal entries
+            "debit_account": "1100",
+            "debit_account_name": "Accounts receivable",
             "credit_account": "3000",
             "credit_account_name": "Share Capital",
-            "debit_account": "1204",
-            "debit_account_name": "Bank",
             "additional_entries": []             # Optional additional journal entries
         }
     }
@@ -396,14 +396,15 @@ def main(data):
             'error': 'journal_id is required'
         }
     
-    # Extract data
+    # Extract data from flattened structure
     customer_name = data.get('customer_name')
     company_id = data['company_id']
     journal_id = data['journal_id']
+    customer_ref = data.get('customer_ref')
     payment_reference = data.get('payment_reference')
-    subtotal = data.get('subtotal')
-    tax_amount = data.get('tax_amount')
-    total_amount = data.get('total_amount')
+    subtotal = data.get('subtotal', 0.0)
+    tax_amount = data.get('tax_amount', 0.0)
+    total_amount = data.get('total_amount', 0.0)
     
     # Odoo connection details  
     url = os.getenv("ODOO_URL")
@@ -503,7 +504,6 @@ def main(data):
         expected_total = float(total_amount) if total_amount else 0.0
         
         # Check for duplicate transaction in the specific company
-        customer_ref = data.get('customer_ref')
         existing_transaction = check_duplicate_share_transaction(
             models, db, uid, password, 
             partner_id, transaction_date, expected_total, company_id, customer_ref
@@ -530,10 +530,10 @@ def main(data):
             move_data['ref'] = customer_ref
         
         # Add payment_reference if provided
-        if payment_reference and payment_reference != 'none':
+        if payment_reference and payment_reference not in ['', 'none', None]:
             move_data['narration'] = f"Payment Reference: {payment_reference}"
         
-        # Handle journal entry lines - this is different from invoice lines
+        # Handle journal entry lines
         move_line_ids = []
         accounting_assignment = data.get('accounting_assignment', {})
         
@@ -547,7 +547,7 @@ def main(data):
         debit_account_id = None
         credit_account_id = None
         
-        # Find debit account (usually Bank or Cash)
+        # Find debit account (usually Bank or Accounts Receivable)
         if accounting_assignment.get('debit_account_name'):
             debit_account_id = find_account_by_name(
                 models, db, uid, password, 
@@ -629,7 +629,7 @@ def main(data):
         # Create journal entry lines
         combined_description = "; ".join(line_descriptions) if line_descriptions else "Share Capital Transaction"
         
-        # Debit line (Bank/Cash receives money)
+        # Debit line (Accounts Receivable - money to be received)
         debit_line = {
             'account_id': debit_account_id,
             'name': combined_description,
@@ -761,7 +761,7 @@ def main(data):
             'transaction_date': transaction_date,
             'journal_name': journal_info['name'],
             'journal_code': journal_info['code'],
-            'payment_reference': payment_reference if payment_reference != 'none' else None,
+            'payment_reference': payment_reference if payment_reference not in ['', 'none', None] else None,
             'line_items': line_items,
             'message': 'Share capital transaction created and posted successfully'
         }

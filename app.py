@@ -54,7 +54,7 @@ import matchingworkflow
 import processtransaction
 import process_bill
 import process_invoice
-import createsharecapital
+import createsharetransaction
 import process_share_documents
 
 app = Flask(__name__)
@@ -2320,12 +2320,12 @@ def get_journals_by_company():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     
-@app.route('/api/create/sharecapital', methods=['POST'])
+@app.route('/api/create/share-transaction', methods=['POST'])
 def create_share_capital_endpoint():
     """Create share capital transaction"""
     try:
         data = request.json or {}
-        result = createsharecapital.main(data)
+        result = createsharetransaction.main(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
