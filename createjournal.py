@@ -473,3 +473,122 @@ def list_accounts(company_id=None):
             'success': False,
             'error': str(e)
         }
+    
+def get_company_journals(data):
+    """
+    Get all journals for a specific company
+    
+    Expected data format:
+    {
+        "company_id": 1  # Required - Company ID to get journals for
+    }
+    
+    Returns:
+    {
+        "success": True/False,
+        "company_id": 1,
+        "company_name": "Company Name",
+        "journals": [
+            {
+                "id": 1,
+                "name": "Sales",
+                "code": "INV", 
+                "type": "sale"
+            },
+            {
+                "id": 2,
+                "name": "Purchases",
+                "code": "BILL",
+                "type": "purchase"
+            },
+            ...
+        ],
+        "count": 5
+    }
+    """
+    
+    # Validate required fields
+    if not data.get('company_id'):
+        return {
+            'success': False,
+            'error': 'company_id is required'
+        }
+    
+    company_id = data['company_id']
+    
+    # Validate company_id is a number
+    try:
+        company_id = int(company_id)
+    except (ValueError, TypeError):
+        return {
+            'success': False,
+            'error': 'company_id must be a valid number'
+        }
+    
+    # Odoo connection details
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    if not username or not password:
+        return {
+            'success': False,
+            'error': 'ODOO_USERNAME and ODOO_API_KEY environment variables are required'
+        }
+    
+    try:
+        # Connect to Odoo
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        # Authenticate
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {
+                'success': False,
+                'error': 'Odoo authentication failed'
+            }
+        
+        # Verify company exists and get company name
+        company_info = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('id', '=', company_id)]], 
+            {'fields': ['id', 'name'], 'limit': 1}
+        )
+        
+        if not company_info:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
+        company_name = company_info[0]['name']
+        
+        # Get all journals for the company
+        journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search_read',
+            [[('company_id', '=', company_id)]], 
+            {'fields': ['id', 'name', 'code', 'type'], 'order': 'type, name'}
+        )
+        
+        return {
+            'success': True,
+            'company_id': company_id,
+            'company_name': company_name,
+            'journals': journals,
+            'count': len(journals)
+        }
+        
+    except xmlrpc.client.Fault as e:
+        return {
+            'success': False,
+            'error': f'Odoo API error: {str(e)}'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }

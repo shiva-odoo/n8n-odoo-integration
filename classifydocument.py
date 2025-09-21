@@ -19,7 +19,7 @@ The user's company is: "{company_name}"
 **CLASSIFICATION RULES:**
 
 1. **DOCUMENT RELEVANCE CHECK (Do this FIRST):**
-   - Is this document a bill, invoice, bank statement, or legal document with financial implications?
+   - Is this document a bill, invoice, bank statement, or share document with financial implications?
    - If NO (e.g., contracts, memos, letters, reports, certificates without financial data) → classify as illegible_document
 
 2. **ILLEGIBLE DOCUMENT CHECK (Do this SECOND):**
@@ -97,7 +97,7 @@ Before classifying, you MUST answer these verification questions:
 - "invoice": User's company issued it, requesting payment
 - "bill": User's company received it, must pay another company
 - "bank_statement": Bank-issued statement with transactions
-- "legal_document": Legal/corporate filing with financial impact
+- "share_document": Share-related documents or corporate filings with financial impact
 - null: Only for illegible documents
 
 **CATEGORIES:**
@@ -108,7 +108,7 @@ Before classifying, you MUST answer these verification questions:
 
 **REQUIRED JSON OUTPUT FORMAT:**
 {{{{
-  "document_type": "invoice|bill|bank_statement|legal_document|null",
+  "document_type": "invoice|bill|bank_statement|share_document|null",
   "category": "money_coming_in|money_going_out|bank_statement|illegible_document",
   "company_name": "{company_name}",
   "total_amount": 1250.00

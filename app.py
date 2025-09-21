@@ -54,6 +54,8 @@ import matchingworkflow
 import processtransaction
 import process_bill
 import process_invoice
+import createsharecapital
+import process_share_documents
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -2076,6 +2078,257 @@ def process_invoice_endpoint():
             "error": "Internal server error",
             "details": "An unexpected error occurred while processing the request"
         }), 500
+    
+@app.route('/api/process-share-document', methods=['POST'])
+def process_share_document_endpoint():
+    """
+    Process multi-document PDF containing share capital transactions into structured data
+    Combines document splitting and data extraction in one operation
+    
+    Expected JSON body:
+    {
+        "s3_key": "clients/Company Name/share-allotments.pdf",
+        "company_name": "ACME Corporation Ltd",
+        "bucket_name": "company-documents-2025"  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "total_transactions": 2,
+        "transactions": [
+            {
+                "transaction_index": 1,
+                "page_range": "1",
+                "document_classification": {
+                    "document_type": "share_capital_transaction",
+                    "company_position": "issuer",
+                    "direction_confidence": "high",
+                    "detection_details": "Share allotment resolution detected"
+                },
+                "company_validation": {
+                    "expected_company": "ACME Corporation Ltd",
+                    "found_companies": ["ACME Corporation Ltd"],
+                    "company_match": "exact_match",
+                    "match_details": "Exact match found in issuer details"
+                },
+                "company_data": {
+                    "name": "ACME Corporation Ltd",
+                    "email": "shares@acme.com",
+                    "phone": "+1234567890",
+                    "street": "123 Business Ave",
+                    "city": "Business City",
+                    "zip": "12345",
+                    "country_code": "US"
+                },
+                "partner_data": {
+                    "name": "John Alexander Smith",
+                    "email": "j.smith@email.com",
+                    "phone": "+357 99 987654",
+                    "street": "45 Investment Street",
+                    "city": "Limassol",
+                    "zip": "3456",
+                    "country_code": "CY",
+                    "transaction_date": "2025-01-15",
+                    "due_date": "2025-02-15",
+                    "transaction_ref": "SA-2025-001",
+                    "payment_reference": "SHARE-ALLOT-001",
+                    "description": "Allotment of 15,000 ordinary shares at €1.00 nominal value each",
+                    "subtotal": 15000.00,
+                    "tax_amount": 0.00,
+                    "total_amount": 15000.00,
+                    "currency_code": "EUR",
+                    "share_details": [
+                        {
+                            "share_type": "Ordinary",
+                            "number_of_shares": 15000,
+                            "nominal_value_per_share": 1.00,
+                            "total_value": 15000.00,
+                            "description": "15,000 ordinary shares with voting rights"
+                        }
+                    ]
+                },
+                "accounting_assignment": {
+                    "debit_account": "1100",
+                    "debit_account_name": "Accounts receivable",
+                    "credit_account": "3000",
+                    "credit_account_name": "Share Capital",
+                    "vat_treatment": "",
+                    "requires_reverse_charge": false,
+                    "additional_entries": []
+                },
+                "extraction_confidence": {
+                    "partner_name": "high",
+                    "total_amount": "high",
+                    "share_details": "high",
+                    "dates": "medium",
+                    "company_validation": "high",
+                    "document_classification": "high"
+                },
+                "missing_fields": []
+            }
+            // Additional transactions...
+        ],
+        "processing_summary": {
+            "transactions_processed": 2,
+            "transactions_with_issues": 0,
+            "success_rate": "100.0%"
+        },
+        "validation_results": [
+            {
+                "transaction_index": 1,
+                "issues": [],
+                "warnings": [],
+                "mandatory_fields_present": true,
+                "structure_complete": true
+            }
+            // Additional validation results...
+        ],
+        "metadata": {
+            "company_name": "ACME Corporation Ltd",
+            "s3_key": "clients/Company Name/share-allotments.pdf",
+            "token_usage": {
+                "input_tokens": 3245,
+                "output_tokens": 1876
+            }
+        }
+    }
+    
+    Error Response:
+    {
+        "success": false,
+        "error": "Missing required fields: company_name",
+        "details": "Additional error context if available"
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body is required"
+            }), 400
+        
+        required_fields = ['s3_key', 'company_name']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        
+        if missing_fields:
+            return jsonify({
+                "success": False,
+                "error": f"Missing required fields: {', '.join(missing_fields)}",
+                "details": f"Required fields are: {', '.join(required_fields)}"
+            }), 400
+        
+        # Validate field types and values
+        if not isinstance(data['s3_key'], str) or not data['s3_key'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid s3_key",
+                "details": "s3_key must be a non-empty string"
+            }), 400
+            
+        if not isinstance(data['company_name'], str) or not data['company_name'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid company_name", 
+                "details": "company_name must be a non-empty string"
+            }), 400
+        
+        # Optional bucket_name validation
+        if 'bucket_name' in data and (not isinstance(data['bucket_name'], str) or not data['bucket_name'].strip()):
+            return jsonify({
+                "success": False,
+                "error": "Invalid bucket_name",
+                "details": "bucket_name must be a non-empty string if provided"
+            }), 400
+        
+        # Log processing start
+        print(f"📈 Processing share transactions for company: {data['company_name']}")
+        print(f"📄 S3 document: {data['s3_key']}")
+        
+        # Call the share document processing function
+        result = process_share_documents.main(data)
+        
+        # Handle successful processing
+        if result["success"]:
+            # Log success metrics
+            total_transactions = result.get("total_transactions", 0)
+            transactions_with_issues = result.get("processing_summary", {}).get("transactions_with_issues", 0)
+            success_rate = result.get("processing_summary", {}).get("success_rate", "0%")
+            
+            print(f"✅ Successfully processed {total_transactions} share transactions")
+            print(f"📊 Success rate: {success_rate}")
+            if transactions_with_issues > 0:
+                print(f"⚠️  Transactions with issues: {transactions_with_issues}")
+            
+            # Return successful response
+            return jsonify(result), 200
+        else:
+            # Log processing failure
+            error_msg = result.get("error", "Unknown error")
+            print(f"❌ Share transaction processing failed: {error_msg}")
+            
+            # Return error response with appropriate status code
+            status_code = 422 if "validation" in error_msg.lower() else 500
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "details": result.get("raw_response", "No additional details available")[:200] if result.get("raw_response") else None
+            }), status_code
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"❌ Process share document endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "An unexpected error occurred while processing the request"
+        }), 500
+
+
+
+# ================================
+# GET JOURNALS TESTING
+# ================================
+
+@app.route('/api/getJournalsByCompany', methods=['POST'])
+def get_journals_by_company():
+    """Get all journals for a specific company ID"""
+    try:
+        data = request.json or {}
+        result = createjournal.get_company_journals(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/create/sharecapital', methods=['POST'])
+def create_share_capital_endpoint():
+    """Create share capital transaction"""
+    try:
+        data = request.json or {}
+        result = createsharecapital.main(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 

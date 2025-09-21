@@ -393,40 +393,53 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
 
 def create_essential_journals(models, db, uid, password, company_id, currency_id=None):
     """
-    Create essential journals for a new company (Sales, Purchase, Bank, Cash, Miscellaneous)
+    Create essential journals for a new company (Sales, Purchase, Bank, Cash, Journal Voucher)
+    
+    NOTE: The Chart of Accounts installation may automatically create additional journals
+    like "Miscellaneous Operations". This is normal Odoo behavior. We explicitly create 
+    a "Journal Voucher" journal for manual accounting entries to maintain consistency
+    across all companies created by this script.
     """
     try:
         created_journals = []
+        
+        # Define journals to create explicitly
+        # Note: Chart of Accounts may create additional default journals automatically
         journals_to_create = [
             {
                 'name': 'Sales',
                 'code': 'SAL',
                 'type': 'sale',
                 'company_id': company_id,
+                'purpose': 'Customer invoices and sales transactions'
             },
             {
                 'name': 'Purchases',
                 'code': 'PUR',
                 'type': 'purchase',
                 'company_id': company_id,
+                'purpose': 'Vendor bills and purchase transactions'
             },
             {
                 'name': 'Bank',
                 'code': 'BNK',
                 'type': 'bank',
                 'company_id': company_id,
+                'purpose': 'Bank account transactions and reconciliation'
             },
             {
                 'name': 'Cash',
                 'code': 'CSH',
                 'type': 'cash',
                 'company_id': company_id,
+                'purpose': 'Cash transactions and petty cash entries'
             },
             {
-                'name': 'Miscellaneous Operations',
-                'code': 'MISC',
+                'name': 'Journal Voucher',
+                'code': 'JV',
                 'type': 'general',
                 'company_id': company_id,
+                'purpose': 'Manual journal entries and adjustments - explicitly created by this script'
             }
         ]
         
@@ -435,7 +448,9 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
             for journal in journals_to_create:
                 journal['currency_id'] = currency_id
         
-        # Create each journal
+        # Create each journal explicitly
+        print("Creating essential journals (Chart of Accounts may create additional default journals automatically)...")
+        
         for journal_data in journals_to_create:
             try:
                 # Check if journal with this code already exists for this company
@@ -446,13 +461,16 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 )
                 
                 if existing:
-                    print(f"Journal {journal_data['code']} already exists for company {company_id}")
+                    print(f"Journal {journal_data['code']} ({journal_data['name']}) already exists for company {company_id}")
                     continue
+                
+                # Remove the 'purpose' field before creating (it's just for documentation)
+                create_data = {k: v for k, v in journal_data.items() if k != 'purpose'}
                 
                 journal_id = models.execute_kw(
                     db, uid, password,
                     'account.journal', 'create',
-                    [journal_data]
+                    [create_data]
                 )
                 
                 if journal_id:
@@ -460,27 +478,35 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                         'id': journal_id,
                         'name': journal_data['name'],
                         'code': journal_data['code'],
-                        'type': journal_data['type']
+                        'type': journal_data['type'],
+                        'purpose': journal_data['purpose']
                     })
-                    print(f"Created journal: {journal_data['name']} ({journal_data['code']}) - ID: {journal_id}")
+                    print(f"✓ Created journal: {journal_data['name']} ({journal_data['code']}) - ID: {journal_id}")
+                    print(f"  Purpose: {journal_data['purpose']}")
                     
             except Exception as journal_error:
-                print(f"Failed to create journal {journal_data['name']}: {str(journal_error)}")
+                print(f"✗ Failed to create journal {journal_data['name']}: {str(journal_error)}")
                 # For sales/purchase journals, this might be due to missing accounts
                 if journal_data['type'] in ['sale', 'purchase']:
-                    print(f"  -> This is likely due to Chart of Accounts not being fully ready")
+                    print(f"  → This is likely due to Chart of Accounts not being fully ready")
                 continue
         
         if created_journals:
+            print(f"\n📋 Summary: Successfully created {len(created_journals)} essential journals")
+            print("Note: Chart of Accounts may have also created additional default journals (like 'Miscellaneous Operations')")
+            print("The 'Journal Voucher' journal created above is specifically for manual entries and consistency.")
+            
             return {
                 'success': True,
                 'journals': created_journals,
-                'message': f'Created {len(created_journals)} journals'
+                'message': f'Created {len(created_journals)} essential journals',
+                'note': 'Chart of Accounts may create additional default journals automatically'
             }
         else:
             return {
                 'success': False,
-                'error': 'No journals were created - they may already exist or Chart of Accounts is not ready'
+                'error': 'No journals were created - they may already exist or Chart of Accounts is not ready',
+                'note': 'Chart of Accounts installation may have created default journals automatically'
             }
             
     except Exception as e:
