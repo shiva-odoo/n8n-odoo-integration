@@ -627,25 +627,31 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 • DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 • **Government fees are vendor payments that clear previously recorded liabilities**
 
-**Reimbursements and Other Income:**
-• Indicators: "reimbursement", "refund received", miscellaneous income
-• DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
-• Money received as reimbursements or other non-operating income
+**Other Non-Operating Expenses (EXTREMELY RARE for outgoing payments):**
+• **WARNING: Only use for very specific cases where absolutely certain no vendor relationship exists**
+• **DO NOT USE for**: Bank transfers, internet transfers, generic payments, unknown transfers
+• **EXCEPTIONS ONLY**: Regulatory penalties, interest payments, very specific non-vendor expenses
+• **DEFAULT RULE**: When uncertain about outgoing payment → Use supplier_payment, NOT other_expense
+• **CONSERVATIVE APPROACH**: Better to incorrectly classify as vendor payment than miss vendor settlement
 
 **CRITICAL PAYMENT CLASSIFICATION HIERARCHY:**
-1. **ABSOLUTE PRIORITY - Supplier Payment**: ALL payments to ANY vendor/supplier/government entity classify as supplier_payment (accounts payable settlement)
-2. **INCLUDES**: Professional services, government fees, registrar fees, equipment suppliers, consultants, regulatory bodies
+1. **ABSOLUTE PRIORITY - Supplier Payment**: ALL outgoing payments default to supplier_payment unless explicitly identified otherwise
+2. **UNIVERSAL DEFAULT**: When in doubt about ANY outgoing payment → Use supplier_payment (2100 Accounts payable)
 3. **RULE**: "The payment to the Vendor always goes to accounts payable. When the supporting invoice is provided that is when we create the expense and allocate VAT"
-4. **DEFAULT for ALL Vendor Payments**: Use supplier_payment (2100 Accounts payable) - assumes bills were recorded previously
-5. **RARE EXCEPTION**: Only use direct expense if absolutely certain no bill could have been recorded (very uncommon)
+4. **ASSUMPTION**: All businesses have proper bill recording procedures - payments clear previously recorded liabilities
+5. **RARE EXCEPTIONS ONLY**: Bank charges (to banks), share capital, or explicit income receipts
+6. **NEVER use direct expenses for ambiguous payments** - always default to supplier_payment
 
 **VENDOR PAYMENT IDENTIFICATION:**
-• **ALL vendors/suppliers (INCLUDING government entities)** → supplier_payment (2100 Accounts payable)
-• Professional service providers (architects, engineers, surveyors, consultants, lawyers) → supplier_payment (2100 Accounts payable)
-• Government entities (registrar, regulatory bodies, tax authorities) → supplier_payment (2100 Accounts payable)
-• Equipment/goods suppliers → supplier_payment (2100 Accounts payable)
-• **UNIVERSAL RULE**: ANY entity that could provide a bill/invoice → supplier_payment (2100 Accounts payable)
-• **When in doubt about ANY payment → Use supplier_payment (2100 Accounts payable)**
+• **UNIVERSAL DEFAULT**: ALL outgoing payments → supplier_payment (2100 Accounts payable) unless explicitly identified as:
+  - Bank charges to financial institutions
+  - Share capital transactions  
+  - Clearly identified customer receipts
+• **AMBIGUOUS PAYMENTS**: Bank transfers, internet transfers, generic payments → supplier_payment (2100 Accounts payable)
+• **ASSUMPTION**: Every business payment could have had a bill recorded previously
+• **INCLUDES**: Professional services, government fees, utilities, supplies, equipment, regulatory fees, unknown transfers
+• **When partner unknown or description unclear → ALWAYS use supplier_payment (2100 Accounts payable)**
+• **NEVER guess direct expenses** - default to liability settlement
 
 **VAT/TAX Handling:**
 • Most bank transactions don't involve VAT directly
@@ -654,18 +660,18 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 
 TRANSACTION PATTERN RECOGNITION EXPERTISE:
 • **STEP 1: Determine money flow direction from bank statement debit/credit columns**
-• **STEP 2: Apply UNIVERSAL VENDOR PAYMENT RULE - ALL vendors = supplier_payment**
-• **STEP 3: Analyze transaction descriptions to identify counterparty**
+• **STEP 2: Apply UNIVERSAL DEFAULT - ALL outgoing payments = supplier_payment unless explicitly identified otherwise**
+• **STEP 3: Only classify as non-supplier if clearly identifiable as bank charges, share capital, or customer receipts**
 • **CRITICAL: Reconcile description keywords with actual money flow direction**
 • Apply proper classification hierarchy AFTER confirming money direction:
   1. Check actual money flow (in/out) from bank statement columns
-  2. **ALL payments to ANY vendor/supplier/government entity → supplier_payment (2100 Accounts payable)**
-  3. Only bank charges to banks → bank_charges (7901 Bank charges)
-  4. Only share capital receipts → share_capital_receipt (1100 Accounts receivable)
-  5. **NEVER use direct expenses unless absolutely certain no bill exists (extremely rare)**
+  2. **If money leaving bank → DEFAULT to supplier_payment (2100 Accounts payable)**
+  3. **EXCEPTIONS ONLY**: Bank charges to banks → bank_charges (7901), Share capital → share_capital_receipt (1100)
+  4. **NEVER use other_expense (8200) for ambiguous outgoing payments**
+  5. **AMBIGUOUS = SUPPLIER PAYMENT**: Unknown transfers, internet transfers, generic payments → supplier_payment
 • **UNIVERSAL RULE**: "The payment to the Vendor always goes to accounts payable"
-• **INCLUDES**: Professional services, government fees, registrar fees, regulatory fees, equipment, supplies
-• **PRIORITY: ALL vendor payments are liability settlements, not direct expenses**
+• **AGGRESSIVE APPLICATION**: Treat ALL unclear outgoing payments as vendor payments
+• **CONSERVATIVE APPROACH**: Better to clear non-existent payables than miss real vendor payments**
 • **WARNING: Do not be misled by keywords like "reimbursement" if money flow shows opposite direction**
 
 **ACCOUNTING ASSIGNMENT RULES:**
@@ -686,18 +692,19 @@ OUTPUT FORMAT REQUIREMENTS:
 CRITICAL REMINDERS:
 • **MONEY FLOW DIRECTION IS PARAMOUNT: Always check bank statement debit/credit columns first**
 • **UNIVERSAL VENDOR RULE: "The payment to the Vendor always goes to accounts payable. When the supporting invoice is provided that is when we create the expense and allocate VAT"**
+• **AGGRESSIVE DEFAULT**: ALL outgoing payments → supplier_payment (2100 Accounts payable) unless explicitly identified otherwise
 • Share capital receipts: DEBIT 1204 (Bank), CREDIT 1100 (Accounts receivable)
-• **ALL vendor payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)**
-• **INCLUDES: Professional services, government fees, registrar fees, regulatory fees, equipment suppliers**
-• Direct expenses (EXTREMELY RARE): Only when absolutely certain no bill could exist
+• **ALL outgoing payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)**
+• **INCLUDES: All transfers, internet payments, unknown payments, professional services, government fees, utilities, supplies**
+• **EXCEPTIONS ONLY**: Bank charges to banks → 7901 (Bank charges), Share capital → 1100 (Accounts receivable)
 • Bank account is always 1204, never use other bank account codes
-• **ALL payments to government/regulatory bodies go to 2100 (Accounts payable)**
+• **NEVER use other_expense (8200) for ambiguous outgoing payments**
 • All bank transactions involve account 1204 (Bank) as either debit or credit
-• **When payment is to ANY vendor/supplier/government entity, ALWAYS use supplier_payment (2100 Accounts payable settlement)**
-• Architecture Design, Hadjioikonomou, Registrar of Companies → ALL supplier_payment (2100 Accounts payable)
+• **When payment purpose unclear, ALWAYS use supplier_payment (2100 Accounts payable settlement)**
+• **CONSERVATIVE APPROACH**: Better to clear non-existent payables than create incorrect direct expenses
 • Assume proper bill recording procedures exist in established businesses
 • **CRITICAL: Keywords like "reimbursement" can be misleading - trust the money flow direction from bank statement columns**
-• **If bank statement shows DEBIT amount: Money is leaving = CREDIT Bank (1204)**
+• **If bank statement shows DEBIT amount: Money is leaving = CREDIT Bank (1204) = DEFAULT to supplier_payment**
 • **If bank statement shows CREDIT amount: Money is entering = DEBIT Bank (1204)**""",
             messages=[
                 {
