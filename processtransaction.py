@@ -20,6 +20,14 @@ You will receive bank statement text. Extract:
 1. **Bank Information**: Bank name, account holder, account number
 2. **All Transactions**: Date, description, amounts, references, transaction type
 3. **Currency Information**: Identify the currency used in transactions
+4. **CRITICAL: Money Flow Direction**: Determine if each transaction is money entering or leaving the bank based on debit/credit columns, NOT description keywords
+
+## MONEY FLOW ANALYSIS RULES (CRITICAL):
+- **Bank Statement DEBIT column**: Money leaving the bank account → DEBIT expense/asset account, CREDIT Bank (1204)
+- **Bank Statement CREDIT column**: Money entering the bank account → DEBIT Bank (1204), CREDIT revenue/liability account
+- **IGNORE misleading keywords**: Words like "reimbursement", "refund", "payment" can be misleading
+- **TRUST the numbers**: The debit/credit columns show actual money movement
+- **Example**: "Reimbursement" in DEBIT column = money going OUT (expense), not coming in (income)
 
 ## CRITICAL OUTPUT REQUIREMENTS
 - Return ONLY a valid JSON array
@@ -199,16 +207,22 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 ## Processing Instructions
 
-1. **Extract ALL transactions** from the statement (both inflows and outflows)
-2. **Classify each transaction** using the pattern recognition rules
-3. **PRIORITY: Default to supplier_payment for all vendor payments** (assumes proper bill recording)
-4. **Assign correct debit/credit accounts** based on transaction type
-5. **Generate appropriate accounting_assignment** object
-6. **Create balanced line_items** ensuring debits = credits
-7. **Clean descriptions** and create business-friendly narrations
-8. **Set company_id** to `{company_id_value}` for every transaction
-9. **Ensure all numeric values are numbers, not strings**
-10. **Use ONLY the account codes and names from the chart of accounts**
+1. **STEP 1: Analyze money flow direction** - Check debit/credit columns in bank statement to determine actual money movement
+2. **STEP 2: Extract ALL transactions** from the statement (both inflows and outflows)
+3. **STEP 3: Classify each transaction** using the pattern recognition rules AFTER confirming money flow direction
+4. **STEP 4: PRIORITY: Default to supplier_payment for all vendor payments** (assumes proper bill recording)
+5. **STEP 5: Assign correct debit/credit accounts** based on transaction type AND money flow direction
+6. **STEP 6: Generate appropriate accounting_assignment** object
+7. **STEP 7: Create balanced line_items** ensuring debits = credits
+8. **STEP 8: Clean descriptions** and create business-friendly narrations
+9. **STEP 9: Set company_id** to `{company_id_value}` for every transaction
+10. **STEP 10: Ensure all numeric values are numbers, not strings**
+11. **STEP 11: Use ONLY the account codes and names from the chart of accounts**
+
+**CRITICAL MONEY FLOW VALIDATION:**
+- If bank statement shows DEBIT: Transaction reduces bank balance (money out) → CREDIT Bank (1204)
+- If bank statement shows CREDIT: Transaction increases bank balance (money in) → DEBIT Bank (1204)
+- Double-check money flow direction against description keywords to catch contradictions
 
 ## Example Transactions:
 
@@ -558,12 +572,15 @@ CHART OF ACCOUNTS (EXACT CODES AND NAMES):
 **CRITICAL ACCOUNT CODE RULE: You MUST use the exact account codes and names from the chart above. Never modify or create new account codes.**
 
 CORE ACCOUNTING BEHAVIOR FOR BANK TRANSACTIONS:
+• **FIRST PRIORITY: Analyze actual money flow direction from bank statement**
+• Check bank statement debit/credit columns to determine if money is entering or leaving bank
+• Money flow takes precedence over description keywords
 • Always think: "What account is being debited?" and "What account is being credited?"
 • Bank transactions always involve the Bank account (1204) as either debit or credit
-• Money coming into bank = DEBIT Bank (1204), CREDIT appropriate source account
-• Money leaving bank = DEBIT appropriate destination account, CREDIT Bank (1204)
+• Money coming into bank (CREDIT on bank statement) = DEBIT Bank (1204), CREDIT appropriate source account
+• Money leaving bank (DEBIT on bank statement) = DEBIT appropriate destination account, CREDIT Bank (1204)
 • Apply proper double-entry principles: debits must equal credits for every transaction
-• Classify transactions based on business purpose and counterparty
+• Classify transactions based on actual money flow direction FIRST, then business purpose and counterparty
 
 TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 
@@ -627,18 +644,22 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 • Set requires_vat to false unless VAT is explicitly mentioned in transaction
 
 TRANSACTION PATTERN RECOGNITION EXPERTISE:
-• Analyze transaction descriptions to identify business purpose and payment type
+• **STEP 1: Determine money flow direction from bank statement debit/credit columns**
+• **STEP 2: Analyze transaction descriptions to identify business purpose and payment type**
 • Extract counterparty names accurately from transaction descriptions
-• Apply proper classification hierarchy:
-  1. Check if payment is to known vendor/supplier → supplier_payment (2100 Accounts payable)
-  2. Check for government/regulatory fees → other_expense (8200 Other expenses)
-  3. Check for bank charges → bank_charges (7901 Bank charges)
-  4. Check for share capital receipts → share_capital_receipt (1100 Accounts receivable)
-  5. Only use consultancy_payment when certain no prior bill exists
+• **CRITICAL: Reconcile description keywords with actual money flow direction**
+• Apply proper classification hierarchy AFTER confirming money direction:
+  1. Check actual money flow (in/out) from bank statement columns
+  2. Check if payment is to known vendor/supplier → supplier_payment (2100 Accounts payable)
+  3. Check for government/regulatory fees → other_expense (8200 Other expenses)
+  4. Check for bank charges → bank_charges (7901 Bank charges)
+  5. Check for share capital receipts → share_capital_receipt (1100 Accounts receivable)
+  6. Only use consultancy_payment when certain no prior bill exists
 • Recognize share capital transactions vs. regular customer payments
 • Identify government and regulatory fees accurately
 • Classify banking fees and charges appropriately
 • **PRIORITY: Assume liability settlement over direct expense for vendor payments**
+• **WARNING: Do not be misled by keywords like "reimbursement" if money flow shows opposite direction**
 
 **ACCOUNTING ASSIGNMENT RULES:**
 • Every transaction must have proper debit_account and credit_account assignments
@@ -656,6 +677,7 @@ OUTPUT FORMAT REQUIREMENTS:
 • Ensure perfect double-entry balancing: total debits = total credits for each transaction
 
 CRITICAL REMINDERS:
+• **MONEY FLOW DIRECTION IS PARAMOUNT: Always check bank statement debit/credit columns first**
 • Share capital receipts: DEBIT 1204 (Bank), CREDIT 1100 (Accounts receivable)
 • Vendor payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)
 • Direct expenses (RARE): DEBIT 7602 (Consultancy fees), CREDIT 1204 (Bank)
@@ -664,7 +686,10 @@ CRITICAL REMINDERS:
 • All bank transactions involve account 1204 (Bank) as either debit or credit
 • **When payment is to vendors/suppliers, DEFAULT to supplier_payment (2100 Accounts payable settlement)**
 • Architecture Design, Hadjioikonomou, and similar vendors → supplier_payment (2100 Accounts payable)
-• Assume proper bill recording procedures exist in established businesses""",
+• Assume proper bill recording procedures exist in established businesses
+• **CRITICAL: Keywords like "reimbursement" can be misleading - trust the money flow direction from bank statement columns**
+• **If bank statement shows DEBIT amount: Money is leaving = CREDIT Bank (1204)**
+• **If bank statement shows CREDIT amount: Money is entering = DEBIT Bank (1204)**""",
             messages=[
                 {
                     "role": "user",
