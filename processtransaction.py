@@ -43,8 +43,8 @@ For EACH transaction found, create a JSON object with this EXACT structure:
     "accounting_assignment": {{
       "debit_account": "1204",
       "debit_account_name": "Bank",
-      "credit_account": "3000",
-      "credit_account_name": "Share Capital",
+      "credit_account": "1100",
+      "credit_account_name": "Accounts receivable",
       "transaction_type": "share_capital_receipt",
       "requires_vat": false,
       "additional_entries": []
@@ -56,7 +56,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
         "credit": 0.00
       }},
       {{
-        "name": "Share Capital",
+        "name": "Accounts receivable",
         "debit": 0.00,
         "credit": 15000.00
       }}
@@ -68,16 +68,16 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 ### Transaction Type Classification:
 1. **share_capital_receipt**: Share capital payments, capital increases
-   - DEBIT: 1204 (Bank), CREDIT: 3000 (Share Capital)
+   - DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 
 2. **customer_payment**: Payments received from customers
    - DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 
-3. **supplier_payment**: Payments made to suppliers/vendors
+3. **supplier_payment**: Payments made to suppliers/vendors (DEFAULT for vendor payments)
    - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 
-4. **consultancy_payment**: Payments for consultancy services
-   - DEBIT: 6200 (Consultancy fees), CREDIT: 1204 (Bank)
+4. **consultancy_payment**: Direct payments for consultancy services (RARE - only when no prior bill)
+   - DEBIT: 7602 (Consultancy fees), CREDIT: 1204 (Bank)
 
 5. **bank_charges**: Bank fees and charges
    - DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
@@ -93,17 +93,21 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 **Share Capital Indicators:**
 - "share capital", "capital increase", "new share capital"
 - "shareholder investment", "equity injection"
-- DEBIT: 1204 (Bank), CREDIT: 3000 (Share Capital)
+- DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 
-**Supplier/Vendor Payment Indicators:**
+**Supplier/Vendor Payment Indicators (DEFAULT for all vendor payments):**
 - "payment to [vendor name]", "invoice payment"
-- Specific vendor names (Architecture Design, Hadjioikonomou, etc.)
+- Specific vendor names (Architecture Design, Andreas Spanos, Hadjioikonomou, etc.)
+- Professional service providers (architects, engineers, surveyors, consultants)
+- Equipment suppliers, office suppliers
 - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
+- **Use this for ALL payments to vendors/suppliers - assumes bills were recorded previously**
 
-**Consultancy Payment Indicators:**
-- "consultancy", "professional services", "design services"
-- "architecture", "engineering", "advisory"
-- DEBIT: 6200 (Consultancy fees), CREDIT: 1204 (Bank)
+**Direct Consultancy Payment Indicators (RARE - only when certain no prior bill exists):**
+- "consultancy", "professional services" where no vendor relationship evident
+- One-off professional services with no established vendor relationship
+- DEBIT: 7602 (Consultancy fees), CREDIT: 1204 (Bank)
+- **WARNING: Use sparingly - most vendor payments should be supplier_payment type**
 
 **Bank Charges Indicators:**
 - "bank fee", "card fee", "membership fee", "maintenance fee"
@@ -197,13 +201,14 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 1. **Extract ALL transactions** from the statement (both inflows and outflows)
 2. **Classify each transaction** using the pattern recognition rules
-3. **Assign correct debit/credit accounts** based on transaction type
-4. **Generate appropriate accounting_assignment** object
-5. **Create balanced line_items** ensuring debits = credits
-6. **Clean descriptions** and create business-friendly narrations
-7. **Set company_id** to `{company_id_value}` for every transaction
-8. **Ensure all numeric values are numbers, not strings**
-9. **Use ONLY the account codes and names from the chart of accounts**
+3. **PRIORITY: Default to supplier_payment for all vendor payments** (assumes proper bill recording)
+4. **Assign correct debit/credit accounts** based on transaction type
+5. **Generate appropriate accounting_assignment** object
+6. **Create balanced line_items** ensuring debits = credits
+7. **Clean descriptions** and create business-friendly narrations
+8. **Set company_id** to `{company_id_value}` for every transaction
+9. **Ensure all numeric values are numbers, not strings**
+10. **Use ONLY the account codes and names from the chart of accounts**
 
 ## Example Transactions:
 
@@ -218,8 +223,8 @@ For EACH transaction found, create a JSON object with this EXACT structure:
   "accounting_assignment": {{
     "debit_account": "1204",
     "debit_account_name": "Bank",
-    "credit_account": "3000",
-    "credit_account_name": "Share Capital",
+    "credit_account": "1100",
+    "credit_account_name": "Accounts receivable",
     "transaction_type": "share_capital_receipt",
     "requires_vat": false,
     "additional_entries": []
@@ -231,7 +236,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
       "credit": 0.00
     }},
     {{
-      "name": "Share Capital",
+      "name": "Accounts receivable",
       "debit": 0.00,
       "credit": 15000.00
     }}
@@ -239,7 +244,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 }}
 ```
 
-### Consultancy/Professional Service Payment:
+### Supplier Payment (DEFAULT for vendor payments):
 ```json
 {{
   "company_id": {company_id_value},
@@ -247,38 +252,6 @@ For EACH transaction found, create a JSON object with this EXACT structure:
   "ref": "255634959",
   "narration": "Payment to Architecture Design - Andreas Spanos, Invoice 621467",
   "partner": "Architecture Design Andreas Spanos",
-  "accounting_assignment": {{
-    "debit_account": "7602",
-    "debit_account_name": "Consultancy fees",
-    "credit_account": "1204",
-    "credit_account_name": "Bank",
-    "transaction_type": "consultancy_payment",
-    "requires_vat": false,
-    "additional_entries": []
-  }},
-  "line_items": [
-    {{
-      "name": "Consultancy fees",
-      "debit": 400.00,
-      "credit": 0.00
-    }},
-    {{
-      "name": "Bank",
-      "debit": 0.00,
-      "credit": 400.00
-    }}
-  ]
-}}
-```
-
-### Supplier Payment (for goods/equipment):
-```json
-{{
-  "company_id": {company_id_value},
-  "date": "2025-07-18",
-  "ref": "supplier_payment_001",
-  "narration": "Payment for office equipment purchase",
-  "partner": "Office Supplies Ltd",
   "accounting_assignment": {{
     "debit_account": "2100",
     "debit_account_name": "Accounts payable",
@@ -597,26 +570,29 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 **Share Capital Receipts:**
 • Indicators: "share capital", "capital increase", "new share capital", "shareholder investment", "equity injection"
 • DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
-• This represents cash received for shares issued - customer/shareholder owes us money which we collect
+• This represents cash received from shareholders who were previously issued shares
+• Assumes share issuance was already recorded: Dr. Accounts receivable, Cr. Share Capital
 
 **Customer Payments:**
 • Indicators: "payment received", "customer payment", "invoice settlement"
 • DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 • Money received from customers paying their outstanding invoices
 
-**Consultancy/Professional Service Payments (DIRECT EXPENSE):**
-• Indicators: "consultancy", "professional services", "design services", "architecture", "engineering", "advisory", "topographical work", "surveying", "legal services"
-• Keywords: "Architecture Design", "Andreas Spanos", "Hadjioikonomou", "topografikes ergasies", invoice references for services
-• DEBIT: 7602 (Consultancy fees), CREDIT: 1204 (Bank)
-• Direct payment for professional services - expense recognition when payment is made
-• Use this for: architectural services, engineering services, surveying, legal work, consulting
-
-**Supplier/Vendor Payments (ACCOUNTS PAYABLE):**
-• Indicators: "payment to supplier", "goods purchased", "equipment purchase", "office supplies"
-• For tangible goods, equipment, or when explicitly stated as payable settlement
+**Supplier/Vendor Payments (DEFAULT for all vendor payments):**
+• Indicators: Payment to known suppliers/vendors for whom bills were previously recorded
+• Keywords: "Architecture Design", "Andreas Spanos", "Hadjioikonomou", "payment to [vendor name]", invoice references
+• For professional services: architecture, engineering, surveying, legal work, consulting
+• For goods: office supplies, equipment, materials
 • DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
-• Payment of amounts owed to suppliers for goods already received
-• Use this ONLY for physical goods/equipment, not professional services
+• This clears previously recorded liabilities when bills were entered into the system
+• **USE THIS FOR ALL PAYMENTS TO VENDORS/SUPPLIERS - assumes bills were recorded previously**
+
+**Direct Consultancy Payments (RARE - only when certain no prior bill exists):**
+• Indicators: Direct payments for services where no prior bill recording is evident
+• Only use when certain no accounts payable entry was made previously
+• DEBIT: 7602 (Consultancy fees), CREDIT: 1204 (Bank)
+• For immediate expense recognition when payment represents the first accounting entry
+• **WARNING: This should be rare in established businesses with proper bill recording procedures**
 
 **Bank Charges and Fees:**
 • Indicators: "bank fee", "card fee", "membership fee", "maintenance fee", "commission", "service charge"
@@ -633,10 +609,17 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 • DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
 • Money received as reimbursements or other non-operating income
 
-**CRITICAL DISTINCTION - Services vs. Goods:**
-• Professional services (architecture, engineering, consulting, legal) → 7602 (Consultancy fees)
-• Physical goods, equipment, supplies → 2100 (Accounts payable)
-• When in doubt about service payments, default to 7602 (Consultancy fees)
+**CRITICAL PAYMENT CLASSIFICATION HIERARCHY:**
+1. **FIRST PRIORITY - Supplier Payment**: If payment is to a known vendor/supplier (especially professional service providers), classify as supplier_payment (accounts payable settlement)
+2. **SECOND PRIORITY - Direct Expense**: Only if certain no prior bill exists and this is the first accounting entry for the service
+3. **DEFAULT for Vendor Payments**: Use supplier_payment (2100 Accounts payable) unless explicitly certain it's a direct expense
+
+**VENDOR PAYMENT IDENTIFICATION:**
+• Professional service providers (architects, engineers, surveyors, consultants, lawyers) → supplier_payment (2100 Accounts payable)
+• Established vendors with invoice references → supplier_payment (2100 Accounts payable)
+• Recurring suppliers → supplier_payment (2100 Accounts payable)
+• Equipment/goods suppliers → supplier_payment (2100 Accounts payable)
+• When in doubt about vendor payments → Use supplier_payment (2100 Accounts payable)
 
 **VAT/TAX Handling:**
 • Most bank transactions don't involve VAT directly
@@ -647,22 +630,17 @@ TRANSACTION PATTERN RECOGNITION EXPERTISE:
 • Analyze transaction descriptions to identify business purpose and payment type
 • Extract counterparty names accurately from transaction descriptions
 • Apply proper classification hierarchy:
-  1. Check for professional service indicators first (architecture, engineering, consulting, surveying)
-  2. Then check for physical goods/equipment purchases
-  3. Finally classify as general supplier payment if unclear
+  1. Check if payment is to known vendor/supplier → supplier_payment (2100 Accounts payable)
+  2. Check for government/regulatory fees → other_expense (8200 Other expenses)
+  3. Check for bank charges → bank_charges (7901 Bank charges)
+  4. Check for share capital receipts → share_capital_receipt (1100 Accounts receivable)
+  5. Only use consultancy_payment when certain no prior bill exists
 • Recognize share capital transactions vs. regular customer payments
 • Identify government and regulatory fees accurately
 • Classify banking fees and charges appropriately
-• Distinguish between expense recognition (7602) vs. payable settlement (2100)
+• **PRIORITY: Assume liability settlement over direct expense for vendor payments**
 
-**SERVICE PAYMENT IDENTIFICATION PRIORITY:**
-• Architecture services, engineering, surveying, legal, consulting → 7602 (Consultancy fees)
-• Professional service provider names (Andreas Spanos, Hadjioikonomou, etc.) → 7602 (Consultancy fees)
-• Invoice payments for services → 7602 (Consultancy fees)
-• Equipment, supplies, goods purchases → 2100 (Accounts payable)
-• Default for professional services: Use 7602 unless explicitly goods/equipment
-
-ACCOUNTING ASSIGNMENT RULES:
+**ACCOUNTING ASSIGNMENT RULES:**
 • Every transaction must have proper debit_account and credit_account assignments
 • Use transaction_type to classify business purpose
 • Generate additional_entries only for complex multi-account transactions
@@ -679,13 +657,14 @@ OUTPUT FORMAT REQUIREMENTS:
 
 CRITICAL REMINDERS:
 • Share capital receipts: DEBIT 1204 (Bank), CREDIT 1100 (Accounts receivable)
-• Professional services (architecture, engineering, consulting, surveying): DEBIT 7602 (Consultancy fees), CREDIT 1204 (Bank)
-• Physical goods/equipment purchases: DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)
+• Vendor payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)
+• Direct expenses (RARE): DEBIT 7602 (Consultancy fees), CREDIT 1204 (Bank)
 • Bank account is always 1204, never use other bank account codes
 • Government fees go to 8200 (Other non-operating income or expenses)
 • All bank transactions involve account 1204 (Bank) as either debit or credit
-• When payment is for services, use 7602 (Consultancy fees) - do NOT use 2100 (Accounts payable)
-• Architecture Design, Hadjioikonomou, and similar professional service providers → 7602 (Consultancy fees)""",
+• **When payment is to vendors/suppliers, DEFAULT to supplier_payment (2100 Accounts payable settlement)**
+• Architecture Design, Hadjioikonomou, and similar vendors → supplier_payment (2100 Accounts payable)
+• Assume proper bill recording procedures exist in established businesses""",
             messages=[
                 {
                     "role": "user",
@@ -776,7 +755,7 @@ def validate_accounting_assignments(transactions):
         transaction_type = accounting.get("transaction_type", "")
         
         # Validate account codes
-        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"] 
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
         
         if debit_account not in valid_accounts:
             transaction_validation["issues"].append(f"Invalid debit account code: {debit_account}")
