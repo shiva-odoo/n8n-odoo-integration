@@ -81,7 +81,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 2. **customer_payment**: Payments received from customers
    - DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 
-3. **supplier_payment**: Payments made to suppliers/vendors (DEFAULT for vendor payments)
+3. **supplier_payment**: Payments made to ALL vendors/suppliers (DEFAULT for ALL vendor payments)
    - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 
 4. **consultancy_payment**: Direct payments for consultancy services (RARE - only when no prior bill)
@@ -90,7 +90,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 5. **bank_charges**: Bank fees and charges
    - DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
 
-6. **other_expense**: Government fees, registrar fees, etc.
+6. **other_expense**: Direct expenses with no prior bill (VERY RARE)
    - DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
 
 7. **other_income**: Reimbursements, miscellaneous income
@@ -103,13 +103,16 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 - "shareholder investment", "equity injection"
 - DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 
-**Supplier/Vendor Payment Indicators (DEFAULT for all vendor payments):**
+**Supplier/Vendor Payment Indicators (DEFAULT for ALL vendor payments):**
 - "payment to [vendor name]", "invoice payment"
 - Specific vendor names (Architecture Design, Andreas Spanos, Hadjioikonomou, etc.)
 - Professional service providers (architects, engineers, surveyors, consultants)
 - Equipment suppliers, office suppliers
+- **Government entities, registrar offices, regulatory bodies (ALL are vendors)**
+- **ANY payment where a bill could have been recorded previously**
 - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
-- **Use this for ALL payments to vendors/suppliers - assumes bills were recorded previously**
+- **Use this for ALL payments to ANY vendor/supplier - assumes bills were recorded previously**
+- **INCLUDES: Government fees, registrar fees, regulatory fees, professional services**
 
 **Direct Consultancy Payment Indicators (RARE - only when certain no prior bill exists):**
 - "consultancy", "professional services" where no vendor relationship evident
@@ -124,8 +127,10 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 **Government/Registrar Fee Indicators:**
 - "registrar", "government fee", "license fee"
-- "regulatory fee", "filing fee"
-- DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
+- "regulatory fee", "filing fee", "capital increase fee"
+- **CRITICAL: These are also vendor payments - classify as supplier_payment if bills were recorded**
+- DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
+- Only use direct expense (8200) if certain no prior bill exists
 
 **Reimbursement Indicators:**
 - "reimbursement", "refund received"
@@ -618,8 +623,9 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 
 **Government/Regulatory Fees:**
 • Indicators: "registrar", "government fee", "license fee", "regulatory fee", "filing fee", "capital increase fee"
-• DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
-• Fees paid to government entities and regulatory bodies
+• **CRITICAL: Government entities are also vendors - follow same rule**
+• DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
+• **Government fees are vendor payments that clear previously recorded liabilities**
 
 **Reimbursements and Other Income:**
 • Indicators: "reimbursement", "refund received", miscellaneous income
@@ -627,16 +633,19 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 • Money received as reimbursements or other non-operating income
 
 **CRITICAL PAYMENT CLASSIFICATION HIERARCHY:**
-1. **FIRST PRIORITY - Supplier Payment**: If payment is to a known vendor/supplier (especially professional service providers), classify as supplier_payment (accounts payable settlement)
-2. **SECOND PRIORITY - Direct Expense**: Only if certain no prior bill exists and this is the first accounting entry for the service
-3. **DEFAULT for Vendor Payments**: Use supplier_payment (2100 Accounts payable) unless explicitly certain it's a direct expense
+1. **ABSOLUTE PRIORITY - Supplier Payment**: ALL payments to ANY vendor/supplier/government entity classify as supplier_payment (accounts payable settlement)
+2. **INCLUDES**: Professional services, government fees, registrar fees, equipment suppliers, consultants, regulatory bodies
+3. **RULE**: "The payment to the Vendor always goes to accounts payable. When the supporting invoice is provided that is when we create the expense and allocate VAT"
+4. **DEFAULT for ALL Vendor Payments**: Use supplier_payment (2100 Accounts payable) - assumes bills were recorded previously
+5. **RARE EXCEPTION**: Only use direct expense if absolutely certain no bill could have been recorded (very uncommon)
 
 **VENDOR PAYMENT IDENTIFICATION:**
+• **ALL vendors/suppliers (INCLUDING government entities)** → supplier_payment (2100 Accounts payable)
 • Professional service providers (architects, engineers, surveyors, consultants, lawyers) → supplier_payment (2100 Accounts payable)
-• Established vendors with invoice references → supplier_payment (2100 Accounts payable)
-• Recurring suppliers → supplier_payment (2100 Accounts payable)
+• Government entities (registrar, regulatory bodies, tax authorities) → supplier_payment (2100 Accounts payable)
 • Equipment/goods suppliers → supplier_payment (2100 Accounts payable)
-• When in doubt about vendor payments → Use supplier_payment (2100 Accounts payable)
+• **UNIVERSAL RULE**: ANY entity that could provide a bill/invoice → supplier_payment (2100 Accounts payable)
+• **When in doubt about ANY payment → Use supplier_payment (2100 Accounts payable)**
 
 **VAT/TAX Handling:**
 • Most bank transactions don't involve VAT directly
@@ -645,20 +654,18 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 
 TRANSACTION PATTERN RECOGNITION EXPERTISE:
 • **STEP 1: Determine money flow direction from bank statement debit/credit columns**
-• **STEP 2: Analyze transaction descriptions to identify business purpose and payment type**
-• Extract counterparty names accurately from transaction descriptions
+• **STEP 2: Apply UNIVERSAL VENDOR PAYMENT RULE - ALL vendors = supplier_payment**
+• **STEP 3: Analyze transaction descriptions to identify counterparty**
 • **CRITICAL: Reconcile description keywords with actual money flow direction**
 • Apply proper classification hierarchy AFTER confirming money direction:
   1. Check actual money flow (in/out) from bank statement columns
-  2. Check if payment is to known vendor/supplier → supplier_payment (2100 Accounts payable)
-  3. Check for government/regulatory fees → other_expense (8200 Other expenses)
-  4. Check for bank charges → bank_charges (7901 Bank charges)
-  5. Check for share capital receipts → share_capital_receipt (1100 Accounts receivable)
-  6. Only use consultancy_payment when certain no prior bill exists
-• Recognize share capital transactions vs. regular customer payments
-• Identify government and regulatory fees accurately
-• Classify banking fees and charges appropriately
-• **PRIORITY: Assume liability settlement over direct expense for vendor payments**
+  2. **ALL payments to ANY vendor/supplier/government entity → supplier_payment (2100 Accounts payable)**
+  3. Only bank charges to banks → bank_charges (7901 Bank charges)
+  4. Only share capital receipts → share_capital_receipt (1100 Accounts receivable)
+  5. **NEVER use direct expenses unless absolutely certain no bill exists (extremely rare)**
+• **UNIVERSAL RULE**: "The payment to the Vendor always goes to accounts payable"
+• **INCLUDES**: Professional services, government fees, registrar fees, regulatory fees, equipment, supplies
+• **PRIORITY: ALL vendor payments are liability settlements, not direct expenses**
 • **WARNING: Do not be misled by keywords like "reimbursement" if money flow shows opposite direction**
 
 **ACCOUNTING ASSIGNMENT RULES:**
@@ -678,14 +685,16 @@ OUTPUT FORMAT REQUIREMENTS:
 
 CRITICAL REMINDERS:
 • **MONEY FLOW DIRECTION IS PARAMOUNT: Always check bank statement debit/credit columns first**
+• **UNIVERSAL VENDOR RULE: "The payment to the Vendor always goes to accounts payable. When the supporting invoice is provided that is when we create the expense and allocate VAT"**
 • Share capital receipts: DEBIT 1204 (Bank), CREDIT 1100 (Accounts receivable)
-• Vendor payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)
-• Direct expenses (RARE): DEBIT 7602 (Consultancy fees), CREDIT 1204 (Bank)
+• **ALL vendor payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)**
+• **INCLUDES: Professional services, government fees, registrar fees, regulatory fees, equipment suppliers**
+• Direct expenses (EXTREMELY RARE): Only when absolutely certain no bill could exist
 • Bank account is always 1204, never use other bank account codes
-• Government fees go to 8200 (Other non-operating income or expenses)
+• **ALL payments to government/regulatory bodies go to 2100 (Accounts payable)**
 • All bank transactions involve account 1204 (Bank) as either debit or credit
-• **When payment is to vendors/suppliers, DEFAULT to supplier_payment (2100 Accounts payable settlement)**
-• Architecture Design, Hadjioikonomou, and similar vendors → supplier_payment (2100 Accounts payable)
+• **When payment is to ANY vendor/supplier/government entity, ALWAYS use supplier_payment (2100 Accounts payable settlement)**
+• Architecture Design, Hadjioikonomou, Registrar of Companies → ALL supplier_payment (2100 Accounts payable)
 • Assume proper bill recording procedures exist in established businesses
 • **CRITICAL: Keywords like "reimbursement" can be misleading - trust the money flow direction from bank statement columns**
 • **If bank statement shows DEBIT amount: Money is leaving = CREDIT Bank (1204)**
