@@ -84,16 +84,19 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 3. **supplier_payment**: Payments made to ALL vendors/suppliers (DEFAULT for ALL vendor payments)
    - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 
-4. **consultancy_payment**: Direct payments for consultancy services (RARE - only when no prior bill)
+4. **tax_payment**: Direct tax payments to government authorities
+   - DEBIT: 2201 (Output VAT), CREDIT: 1204 (Bank)
+
+5. **consultancy_payment**: Direct payments for consultancy services (RARE - only when no prior bill)
    - DEBIT: 7602 (Consultancy fees), CREDIT: 1204 (Bank)
 
-5. **bank_charges**: Bank fees and charges
+6. **bank_charges**: Bank fees and charges
    - DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
 
-6. **other_expense**: Direct expenses with no prior bill (VERY RARE)
+7. **other_expense**: Direct expenses with no prior bill (VERY RARE)
    - DEBIT: 8200 (Other non-operating income or expenses), CREDIT: 1204 (Bank)
 
-7. **other_income**: Reimbursements, miscellaneous income
+8. **other_income**: Reimbursements, miscellaneous income
    - DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
 
 ### Transaction Pattern Recognition:
@@ -103,16 +106,24 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 - "shareholder investment", "equity injection"
 - DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 
-**Supplier/Vendor Payment Indicators (DEFAULT for ALL vendor payments):**
+**Tax Payment Indicators (PRIORITY - Check first for outgoing payments):**
+- "TAX PAYMENT", "tax authority", "revenue department"
+- "VAT payment", "income tax payment", "corporate tax payment", "withholding tax payment"
+- **EXCLUDE social insurance bills, social security bills - these are vendor payments**
+- **ONLY use for direct tax settlements, NOT for bills from government entities**
+- DEBIT: 2201 (Output VAT), CREDIT: 1204 (Bank)
+- **Use this ONLY for payments that specifically settle VAT liabilities or direct tax obligations**
+
+**Supplier/Vendor Payment Indicators (DEFAULT for ALL other vendor payments):**
 - "payment to [vendor name]", "invoice payment"
 - Specific vendor names (Architecture Design, Andreas Spanos, Hadjioikonomou, etc.)
 - Professional service providers (architects, engineers, surveyors, consultants)
 - Equipment suppliers, office suppliers
-- **Government entities, registrar offices, regulatory bodies (ALL are vendors)**
+- **Government entities for NON-TAX matters (registrar offices, regulatory bodies)**
 - **ANY payment where a bill could have been recorded previously**
 - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 - **Use this for ALL payments to ANY vendor/supplier - assumes bills were recorded previously**
-- **INCLUDES: Government fees, registrar fees, regulatory fees, professional services**
+- **INCLUDES: Government fees (non-tax), registrar fees, regulatory fees, professional services**
 
 **Direct Consultancy Payment Indicators (RARE - only when certain no prior bill exists):**
 - "consultancy", "professional services" where no vendor relationship evident
@@ -125,10 +136,10 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 - "commission", "service charge"
 - DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
 
-**Government/Registrar Fee Indicators:**
-- "registrar", "government fee", "license fee"
+**Government/Registrar Fee Indicators (NON-TAX):**
+- "registrar", "government fee" (non-tax), "license fee"
 - "regulatory fee", "filing fee", "capital increase fee"
-- **CRITICAL: These are also vendor payments - classify as supplier_payment if bills were recorded**
+- **CRITICAL: These are vendor payments - classify as supplier_payment if bills were recorded**
 - DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 - Only use direct expense (8200) if certain no prior bill exists
 
@@ -214,15 +225,16 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 1. **STEP 1: Analyze money flow direction** - Check debit/credit columns in bank statement to determine actual money movement
 2. **STEP 2: Extract ALL transactions** from the statement (both inflows and outflows)
-3. **STEP 3: Classify each transaction** using the pattern recognition rules AFTER confirming money flow direction
-4. **STEP 4: PRIORITY: Default to supplier_payment for all vendor payments** (assumes proper bill recording)
-5. **STEP 5: Assign correct debit/credit accounts** based on transaction type AND money flow direction
-6. **STEP 6: Generate appropriate accounting_assignment** object
-7. **STEP 7: Create balanced line_items** ensuring debits = credits
-8. **STEP 8: Clean descriptions** and create business-friendly narrations
-9. **STEP 9: Set company_id** to `{company_id_value}` for every transaction
-10. **STEP 10: Ensure all numeric values are numbers, not strings**
-11. **STEP 11: Use ONLY the account codes and names from the chart of accounts**
+3. **STEP 3: Check for tax payments FIRST** - Use tax_payment classification for payments to tax authorities
+4. **STEP 4: Classify remaining transactions** using the pattern recognition rules AFTER confirming money flow direction
+5. **STEP 5: PRIORITY: Default to supplier_payment for all other vendor payments** (assumes proper bill recording)
+6. **STEP 6: Assign correct debit/credit accounts** based on transaction type AND money flow direction
+7. **STEP 7: Generate appropriate accounting_assignment** object
+8. **STEP 8: Create balanced line_items** ensuring debits = credits
+9. **STEP 9: Clean descriptions** and create business-friendly narrations
+10. **STEP 10: Set company_id** to `{company_id_value}` for every transaction
+11. **STEP 11: Ensure all numeric values are numbers, not strings**
+12. **STEP 12: Use ONLY the account codes and names from the chart of accounts**
 
 **CRITICAL MONEY FLOW VALIDATION:**
 - If bank statement shows DEBIT: Transaction reduces bank balance (money out) → CREDIT Bank (1204)
@@ -258,6 +270,38 @@ For EACH transaction found, create a JSON object with this EXACT structure:
       "name": "Accounts receivable",
       "debit": 0.00,
       "credit": 15000.00
+    }}
+  ]
+}}
+```
+
+### Tax Payment:
+```json
+{{
+  "company_id": {company_id_value},
+  "date": "2025-06-19",
+  "ref": "tax_payment_190625",
+  "narration": "VAT and tax payment to authorities",
+  "partner": "Tax Authority",
+  "accounting_assignment": {{
+    "debit_account": "2201",
+    "debit_account_name": "Output VAT (Sales)",
+    "credit_account": "1204",
+    "credit_account_name": "Bank",
+    "transaction_type": "tax_payment",
+    "requires_vat": false,
+    "additional_entries": []
+  }},
+  "line_items": [
+    {{
+      "name": "Output VAT (Sales)",
+      "debit": 4921.79,
+      "credit": 0.00
+    }},
+    {{
+      "name": "Bank",
+      "debit": 0.00,
+      "credit": 4921.79
     }}
   ]
 }}
@@ -424,8 +468,8 @@ def validate_transaction_json(transactions):
         if not isinstance(transactions, list):
             raise ValueError("Expected JSON array of transactions")
         
-        # Validate account codes
-        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
+        # Validate account codes - Added 4000 for Sales revenue
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "4000", "7602", "7901", "8200"]
         
         for i, transaction in enumerate(transactions):
             if not isinstance(transaction, dict):
@@ -570,6 +614,7 @@ CHART OF ACCOUNTS (EXACT CODES AND NAMES):
 • 2201 - Output VAT (Sales) (Liability)
 • 2202 - Input VAT (Purchases) (Asset)
 • 3000 - Share Capital (Equity)
+• 4000 - Sales (Revenue)
 • 7602 - Consultancy fees (Expense)
 • 7901 - Bank charges (Expense)
 • 8200 - Other non-operating income or expenses (Income/Expense)
@@ -600,11 +645,22 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 • DEBIT: 1204 (Bank), CREDIT: 1100 (Accounts receivable)
 • Money received from customers paying their outstanding invoices
 
-**Supplier/Vendor Payments (DEFAULT for all vendor payments):**
+**Tax Payments (PRIORITY - Check first for outgoing payments):**
+• Indicators: "TAX PAYMENT", "tax authority", "revenue department"
+• Keywords: "VAT payment", "income tax payment", "corporate tax payment", "withholding tax payment"
+• **EXCLUDE social insurance bills, social security bills - these are vendor payments**
+• **ONLY use for direct tax settlements, NOT for bills from government entities**
+• DEBIT: 2201 (Output VAT), CREDIT: 1204 (Bank)
+• This clears VAT liabilities created by reverse charge system and other direct tax obligations
+• **CRITICAL: Use this ONLY for payments that specifically settle VAT liabilities or direct tax obligations**
+• **NOT for social insurance, utilities, or government service bills**
+
+**Supplier/Vendor Payments (DEFAULT for all other vendor payments):**
 • Indicators: Payment to known suppliers/vendors for whom bills were previously recorded
 • Keywords: "Architecture Design", "Andreas Spanos", "Hadjioikonomou", "payment to [vendor name]", invoice references
 • For professional services: architecture, engineering, surveying, legal work, consulting
 • For goods: office supplies, equipment, materials
+• **Government entities for NON-TAX matters (registrar offices, regulatory bodies)**
 • DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
 • This clears previously recorded liabilities when bills were entered into the system
 • **USE THIS FOR ALL PAYMENTS TO VENDORS/SUPPLIERS - assumes bills were recorded previously**
@@ -621,57 +677,69 @@ TRANSACTION CLASSIFICATION AND ACCOUNTING RULES:
 • DEBIT: 7901 (Bank charges), CREDIT: 1204 (Bank)
 • All banking-related fees and charges
 
-**Government/Regulatory Fees:**
-• Indicators: "registrar", "government fee", "license fee", "regulatory fee", "filing fee", "capital increase fee"
-• **CRITICAL: Government entities are also vendors - follow same rule**
+**Government/Regulatory Fees (NON-TAX):**
+• Indicators: "registrar", "government fee" (non-tax), "license fee", "regulatory fee", "filing fee", "capital increase fee"
+• **CRITICAL: These are vendor payments - classify as supplier_payment if bills were recorded**
 • DEBIT: 2100 (Accounts payable), CREDIT: 1204 (Bank)
-• **Government fees are vendor payments that clear previously recorded liabilities**
+• **Government fees (non-tax) are vendor payments that clear previously recorded liabilities**
 
-**Other Non-Operating Expenses (EXTREMELY RARE for outgoing payments):**
-• **WARNING: Only use for very specific cases where absolutely certain no vendor relationship exists**
-• **DO NOT USE for**: Bank transfers, internet transfers, generic payments, unknown transfers
-• **EXCEPTIONS ONLY**: Regulatory penalties, interest payments, very specific non-vendor expenses
-• **DEFAULT RULE**: When uncertain about outgoing payment → Use supplier_payment, NOT other_expense
-• **CONSERVATIVE APPROACH**: Better to incorrectly classify as vendor payment than miss vendor settlement
+**Reimbursements and Other Income:**
+• Indicators: "reimbursement", "refund received", miscellaneous income
+• DEBIT: 1204 (Bank), CREDIT: 8200 (Other non-operating income or expenses)
+• Money received as reimbursements or other non-operating income
 
 **CRITICAL PAYMENT CLASSIFICATION HIERARCHY:**
-1. **ABSOLUTE PRIORITY - Supplier Payment**: ALL outgoing payments default to supplier_payment unless explicitly identified otherwise
-2. **UNIVERSAL DEFAULT**: When in doubt about ANY outgoing payment → Use supplier_payment (2100 Accounts payable)
-3. **RULE**: "The payment to the Vendor always goes to accounts payable. When the supporting invoice is provided that is when we create the expense and allocate VAT"
-4. **ASSUMPTION**: All businesses have proper bill recording procedures - payments clear previously recorded liabilities
-5. **RARE EXCEPTIONS ONLY**: Bank charges (to banks), share capital, or explicit income receipts
-6. **NEVER use direct expenses for ambiguous payments** - always default to supplier_payment
+1. **TAX PAYMENTS (FIRST PRIORITY)**: Check for SPECIFIC tax payment indicators first
+   - "TAX PAYMENT", "VAT payment", "income tax payment", "corporate tax payment" → tax_payment (2201 Output VAT)
+   - **EXCLUDE: Social insurance bills, government service bills, utilities bills**
+2. **BANK CHARGES (SECOND PRIORITY)**: Check for banking service fees
+   - "bank fee", "card fee", "membership fee", "maintenance fee", "commission", "service charge" → bank_charges (7901)
+3. **IDENTIFIABLE VENDOR PAYMENTS (THIRD PRIORITY)**: Payments with clear vendor identification
+   - Must have identifiable partner name OR clear bill/invoice reference in description → supplier_payment (2100 Accounts payable)
+   - **INCLUDES: Internet transfers WITH vendor names/invoice references (e.g., "Transfer ARCHITECTURE DESIGN Invoice 621467")**
+   - **INCLUDES: Social insurance, government service bills, utilities, professional services**
+4. **UNIDENTIFIED TRANSFERS (FOURTH PRIORITY)**: Unknown recipient AND no vendor details in description
+   - "internet transfer" + partner="unknown" + no vendor name + no invoice reference → other_expense (8200)
+   - **CRITICAL: Only use when BOTH recipient unknown AND description lacks vendor details**
+5. **SHARE CAPITAL/CUSTOMER PAYMENTS**: Based on money flow direction and description
+6. **DEFAULT**: When uncertain about vendor identity → other_expense (8200) rather than creating false vendor liabilities
 
 **VENDOR PAYMENT IDENTIFICATION:**
-• **UNIVERSAL DEFAULT**: ALL outgoing payments → supplier_payment (2100 Accounts payable) unless explicitly identified as:
-  - Bank charges to financial institutions
-  - Share capital transactions  
-  - Clearly identified customer receipts
-• **AMBIGUOUS PAYMENTS**: Bank transfers, internet transfers, generic payments → supplier_payment (2100 Accounts payable)
-• **ASSUMPTION**: Every business payment could have had a bill recorded previously
-• **INCLUDES**: Professional services, government fees, utilities, supplies, equipment, regulatory fees, unknown transfers
-• **When partner unknown or description unclear → ALWAYS use supplier_payment (2100 Accounts payable)**
-• **NEVER guess direct expenses** - default to liability settlement
+• **Tax authorities for SPECIFIC tax settlements ONLY** → tax_payment (2201 Output VAT)
+• **Banking institutions for service fees** → bank_charges (7901 Bank charges)
+• **Identifiable vendors/suppliers with clear names or bill references** → supplier_payment (2100 Accounts payable)
+• **Social insurance, social security entities** → supplier_payment (2100 Accounts payable)
+• Professional service providers (architects, engineers, surveyors, consultants, lawyers) → supplier_payment (2100 Accounts payable)
+• Government entities for regulatory/administrative fees → supplier_payment (2100 Accounts payable)
+• Equipment/goods suppliers → supplier_payment (2100 Accounts payable)
+• **UNIDENTIFIED TRANSFERS: Partner = "unknown" AND generic descriptions** → other_expense (8200)
+• **RULE**: ANY entity that provides a bill/invoice AND can be identified → supplier_payment (2100 Accounts payable)
+• **RULE**: Unknown recipient OR generic transfers → other_expense (8200)
+• **When in doubt about vendor identity → Use other_expense (8200) rather than creating false vendor liabilities**
+• **EXCEPTION ONLY**: Explicit VAT settlements or direct tax payments → tax_payment (2201 Output VAT)
 
 **VAT/TAX Handling:**
-• Most bank transactions don't involve VAT directly
-• VAT is typically handled through separate tax accounts
+• Tax payments settle VAT liabilities created by reverse charge system
+• Most bank transactions don't involve VAT directly in line items
 • Set requires_vat to false unless VAT is explicitly mentioned in transaction
 
 TRANSACTION PATTERN RECOGNITION EXPERTISE:
 • **STEP 1: Determine money flow direction from bank statement debit/credit columns**
-• **STEP 2: Apply UNIVERSAL DEFAULT - ALL outgoing payments = supplier_payment unless explicitly identified otherwise**
-• **STEP 3: Only classify as non-supplier if clearly identifiable as bank charges, share capital, or customer receipts**
+• **STEP 2: Check for TAX PAYMENT indicators first for outgoing payments**
+• **STEP 3: Apply UNIVERSAL VENDOR PAYMENT RULE for all other vendors**
+• **STEP 4: Analyze transaction descriptions to identify counterparty**
 • **CRITICAL: Reconcile description keywords with actual money flow direction**
 • Apply proper classification hierarchy AFTER confirming money direction:
   1. Check actual money flow (in/out) from bank statement columns
-  2. **If money leaving bank → DEFAULT to supplier_payment (2100 Accounts payable)**
-  3. **EXCEPTIONS ONLY**: Bank charges to banks → bank_charges (7901), Share capital → share_capital_receipt (1100)
-  4. **NEVER use other_expense (8200) for ambiguous outgoing payments**
-  5. **AMBIGUOUS = SUPPLIER PAYMENT**: Unknown transfers, internet transfers, generic payments → supplier_payment
+  2. **Tax payments to authorities → tax_payment (2201 Output VAT)**
+  3. **ALL other payments to ANY vendor/supplier/government entity → supplier_payment (2100 Accounts payable)**
+  4. Only bank charges to banks → bank_charges (7901 Bank charges)
+  5. Only share capital receipts → share_capital_receipt (1100 Accounts receivable)
+  6. **NEVER use direct expenses unless absolutely certain no bill exists (extremely rare)**
 • **UNIVERSAL RULE**: "The payment to the Vendor always goes to accounts payable"
-• **AGGRESSIVE APPLICATION**: Treat ALL unclear outgoing payments as vendor payments
-• **CONSERVATIVE APPROACH**: Better to clear non-existent payables than miss real vendor payments**
+• **TAX EXCEPTION**: "Tax payments clear VAT liabilities, not vendor payables"
+• **INCLUDES**: Professional services, government fees (non-tax), registrar fees, regulatory fees, equipment, supplies
+• **PRIORITY: Tax settlements vs vendor settlements require different account treatment**
 • **WARNING: Do not be misled by keywords like "reimbursement" if money flow shows opposite direction**
 
 **ACCOUNTING ASSIGNMENT RULES:**
@@ -691,20 +759,23 @@ OUTPUT FORMAT REQUIREMENTS:
 
 CRITICAL REMINDERS:
 • **MONEY FLOW DIRECTION IS PARAMOUNT: Always check bank statement debit/credit columns first**
+• **TAX PAYMENT PRIORITY: Check for tax indicators first for outgoing payments**
 • **UNIVERSAL VENDOR RULE: "The payment to the Vendor always goes to accounts payable. When the supporting invoice is provided that is when we create the expense and allocate VAT"**
-• **AGGRESSIVE DEFAULT**: ALL outgoing payments → supplier_payment (2100 Accounts payable) unless explicitly identified otherwise
+• **TAX EXCEPTION RULE: "Tax payments clear VAT liabilities (2201), not vendor payables (2100)"**
 • Share capital receipts: DEBIT 1204 (Bank), CREDIT 1100 (Accounts receivable)
-• **ALL outgoing payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)**
-• **INCLUDES: All transfers, internet payments, unknown payments, professional services, government fees, utilities, supplies**
-• **EXCEPTIONS ONLY**: Bank charges to banks → 7901 (Bank charges), Share capital → 1100 (Accounts receivable)
+• **Tax payments: DEBIT 2201 (Output VAT), CREDIT 1204 (Bank)**
+• **ALL other vendor payments (DEFAULT): DEBIT 2100 (Accounts payable), CREDIT 1204 (Bank)**
+• **INCLUDES: Professional services, government fees (non-tax), registrar fees, regulatory fees, equipment suppliers**
+• Direct expenses (EXTREMELY RARE): Only when absolutely certain no bill could exist
 • Bank account is always 1204, never use other bank account codes
-• **NEVER use other_expense (8200) for ambiguous outgoing payments**
+• **Tax payments go to 2201 (Output VAT), all other payments to government go to 2100 (Accounts payable)**
 • All bank transactions involve account 1204 (Bank) as either debit or credit
-• **When payment purpose unclear, ALWAYS use supplier_payment (2100 Accounts payable settlement)**
-• **CONSERVATIVE APPROACH**: Better to clear non-existent payables than create incorrect direct expenses
+• **When payment is for TAX → use tax_payment (2201 Output VAT settlement)**
+• **When payment is to ANY other vendor/supplier/government entity → use supplier_payment (2100 Accounts payable settlement)**
+• Architecture Design, Hadjioikonomou, Registrar of Companies (non-tax) → ALL supplier_payment (2100 Accounts payable)
 • Assume proper bill recording procedures exist in established businesses
 • **CRITICAL: Keywords like "reimbursement" can be misleading - trust the money flow direction from bank statement columns**
-• **If bank statement shows DEBIT amount: Money is leaving = CREDIT Bank (1204) = DEFAULT to supplier_payment**
+• **If bank statement shows DEBIT amount: Money is leaving = CREDIT Bank (1204)**
 • **If bank statement shows CREDIT amount: Money is entering = DEBIT Bank (1204)**""",
             messages=[
                 {
@@ -795,8 +866,8 @@ def validate_accounting_assignments(transactions):
         credit_account = accounting.get("credit_account", "")
         transaction_type = accounting.get("transaction_type", "")
         
-        # Validate account codes
-        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
+        # Validate account codes - Updated to include 4000
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "4000", "7602", "7901", "8200"]
         
         if debit_account not in valid_accounts:
             transaction_validation["issues"].append(f"Invalid debit account code: {debit_account}")
@@ -916,13 +987,14 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-bank-statement-extraction",
-            "version": "1.2",
+            "version": "1.3",
             "capabilities": [
                 "transaction_extraction",
                 "accounting_assignment",
                 "double_entry_validation",
                 "transaction_classification",
                 "account_code_mapping",
+                "tax_payment_classification",
                 "structured_json_output"
             ],
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),

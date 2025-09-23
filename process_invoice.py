@@ -182,8 +182,8 @@ Each additional entry in the additional_entries array must have this exact struc
 }}
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Consultancy Invoice (no tax): debit_account="1100", credit_account="7602"
-- Service Invoice (with VAT): debit_account="1100", credit_account="7602" + additional_entries for VAT
+- Sales Invoice (no tax): debit_account="1100", credit_account="4000"
+- Service Invoice (with VAT): debit_account="1100", credit_account="4000" + additional_entries for VAT
 - Other Income: debit_account="1100", credit_account="8200"
 - Share Capital Transaction: debit_account="1100", credit_account="3000"
 - Customer Invoice with VAT: Main entry + additional VAT entries in additional_entries array
@@ -279,7 +279,7 @@ CHART OF ACCOUNTS YOU MUST USE (EXACT CODES AND NAMES):
 • 2201 - Output VAT (Sales) (Liability)
 • 2202 - Input VAT (Purchases) (Asset)
 • 3000 - Share Capital (Equity)
-• 7602 - Consultancy fees (Expense)
+• 4000 - Sales (Revenue)
 • 7901 - Bank charges (Expense)
 • 8200 - Other non-operating income or expenses (Expense)
 
@@ -287,10 +287,11 @@ CHART OF ACCOUNTS YOU MUST USE (EXACT CODES AND NAMES):
 
 CORE ACCOUNTING BEHAVIOR FOR ALL CASH INFLOW DOCUMENTS:
 • Always think: "What did we provide?" (CREDIT) and "What do we expect to receive?" (DEBIT)
-• Customer invoices: DEBIT accounts receivable (1100), CREDIT appropriate revenue account
+• Customer invoices: DEBIT accounts receivable (1100), CREDIT sales revenue (4000)
 • Share capital transactions: DEBIT accounts receivable (1100), CREDIT share capital (3000)
-• Consultancy services → CREDIT 7602 (Consultancy fees) - Note: This is an expense account used as revenue when we provide consulting
-• Professional services → CREDIT 7602 (Consultancy fees) 
+• Sales of goods/services → CREDIT 4000 (Sales) 
+• Professional services → CREDIT 4000 (Sales)
+• Consultancy services → CREDIT 4000 (Sales)
 • Other income → CREDIT 8200 (Other non-operating income or expenses)
 • Share allotments/capital increases → CREDIT 3000 (Share Capital)
 • Apply output VAT when applicable: Additional entries for VAT
@@ -647,7 +648,7 @@ def validate_invoice_data(invoices):
         debit_account = accounting_assignment.get("debit_account", "")
         credit_account = accounting_assignment.get("credit_account", "")
         
-        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "7602", "7901", "8200"]
+        valid_accounts = ["1100", "1204", "2100", "2201", "2202", "3000", "4000", "7901", "8200"]
         
         if debit_account and debit_account not in valid_accounts:
             invoice_validation["issues"].append(f"Invalid debit account code: {debit_account}")
