@@ -56,6 +56,7 @@ import process_bill
 import process_invoice
 import createsharetransaction
 import process_share_documents
+import processonboardingdoc
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1211,6 +1212,58 @@ def get_company_documents_endpoint(submission_id):
             "success": False,
             "error": "Failed to retrieve documents"
         }), 500
+    
+
+    
+@app.route('/api/process/onboarding_doc/<submission_id>', methods=['POST'])
+def process_onboarding_document(submission_id):
+    """Process onboarding document and update company information"""
+    try:
+        data = request.json or {}
+        
+        # Process the onboarding document(s) to extract company information
+        result = processonboardingdoc.process_onboarding_document(data)
+        
+        # Check if processing was successful
+        if isinstance(result, dict) and result.get('success') == False:
+            # Processing failed, return the error
+            return jsonify(result), 400
+        
+        # Remove metadata before updating (it's not a company field)
+        company_data = {k: v for k, v in result.items() if k != '_metadata'}
+        
+        # Update the company information in the database
+        # This will automatically exclude name, email, and company_registry
+        update_result = admin.update_company_info(submission_id, company_data)
+        
+        if not update_result.get('success', False):
+            # Update failed
+            return jsonify({
+                'success': False,
+                'error': 'Document processed successfully but failed to update database',
+                'processing_result': result,
+                'update_error': update_result.get('error')
+            }), 500
+        
+        # Both processing and updating were successful
+        return jsonify({
+            'success': True,
+            'message': 'Document processed and company information updated successfully',
+            'submission_id': submission_id,
+            'extracted_data': result,
+            'update_result': {
+                'updated_fields': update_result.get('updated_fields', []),
+                'excluded_fields': update_result.get('excluded_fields', [])
+            }
+        })
+        
+    except Exception as e:
+        print(f"❌ API error processing onboarding document: {str(e)}")
+        return jsonify({
+            'success': False, 
+            'error': f'Internal server error: {str(e)}'
+        }), 500
+    
 
 # ================================
 # USER ROUTES (Protected)

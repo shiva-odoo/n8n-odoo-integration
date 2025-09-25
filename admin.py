@@ -602,3 +602,111 @@ def update_submission_files(submission_id, files_data):
             "success": False,
             "error": "Update process failed"
         }
+    
+
+
+def update_company_info(submission_id, update_data):
+    """
+    Update company information for a specific onboarding submission 
+    Excludes: name, email, company_registry (these fields will not be updated)
+    Updates: phone, website, vat, street, city, zip, state, country_code, currency_code
+    """
+    try:
+        # Validate input
+        if not submission_id:
+            return {
+                "success": False,
+                "error": "submission_id is required"
+            }
+        
+        if not update_data or not isinstance(update_data, dict):
+            return {
+                "success": False,
+                "error": "update_data must be a non-empty dictionary"
+            }
+        
+        # Validate that submission exists
+        response = onboarding_table.get_item(
+            Key={'submission_id': submission_id}
+        )
+        
+        if 'Item' not in response:
+            return {
+                "success": False,
+                "error": "Submission not found"
+            }
+        
+        # Filter out excluded fields - these will NOT be updated
+        excluded_fields = {'name', 'email', 'company_registry'}
+        filtered_data = {k: v for k, v in update_data.items() 
+                        if k not in excluded_fields and v is not None}
+        
+        # Check if there's anything left to update after filtering
+        if not filtered_data:
+            excluded_from_input = [field for field in excluded_fields if field in update_data]
+            return {
+                "success": True,
+                "message": f"No fields to update for submission {submission_id} (excluded fields only)",
+                "submission_id": submission_id,
+                "excluded_fields": excluded_from_input,
+                "updated_fields": []
+            }
+        
+        # Prepare update expressions for DynamoDB
+        update_expressions = []
+        expression_attribute_values = {':updated_at': datetime.utcnow().isoformat()}
+        expression_attribute_names = {}
+        
+        for key, value in filtered_data.items():
+            # Use attribute names to handle reserved words in DynamoDB
+            placeholder = f"#{key}"
+            value_placeholder = f":{key}"
+            update_expressions.append(f"{placeholder} = {value_placeholder}")
+            expression_attribute_values[value_placeholder] = value
+            expression_attribute_names[placeholder] = key
+        
+        # Build the complete update expression
+        update_expression = "SET " + ", ".join(update_expressions) + ", updated_at = :updated_at"
+        
+        # Update the company information in DynamoDB
+        onboarding_table.update_item(
+            Key={'submission_id': submission_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_attribute_values,
+            ExpressionAttributeNames=expression_attribute_names
+        )
+        
+        # Track which fields were excluded from the input
+        excluded_from_input = [field for field in excluded_fields if field in update_data]
+        
+        # Log successful update
+        print(f"✅ Updated company info for submission {submission_id}")
+        print(f"📝 Updated fields: {list(filtered_data.keys())}")
+        if excluded_from_input:
+            print(f"⚠️  Excluded fields from update: {excluded_from_input}")
+        
+        return {
+            "success": True,
+            "message": f"Successfully updated company info for submission {submission_id}",
+            "submission_id": submission_id,
+            "updated_fields": list(filtered_data.keys()),
+            "excluded_fields": excluded_from_input,
+            "total_fields_processed": len(update_data),
+            "total_fields_updated": len(filtered_data)
+        }
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        error_message = e.response['Error']['Message']
+        print(f"❌ DynamoDB error updating company info: {error_code} - {error_message}")
+        return {
+            "success": False,
+            "error": f"Database update failed: {error_message}",
+            "error_code": error_code
+        }
+    except Exception as e:
+        print(f"❌ Error updating company information: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Update process failed: {str(e)}"
+        }
