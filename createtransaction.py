@@ -230,9 +230,14 @@ def process_single_transaction(transaction_data, transaction_index):
         # Update context to work with specific company
         context = {'allowed_company_ids': [company_id]}
         
-        # Step 2: Check for duplicate transaction by reference
+        # Step 2: Check for duplicate transaction by reference, date, and amount
         duplicate_check = check_for_duplicate_by_ref(
-            models, db, uid, password, transaction_data['ref'], company_id, context
+            models, db, uid, password, 
+            transaction_data['ref'], 
+            company_id, 
+            context,
+            date=transaction_data['date'],
+            amount=total_debits  # Use total_debits (which equals total_credits)
         )
         
         if duplicate_check['is_duplicate']:
@@ -240,7 +245,7 @@ def process_single_transaction(transaction_data, transaction_index):
                 'success': False,
                 'transaction_index': transaction_index,
                 'error': 'Duplicate transaction',
-                'message': f'Transaction with reference "{transaction_data["ref"]}" already exists',
+                'message': f'Transaction with reference "{transaction_data["ref"]}", date "{transaction_data["date"]}", and amount {total_debits} already exists',
                 'existing_entry_id': duplicate_check['existing_entry_id'],
                 'company_id': company_id,
                 'company_name': company_details['name'],
@@ -763,7 +768,7 @@ def determine_account_type_and_code(models, db, uid, password, account_name, con
             ],
             # Expenses
             'expense': [
-                'expense', 'cost', 'salary', 'wage', 'rent', 'utilities', 'insurance',
+                'expense', 'cost', 'salary','wage', 'rent', 'utilities', 'insurance',
                 'supplies', 'travel', 'marketing', 'advertising', 'office', 'telephone',
                 'professional fees', 'maintenance', 'repair'
             ]
@@ -1011,38 +1016,78 @@ def get_journal_details(models, db, uid, password, journal_id, context):
         print(f"❌ Error retrieving journal details: {e}")
         return None
 
-def check_for_duplicate_by_ref(models, db, uid, password, ref, company_id, context):
+def check_for_duplicate_by_ref(models, db, uid, password, ref, company_id, context, date=None, amount=None):
     """
-    Check if a duplicate transaction exists by reference
+    Check if a duplicate transaction exists by reference, date, and amount
+    All three criteria must match for a transaction to be considered duplicate
     """
     try:
-        print(f"🔍 Checking for duplicate by reference: {ref}")
+        print(f"🔍 Checking for duplicate by reference: {ref}, date: {date}, amount: {amount}")
+        
+        # Build search domain - start with company and reference
+        search_domain = [
+            ('company_id', '=', company_id),
+            ('ref', '=', ref)
+        ]
+        
+        # Add date filter if provided
+        if date:
+            search_domain.append(('date', '=', date))
         
         existing_moves = models.execute_kw(
             db, uid, password,
             'account.move', 'search_read',
-            [[
-                ('company_id', '=', company_id),
-                ('ref', '=', ref)
-            ]], 
-            {'fields': ['id', 'ref', 'date', 'state', 'amount_total'], 'limit': 1, 'context': context}
+            [search_domain], 
+            {'fields': ['id', 'ref', 'date', 'state', 'amount_total'], 'limit': 10, 'context': context}
         )
         
         if existing_moves:
-            move = existing_moves[0]
-            print(f"❌ Duplicate found by reference:")
-            print(f"   Existing: Move ID {move['id']}, Ref: {move['ref']}")
-            print(f"   Date: {move['date']}, Amount: {move['amount_total']}")
-            return {
-                'is_duplicate': True,
-                'existing_entry_id': move['id'],
-                'method': 'exact_reference_match',
-                'existing_ref': move['ref'],
-                'existing_amount': move['amount_total'],
-                'existing_date': move['date']
-            }
+            # If amount is provided, filter by amount as well
+            if amount is not None:
+                # Allow small rounding difference (0.01)
+                matching_moves = [
+                    move for move in existing_moves 
+                    if abs(float(move.get('amount_total', 0)) - float(amount)) < 0.01
+                ]
+                
+                if matching_moves:
+                    move = matching_moves[0]
+                    print(f"❌ Duplicate found (ref + date + amount match):")
+                    print(f"   Existing: Move ID {move['id']}, Ref: {move['ref']}")
+                    print(f"   Date: {move['date']}, Amount: {move['amount_total']}")
+                    return {
+                        'is_duplicate': True,
+                        'existing_entry_id': move['id'],
+                        'method': 'exact_match_ref_date_amount',
+                        'existing_ref': move['ref'],
+                        'existing_amount': move['amount_total'],
+                        'existing_date': move['date']
+                    }
+                else:
+                    print(f"✅ Reference and date match found, but amount differs - not a duplicate")
+                    print(f"   Found {len(existing_moves)} entries with same ref/date but different amounts")
+                    return {
+                        'is_duplicate': False,
+                        'existing_entry_id': None,
+                        'method': None,
+                        'note': f'Found {len(existing_moves)} similar transactions with different amounts'
+                    }
+            else:
+                # If no amount provided, just check ref and date
+                move = existing_moves[0]
+                print(f"❌ Duplicate found (ref + date match, amount not checked):")
+                print(f"   Existing: Move ID {move['id']}, Ref: {move['ref']}")
+                print(f"   Date: {move['date']}, Amount: {move['amount_total']}")
+                return {
+                    'is_duplicate': True,
+                    'existing_entry_id': move['id'],
+                    'method': 'exact_match_ref_date',
+                    'existing_ref': move['ref'],
+                    'existing_amount': move['amount_total'],
+                    'existing_date': move['date']
+                }
         
-        print("✅ No duplicate reference found")
+        print("✅ No duplicate found")
         return {
             'is_duplicate': False,
             'existing_entry_id': None,
