@@ -451,7 +451,7 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # COMPREHENSIVE REVERSE CHARGE DETECTION
+        # COMPREHENSIVE REVERSE CHARGE DETECTION - FIXED
         accounting_assignment = bill.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
@@ -465,73 +465,63 @@ def validate_bill_data(bills):
         # All line item descriptions combined for analysis
         all_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
         
-        # Category detection keywords
-        reverse_charge_indicators = {
-            "construction": ["construction", "building", "property management", "real estate", 
-                           "contractor", "builder", "repair services", "maintenance services", 
-                           "demolition", "installation services"],
-            "foreign_services": vendor_country and vendor_country != "CY",
-            "gas_electricity": ["energy", "power", "gas company", "electricity authority", 
-                               "natural gas", "electric power"],
-            "scrap_metal": ["scrap", "recycling", "waste management", "metal recycling", 
-                          "scrap metal", "waste materials"],
-            "electronics": ["mobile phone", "smartphone", "tablet", "laptop", "microprocessor", 
-                          "cpu", "integrated circuit", "gaming console", "playstation", "xbox"],
-            "precious_metals": ["precious metals", "gold", "silver", "platinum", "bullion", 
-                              "gold bars", "silver ingots"],
-            "telecom_eu": ["telecommunications", "telecom services"] and vendor_country in ["GR", "DE", "FR", "IT", "ES"],
-            "property_transfer": ["debt restructuring", "foreclosure", "debt-for-asset", 
-                                "property transfer", "bank repossession"]
-        }
-        
         # Check if vendor qualifies for reverse charge
         is_reverse_charge_vendor = False
         detected_category = ""
         
-        # Check construction/property
+        # Category 1: Check construction/property
+        construction_keywords = ["construction", "building", "property management", "real estate", 
+                                "contractor", "builder", "repair services", "maintenance services", 
+                                "demolition", "installation services"]
         if any(keyword in vendor_name or keyword in description or keyword in all_descriptions 
-               for keyword in reverse_charge_indicators["construction"]):
+               for keyword in construction_keywords):
             is_reverse_charge_vendor = True
             detected_category = "Construction/Property Reverse Charge"
         
-        # Check foreign services
-        elif reverse_charge_indicators["foreign_services"]:
+        # Category 2: Check foreign services
+        elif vendor_country and vendor_country != "CY":
             is_reverse_charge_vendor = True
             detected_category = "Foreign Services Reverse Charge"
         
-        # Check gas/electricity
+        # Category 3: Check gas/electricity
         elif any(keyword in vendor_name or keyword in description 
-                for keyword in reverse_charge_indicators["gas_electricity"]):
+                for keyword in ["energy", "power", "gas company", "electricity authority", 
+                               "natural gas", "electric power"]):
             is_reverse_charge_vendor = True
             detected_category = "Gas/Electricity Reverse Charge"
         
-        # Check scrap metal
+        # Category 4: Check scrap metal
         elif any(keyword in vendor_name or keyword in all_descriptions 
-                for keyword in reverse_charge_indicators["scrap_metal"]):
+                for keyword in ["scrap", "recycling", "waste management", "metal recycling", 
+                               "scrap metal", "waste materials"]):
             is_reverse_charge_vendor = True
             detected_category = "Scrap Metal Reverse Charge"
         
-        # Check electronics
+        # Category 5: Check electronics
         elif any(keyword in vendor_name or keyword in all_descriptions 
-                for keyword in reverse_charge_indicators["electronics"]):
+                for keyword in ["mobile phone", "smartphone", "tablet", "laptop", "microprocessor", 
+                               "cpu", "integrated circuit", "gaming console", "playstation", "xbox"]):
             is_reverse_charge_vendor = True
             detected_category = "Electronics Reverse Charge"
         
-        # Check precious metals
+        # Category 6: Check precious metals
         elif any(keyword in vendor_name or keyword in all_descriptions 
-                for keyword in reverse_charge_indicators["precious_metals"]):
+                for keyword in ["precious metals", "gold", "silver", "platinum", "bullion", 
+                               "gold bars", "silver ingots"]):
             is_reverse_charge_vendor = True
             detected_category = "Precious Metals Reverse Charge"
         
-        # Check EU telecom
-        elif any(keyword in vendor_name or keyword in description 
-                for keyword in reverse_charge_indicators["telecom_eu"]):
+        # Category 7: Check EU telecom - FIXED LOGIC
+        elif vendor_country in ["GR", "DE", "FR", "IT", "ES"] and \
+             any(keyword in vendor_name or keyword in description 
+                 for keyword in ["telecommunications", "telecom services"]):
             is_reverse_charge_vendor = True
             detected_category = "Telecommunications Reverse Charge"
         
-        # Check property transfer
+        # Category 8: Check property transfer
         elif any(keyword in description or keyword in all_descriptions 
-                for keyword in reverse_charge_indicators["property_transfer"]):
+                for keyword in ["debt restructuring", "foreclosure", "debt-for-asset", 
+                               "property transfer", "bank repossession"]):
             is_reverse_charge_vendor = True
             detected_category = "Property Transfer Reverse Charge"
         

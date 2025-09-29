@@ -418,7 +418,7 @@ def validate_invoice_data(invoices):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # COMPREHENSIVE REVERSE CHARGE DETECTION
+        # COMPREHENSIVE REVERSE CHARGE DETECTION - FIXED
         accounting_assignment = invoice.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
@@ -432,67 +432,57 @@ def validate_invoice_data(invoices):
         # All line item descriptions combined for analysis
         all_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
         
-        # Category detection keywords
-        reverse_charge_indicators = {
-            "construction": ["construction", "building", "property management", "real estate", 
-                           "contractor", "builder"],
-            "foreign_customer": customer_country and customer_country != "CY",
-            "gas_electricity": ["energy trader", "power trader", "gas merchant", "electricity merchant"],
-            "scrap_metal": ["scrap", "recycling", "waste management", "metal recycling"],
-            "electronics": ["electronics dealer", "mobile phone wholesaler", "electronics wholesaler"],
-            "precious_metals": ["precious metals dealer", "gold dealer", "silver dealer", "bullion dealer"],
-            "telecom_eu": ["telecommunications"] and customer_country in ["GR", "DE", "FR", "IT", "ES"],
-            "property_transfer": ["debt restructuring", "foreclosure", "property acquisition"]
-        }
-        
         # Check if customer qualifies for reverse charge
         is_reverse_charge_customer = False
         detected_category = ""
         
-        # Check construction/property customer
+        # Category 1: Check construction/property customer
+        construction_keywords = ["construction", "building", "property management", "real estate", 
+                                "contractor", "builder"]
         if any(keyword in customer_name or keyword in description 
-               for keyword in reverse_charge_indicators["construction"]):
+               for keyword in construction_keywords):
             is_reverse_charge_customer = True
             detected_category = "Construction Customer Reverse Charge"
         
-        # Check foreign customer
-        elif reverse_charge_indicators["foreign_customer"]:
+        # Category 2: Check foreign customer
+        elif customer_country and customer_country != "CY":
             is_reverse_charge_customer = True
             detected_category = "Foreign Customer Reverse Charge"
         
-        # Check gas/electricity trader
+        # Category 3: Check gas/electricity trader
         elif any(keyword in customer_name 
-                for keyword in reverse_charge_indicators["gas_electricity"]):
+                for keyword in ["energy trader", "power trader", "gas merchant", "electricity merchant"]):
             is_reverse_charge_customer = True
             detected_category = "Gas/Electricity Trader Reverse Charge"
         
-        # Check scrap metal dealer
+        # Category 4: Check scrap metal dealer
         elif any(keyword in customer_name 
-                for keyword in reverse_charge_indicators["scrap_metal"]):
+                for keyword in ["scrap", "recycling", "waste management", "metal recycling"]):
             is_reverse_charge_customer = True
             detected_category = "Scrap Metal Dealer Reverse Charge"
         
-        # Check electronics dealer
+        # Category 5: Check electronics dealer
         elif any(keyword in customer_name 
-                for keyword in reverse_charge_indicators["electronics"]):
+                for keyword in ["electronics dealer", "mobile phone wholesaler", "electronics wholesaler"]):
             is_reverse_charge_customer = True
             detected_category = "Electronics Dealer Reverse Charge"
         
-        # Check precious metals dealer
+        # Category 6: Check precious metals dealer
         elif any(keyword in customer_name 
-                for keyword in reverse_charge_indicators["precious_metals"]):
+                for keyword in ["precious metals dealer", "gold dealer", "silver dealer", "bullion dealer"]):
             is_reverse_charge_customer = True
             detected_category = "Precious Metals Dealer Reverse Charge"
         
-        # Check EU telecom
-        elif any(keyword in description 
-                for keyword in reverse_charge_indicators["telecom_eu"]):
+        # Category 7: Check EU telecom - FIXED LOGIC
+        elif customer_country in ["GR", "DE", "FR", "IT", "ES"] and \
+             any(keyword in description 
+                 for keyword in ["telecommunications"]):
             is_reverse_charge_customer = True
             detected_category = "Telecommunications Reverse Charge"
         
-        # Check property transfer
+        # Category 8: Check property transfer
         elif any(keyword in description or keyword in all_descriptions 
-                for keyword in reverse_charge_indicators["property_transfer"]):
+                for keyword in ["debt restructuring", "foreclosure", "property acquisition"]):
             is_reverse_charge_customer = True
             detected_category = "Property Transfer Reverse Charge"
         
