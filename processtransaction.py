@@ -31,7 +31,7 @@ Before processing any transactions, you MUST determine the document type:
 **Liabilities:**
 • 2100 - Accounts payable
 • 2200 - VAT control account
-• 2210 - PAYE/NIC
+• 2210 - PAYE/NIC (payroll deductions)
 
 **Income:**
 • 4000 - Sales
@@ -66,54 +66,101 @@ Before processing any transactions, you MUST determine the document type:
 
 ### FOR CREDIT CARD STATEMENTS:
 
-**Individual Credit Card Purchases (in transaction list):**
+**CRITICAL STRUCTURAL RULE FOR CREDIT CARD STATEMENTS:**
+Credit card statements have two distinct sections that determine the accounting treatment:
+
+1. **DEBIT SECTION** (reduces credit card balance/liability):
+   - **CRITICAL OVERRIDE RULE**: ALL transactions positioned in the debit section alongside other payment transactions MUST be classified as credit card payments
+   - If you see one transaction labeled "DIRECT DEBIT PAYMENT" and another transaction with just a reference number (e.g., "252370212") in the same section, they are BOTH credit card payments
+   - **DO NOT** let description content override structural position - a reference number in the debit section is still a payment
+   - **EXCEPTIONS** - Check description for these keywords (these are NOT payments):
+     - "Interest" or "Total Interest" → Interest received (DEBIT 1201 Bank, CREDIT 4906)
+     - "Refund" or "Credit" or "Reversal" → Income/credit adjustment (DEBIT 1201 Bank, CREDIT appropriate income account)
+     - "Cashback" or "Reward" → Income (DEBIT 1201 Bank, CREDIT appropriate income account)
+   - ALL OTHER transactions in debit section → Credit card payment (DEBIT 1240 Credit card, CREDIT 1201 Bank)
+   - For non-payment exceptions, use account 4906 Bank interest received or 8200 Other income depending on nature
+
+2. **CREDIT SECTION or Transaction List** (increases credit card balance/liability):
+   - These are merchant purchases → DEBIT expense account, CREDIT 1240 Credit card
+
+**Individual Credit Card Purchases (merchant transactions):**
 - DEBIT: Appropriate expense account (based on merchant/description)
 - CREDIT: 1240 Credit card
 - Partner: Extract from transaction description (merchant name)
 
-**Credit Card Payments (typically in debit section):**
+**Credit Card Payments (ANY transaction in debit section except interest):**
 - DEBIT: 1240 Credit card
 - CREDIT: 1201 Bank
 - Partner for 1240: "Bank of Cyprus - Credit card"
 - Partner for 1201: "Bank of Cyprus - Current A/c"
+- Apply this rule even if description is just a reference number
 
-**Interest Received (in debit section, e.g., "Total Interest"):**
+**Interest Received (in debit section with "Interest" in description):**
 - DEBIT: 1201 Bank
 - CREDIT: 4906 Bank interest received
 - Partner for 1201: "Bank of Cyprus - Current A/c"
 - Partner for 4906: Extract from description or "Bank interest"
 
+**Credit Adjustments/Refunds (in debit section with "Refund", "Credit", "Reversal", "Cashback", "Reward"):**
+- DEBIT: 1201 Bank
+- CREDIT: 4906 Bank interest received (for interest-like items) OR 8200 Other non-operating income (for refunds/cashback)
+- Partner for 1201: "Bank of Cyprus - Current A/c"
+- Partner for income account: Extract from description
+
 ### FOR BANK ACCOUNT STATEMENTS:
 
-**Customer Payments (money coming in):**
+**CRITICAL MONEY FLOW ANALYSIS:**
+Bank account statements show transactions in DEBIT and CREDIT columns that indicate money movement:
+- **DEBIT column** = Money leaving the bank account (reduces balance)
+- **CREDIT column** = Money entering the bank account (increases balance)
+
+Always analyze the statement structure to determine which column the transaction appears in, then apply the appropriate accounting treatment.
+
+**Customer Payments (money coming in - CREDIT column in bank statement):**
 - DEBIT: 1201 Bank
 - CREDIT: 1100 Accounts receivable
 - Partner for 1201: "Bank of Cyprus - Current A/c"
 - Partner for 1100: Extract from description
 
-**Supplier Payments (money going out to vendors):**
+**Supplier Payments (money going out to vendors - DEBIT column in bank statement):**
 - DEBIT: 2100 Accounts payable
 - CREDIT: 1201 Bank
 - Partner for 2100: Extract from description
 - Partner for 1201: "Bank of Cyprus - Current A/c"
 
-**Tax Payments:**
+**Payroll Tax/Social Insurance Payments (money going out - DEBIT column):**
+- DEBIT: 2210 PAYE/NIC
+- CREDIT: 1201 Bank
+- Indicators: "Social Insurance", "PAYE", "GHS", "National Insurance"
+- Partner for 2210: Extract from description (e.g., "Social Insurance Services")
+- Partner for 1201: "Bank of Cyprus - Current A/c"
+
+**VAT Payments (money going OUT to tax authority - DEBIT column in bank statement):**
 - DEBIT: 2200 VAT control account
 - CREDIT: 1201 Bank
+- Indicators: "TAX PAYMENT", "VAT payment"
 - Partner for 2200: Extract from description (tax authority)
 - Partner for 1201: "Bank of Cyprus - Current A/c"
 
-**Bank Charges:**
+**VAT Refunds (money coming IN from tax authority - CREDIT column in bank statement):**
+- DEBIT: 1201 Bank
+- CREDIT: 2200 VAT control account
+- Indicators: "TAX PAYMENT" or "VAT" with CREDIT to bank account
+- Partner for 1201: "Bank of Cyprus - Current A/c"
+- Partner for 2200: Extract from description (tax authority)
+
+**Bank Charges (money going out - DEBIT column):**
 - DEBIT: 7901 Bank charges
 - CREDIT: 1201 Bank
 - Partner for 7901: Extract from description
 - Partner for 1201: "Bank of Cyprus - Current A/c"
 
 **Ambiguous/Unclear Transactions:**
-- DEBIT: 1260 Suspense account (for money out) OR DEBIT: 1201 Bank (for money in)
-- CREDIT: 1201 Bank (for money out) OR CREDIT: 1260 Suspense account (for money in)
+- For money OUT (DEBIT column): DEBIT 1260 Suspense account, CREDIT 1201 Bank
+- For money IN (CREDIT column): DEBIT 1201 Bank, CREDIT 1260 Suspense account
 - Partner for 1260: "Suspense - " + brief description
 - Partner for 1201: "Bank of Cyprus - Current A/c"
+- Use suspense account when transaction purpose is unclear or cannot be properly classified
 
 ## EXPENSE ACCOUNT MAPPING GUIDE
 
@@ -190,27 +237,46 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 1. **customer_payment**: Payments received from customers
 2. **supplier_payment**: Payments made to vendors/suppliers
-3. **tax_payment**: Tax payments to authorities
-4. **bank_charges**: Bank fees and charges
-5. **credit_card_purchase**: Individual credit card transactions
-6. **credit_card_payment**: Payment from bank to credit card
-7. **interest_received**: Interest income
-8. **suspense_entry**: Unclear/ambiguous transactions
-9. **other_expense**: Direct expenses
-10. **other_income**: Miscellaneous income
+3. **payroll_tax_payment**: Social insurance, PAYE, GHS, and payroll-related tax payments
+4. **vat_payment**: VAT payments to tax authority (net VAT payable)
+5. **vat_refund**: VAT refunds from tax authority (net VAT receivable)
+6. **bank_charges**: Bank fees and charges
+7. **credit_card_purchase**: Individual credit card transactions
+8. **credit_card_payment**: Payment from bank to credit card
+9. **interest_received**: Interest income
+10. **credit_adjustment**: Refunds, reversals, cashback, rewards received
+11. **suspense_entry**: Unclear/ambiguous transactions
+12. **other_expense**: Direct expenses
+13. **other_income**: Miscellaneous income
 
 ## Processing Instructions
 
 1. **STEP 1: Determine document type** (Credit Card vs Bank Account)
-2. **STEP 2: Extract ALL transactions** from the statement
-3. **STEP 3: For each transaction, determine money flow direction**
-4. **STEP 4: Apply appropriate accounting treatment based on document type**
-5. **STEP 5: Map to specific expense accounts where possible**
-6. **STEP 6: Use suspense account for unclear transactions**
-7. **STEP 7: Assign correct partner names**
-8. **STEP 8: Create balanced line_items** ensuring debits = credits
-9. **STEP 9: Set company_id** to `{company_id_value}` for every transaction
-10. **STEP 10: Ensure all numeric values are numbers, not strings**
+2. **STEP 2: Identify statement structure and group related transactions** 
+   - For credit card: Identify DEBIT section (look for transactions grouped together, often with "CR" notation or before merchant list)
+   - **CRITICAL**: Transactions positioned together in the same section should be treated identically
+   - If you see "DIRECT DEBIT PAYMENT" alongside a reference number like "252370212", they are BOTH in the debit section
+   - For bank account: Identify DEBIT column (money out) vs CREDIT column (money in)
+3. **STEP 3: Extract ALL transactions** from the statement
+4. **STEP 4: For CREDIT CARD statements - Apply structural grouping rules with exceptions:**
+   - First, identify all transactions in the DEBIT section (typically at top, before merchant list)
+   - **CHECK DESCRIPTIONS FOR EXCEPTIONS** - these keywords indicate income, not payments:
+     - "Interest", "Total Interest", "Refund", "Credit", "Reversal", "Cashback", "Reward"
+     - These should be classified as income/adjustments (DEBIT 1201 Bank, CREDIT 4906 or 8200)
+   - **CRITICAL GROUPING RULE**: If multiple transactions appear together in same section WITHOUT exception keywords, treat them the same way
+   - Example: If "DIRECT DEBIT PAYMENT €112.35" and "252370212 €2,000" appear together (no exception keywords) → BOTH are credit card payments
+   - ALL non-exception transactions in DEBIT section → Credit card payments (DEBIT 1240, CREDIT 1201)
+   - **NEVER** use suspense account for transactions positioned in debit section with other identified payments
+   - Merchant transactions (separate list) → Credit card purchases (DEBIT expense, CREDIT 1240)
+5. **STEP 5: For BANK ACCOUNT statements - Determine money flow from columns:**
+   - CREDIT column = money in → Determine if customer payment, VAT refund, or other income
+   - DEBIT column = money out → Determine if supplier payment, payroll tax, VAT payment, or bank charge
+6. **STEP 6: Map to specific expense accounts where possible**
+7. **STEP 7: Use suspense account ONLY for truly unclear bank transactions**
+8. **STEP 8: Assign correct partner names**
+9. **STEP 9: Create balanced line_items** ensuring debits = credits
+10. **STEP 10: Set company_id** to `{company_id_value}` for every transaction
+11. **STEP 11: Ensure all numeric values are numbers, not strings**
 
 ## Example Transactions:
 
@@ -282,20 +348,56 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 }}
 ```
 
-### Bank Tax Payment:
+### Credit Card Payment (reference number only - SAME SECTION AS OTHER PAYMENTS):
+```json
+{{
+  "company_id": {company_id_value},
+  "date": "2025-06-05",
+  "ref": "636386",
+  "narration": "Credit card payment",
+  "partner": "Bank of Cyprus",
+  "accounting_assignment": {{
+    "debit_account": "1240",
+    "debit_account_name": "Credit card",
+    "credit_account": "1201",
+    "credit_account_name": "Bank",
+    "transaction_type": "credit_card_payment",
+    "requires_vat": false,
+    "additional_entries": []
+  }},
+  "line_items": [
+    {{
+      "name": "Credit card",
+      "debit": 2000.00,
+      "credit": 0.00,
+      "partner": "Bank of Cyprus - Credit card"
+    }},
+    {{
+      "name": "Bank",
+      "debit": 0.00,
+      "credit": 2000.00,
+      "partner": "Bank of Cyprus - Current A/c"
+    }}
+  ]
+}}
+```
+
+**IMPORTANT NOTE**: The €2,000 transaction with reference "252370212" appears in the SAME DEBIT SECTION as the €112.35 "DIRECT DEBIT PAYMENT". Because they are positioned together in the statement structure, they MUST both be classified as credit card payments, regardless of description content.
+
+### Bank Tax Payment (Money OUT):
 ```json
 {{
   "company_id": {company_id_value},
   "date": "2025-06-19",
   "ref": "tax_payment_190625",
-  "narration": "Tax payment to authorities",
+  "narration": "VAT payment to tax authorities",
   "partner": "Tax Authority",
   "accounting_assignment": {{
     "debit_account": "2200",
     "debit_account_name": "VAT control account",
     "credit_account": "1201",
     "credit_account_name": "Bank",
-    "transaction_type": "tax_payment",
+    "transaction_type": "vat_payment",
     "requires_vat": false,
     "additional_entries": []
   }},
@@ -310,6 +412,74 @@ For EACH transaction found, create a JSON object with this EXACT structure:
       "name": "Bank",
       "debit": 0.00,
       "credit": 4921.79,
+      "partner": "Bank of Cyprus - Current A/c"
+    }}
+  ]
+}}
+```
+
+### Bank VAT Refund (Money IN):
+```json
+{{
+  "company_id": {company_id_value},
+  "date": "2025-06-19",
+  "ref": "vat_refund_190625",
+  "narration": "VAT refund received from tax authorities",
+  "partner": "Tax Authority",
+  "accounting_assignment": {{
+    "debit_account": "1201",
+    "debit_account_name": "Bank",
+    "credit_account": "2200",
+    "credit_account_name": "VAT control account",
+    "transaction_type": "vat_refund",
+    "requires_vat": false,
+    "additional_entries": []
+  }},
+  "line_items": [
+    {{
+      "name": "Bank",
+      "debit": 4921.79,
+      "credit": 0.00,
+      "partner": "Bank of Cyprus - Current A/c"
+    }},
+    {{
+      "name": "VAT control account",
+      "debit": 0.00,
+      "credit": 4921.79,
+      "partner": "Tax Authority"
+    }}
+  ]
+}}
+```
+
+### Social Insurance Payment:
+```json
+{{
+  "company_id": {company_id_value},
+  "date": "2025-06-03",
+  "ref": "social_insurance_030625",
+  "narration": "Social insurance payment",
+  "partner": "Social Insurance Services",
+  "accounting_assignment": {{
+    "debit_account": "2210",
+    "debit_account_name": "PAYE/NIC",
+    "credit_account": "1201",
+    "credit_account_name": "Bank",
+    "transaction_type": "payroll_tax_payment",
+    "requires_vat": false,
+    "additional_entries": []
+  }},
+  "line_items": [
+    {{
+      "name": "PAYE/NIC",
+      "debit": 1074.00,
+      "credit": 0.00,
+      "partner": "Social Insurance Services"
+    }},
+    {{
+      "name": "Bank",
+      "debit": 0.00,
+      "credit": 1074.00,
       "partner": "Bank of Cyprus - Current A/c"
     }}
   ]
@@ -608,21 +778,38 @@ CORE ACCOUNTING PRINCIPLES:
 • Use appropriate account codes from the provided chart of accounts
 • Apply correct transaction types based on document type and transaction nature
 • Extract meaningful partner names from transaction descriptions
-• Use suspense accounts for unclear transactions
+• Use suspense accounts ONLY for truly unclear bank transactions
 
 DOCUMENT-SPECIFIC PROCESSING:
 
-**FOR CREDIT CARD STATEMENTS:**
-• Individual purchases: DEBIT expense account, CREDIT 1240 Credit card
-• Card payments: DEBIT 1240 Credit card, CREDIT 1201 Bank
-• Interest received: DEBIT 1201 Bank, CREDIT 4906 Bank interest received
+**FOR CREDIT CARD STATEMENTS - USE STRUCTURAL POSITION RULES:**
+• **CRITICAL**: Credit card statements have DEBIT and CREDIT sections with specific meanings
+• **STRUCTURAL POSITION OVERRIDE**: When you identify transactions grouped together in the same section, treat them identically
+• **DEBIT section** (reduces card balance):
+  - Look for transactions positioned together at the top of the statement or in a summary section
+  - If ONE transaction says "DIRECT DEBIT PAYMENT" and ANOTHER shows only a reference number like "252370212", they are in the SAME section
+  - **CHECK FOR EXCEPTIONS FIRST** - these are NOT payments:
+    - "Interest", "Total Interest" → Interest received: DEBIT 1201 Bank, CREDIT 4906
+    - "Refund", "Credit", "Reversal" → Income/adjustment: DEBIT 1201 Bank, CREDIT 4906 or 8200
+    - "Cashback", "Reward" → Income: DEBIT 1201 Bank, CREDIT 4906 or 8200
+  - ALL OTHER transactions in debit section → Credit card payment: DEBIT 1240 Credit card, CREDIT 1201 Bank
+  - **CRITICAL**: Reference numbers, unclear descriptions, or missing keywords DO NOT matter - position determines treatment
+  - **DO NOT** use suspense account for transactions in the debit section alongside identified payments
+• **Merchant transactions** (increases card balance):
+  - Usually appear in a separate list with merchant names and trace numbers
+  - Individual purchases: DEBIT expense account, CREDIT 1240 Credit card
 
-**FOR BANK ACCOUNT STATEMENTS:**
-• Customer payments: DEBIT 1201 Bank, CREDIT 1100 Accounts receivable
-• Supplier payments: DEBIT 2100 Accounts payable, CREDIT 1201 Bank  
-• Tax payments: DEBIT 2200 VAT control account, CREDIT 1201 Bank
-• Bank charges: DEBIT 7901 Bank charges, CREDIT 1201 Bank
-• Unclear transactions: Use 1260 Suspense account
+**FOR BANK ACCOUNT STATEMENTS - USE COLUMN ANALYSIS:**
+• **CRITICAL**: Analyze DEBIT vs CREDIT columns to determine money flow
+• CREDIT column (money IN):
+  - Customer payments: DEBIT 1201 Bank, CREDIT 1100 Accounts receivable
+  - VAT refunds: DEBIT 1201 Bank, CREDIT 2200 VAT control account
+• DEBIT column (money OUT):
+  - Payroll taxes (Social Insurance, PAYE, GHS): DEBIT 2210 PAYE/NIC, CREDIT 1201 Bank
+  - VAT payments: DEBIT 2200 VAT control account, CREDIT 1201 Bank
+  - Supplier payments: DEBIT 2100 Accounts payable, CREDIT 1201 Bank
+  - Bank charges: DEBIT 7901 Bank charges, CREDIT 1201 Bank
+• Use 1260 Suspense only when truly unclear
 
 EXPENSE ACCOUNT MAPPING:
 • Fuel stations → 7300 Car fuel & oil
@@ -632,6 +819,11 @@ EXPENSE ACCOUNT MAPPING:
 • Telecommunications → 7502 Telephone or 7503 Internet
 • Professional services → 7602 Consultancy fees
 • Unknown merchants → 6900 Miscellaneous expenses
+
+TRANSACTION IDENTIFICATION KEYWORDS:
+• **Payroll taxes**: "Social Insurance", "PAYE", "GHS", "National Insurance", "NIC" → Use 2210 PAYE/NIC
+• **VAT payments/refunds**: "TAX PAYMENT" with "VAT" context → Use 2200 VAT control account (check money flow direction)
+• **Regular supplier payments**: Everything else with vendor names → Use 2100 Accounts payable
 
 PARTNER NAME ASSIGNMENT:
 • 1201 Bank: Always "Bank of Cyprus - Current A/c"

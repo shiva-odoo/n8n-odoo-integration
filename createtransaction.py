@@ -29,31 +29,14 @@ def main(data):
                     {
                         "name": "Bank of Cyprus",
                         "debit": 15000.00,
-                        "credit": 0.00
+                        "credit": 0.00,
+                        "partner": "Bank of Cyprus - Current A/c"  # Optional per-line partner
                     },
                     {
                         "name": "Share Capital",
                         "debit": 0.00,
-                        "credit": 15000.00
-                    }
-                ]
-            },
-            {
-                "company_id": 1,
-                "date": "2025-07-21",
-                "ref": "BOC Transfer 09445",
-                "narration": "Additional investment from partner",
-                "partner": "Investment Partner Ltd",
-                "line_items": [
-                    {
-                        "name": "Bank of Cyprus",
-                        "debit": 10000.00,
-                        "credit": 0.00
-                    },
-                    {
-                        "name": "Share Capital",
-                        "debit": 0.00,
-                        "credit": 10000.00
+                        "credit": 15000.00,
+                        "partner": "Shareholder Name"  # Optional per-line partner
                     }
                 ]
             }
@@ -213,7 +196,7 @@ def process_single_transaction(transaction_data, transaction_index):
         print(f"Date: {transaction_data['date']}")
         print(f"Reference: {transaction_data['ref']}")
         print(f"Narration: {transaction_data['narration']}")
-        print(f"Partner: {transaction_data.get('partner', 'None')}")
+        print(f"Transaction Partner (reference only): {transaction_data.get('partner', 'None')}")
         print(f"Line Items: {len(transaction_data['line_items'])}")
         
         # Initialize connection
@@ -267,29 +250,12 @@ def process_single_transaction(transaction_data, transaction_index):
         
         print("✅ No duplicate found, proceeding with transaction creation")
         
-        # Step 3: Handle partner information
-        partner_id = None
-        partner_info = None
-        
-        if transaction_data.get('partner'):
-            partner_result = find_or_create_partner(models, db, uid, password, transaction_data['partner'], context)
-            if partner_result:
-                partner_id = partner_result['id']
-                partner_info = partner_result
-                print(f"✅ Partner resolved: {partner_info['name']} (ID: {partner_id})")
-            else:
-                return {
-                    'success': False,
-                    'transaction_index': transaction_index,
-                    'error': f'Failed to find or create partner: {transaction_data["partner"]}',
-                    'transaction_ref': transaction_data.get('ref', 'Unknown')
-                }
-        
-        # Step 4: Pre-create all accounts first (batch creation)
+        # Step 3: Pre-create all accounts and resolve partners for each line
         resolved_line_items = []
         created_accounts = []
+        line_partners = []
         
-        # First pass: Create all accounts that don't exist
+        # First pass: Create all accounts and resolve partners per line item
         for i, line_item in enumerate(transaction_data['line_items']):
             account_result = find_or_create_account_with_retry(models, db, uid, password, line_item['name'], context)
             
@@ -305,6 +271,21 @@ def process_single_transaction(transaction_data, transaction_index):
             if account_result.get('created'):
                 created_accounts.append(account_result)
             
+            # Resolve partner for THIS specific line item
+            line_partner_id = None
+            line_partner_info = None
+            
+            if line_item.get('partner'):
+                partner_result = find_or_create_partner(models, db, uid, password, line_item['partner'], context)
+                if partner_result:
+                    line_partner_id = partner_result['id']
+                    line_partner_info = partner_result
+                    print(f"✅ Line {i+1} partner resolved: {line_partner_info['name']} (ID: {line_partner_id})")
+                else:
+                    print(f"⚠️  Line {i+1}: Failed to resolve partner '{line_item['partner']}', continuing without partner")
+            
+            line_partners.append(line_partner_info)
+            
             resolved_line = {
                 'account_id': account_id,
                 'name': transaction_data['narration'],  # Use narration as line description
@@ -312,14 +293,15 @@ def process_single_transaction(transaction_data, transaction_index):
                 'credit': float(line_item['credit']),
             }
             
-            # Add partner to each line if available
-            if partner_id:
-                resolved_line['partner_id'] = partner_id
+            # Add partner to THIS line if available
+            if line_partner_id:
+                resolved_line['partner_id'] = line_partner_id
             
             resolved_line_items.append(resolved_line)
             
             status = "created" if account_result.get('created') else "found"
-            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id} ({status})")
+            partner_status = f", partner: {line_item.get('partner', 'none')}" if line_item.get('partner') else ""
+            print(f"✅ Line {i+1}: {line_item['name']} -> Account ID {account_id} ({status}){partner_status}")
         
         # If we created any accounts, wait and refresh cache
         if created_accounts:
@@ -335,7 +317,7 @@ def process_single_transaction(transaction_data, transaction_index):
             )
             print("✅ Account cache refreshed")
         
-        # Step 5: Get default journal (or determine from line items)
+        # Step 4: Get default journal (or determine from line items)
         journal_id = get_default_journal_for_transaction(models, db, uid, password, transaction_data, context)
         
         if not journal_id:
@@ -346,7 +328,7 @@ def process_single_transaction(transaction_data, transaction_index):
                 'transaction_ref': transaction_data.get('ref', 'Unknown')
             }
         
-        # Step 6: Get journal details including code
+        # Step 5: Get journal details including code
         journal_details = get_journal_details(models, db, uid, password, journal_id, context)
         if not journal_details:
             return {
@@ -358,13 +340,12 @@ def process_single_transaction(transaction_data, transaction_index):
         
         print(f"✅ Using Journal: {journal_details['name']} (Code: {journal_details['code']})")
         
-        # Step 7: Create Journal Entry with retry mechanism
+        # Step 6: Create Journal Entry with retry mechanism
         journal_entry_id = create_journal_entry_flexible_with_retry(
             models, db, uid, password,
             journal_id,
             resolved_line_items,
             transaction_data,
-            partner_id,
             context
         )
         
@@ -379,7 +360,7 @@ def process_single_transaction(transaction_data, transaction_index):
         print(f"✅ Journal Entry ID: {journal_entry_id}")
         print(f"✅ Transaction completed successfully")
         
-        # Step 8: Prepare enhanced return response
+        # Step 7: Prepare enhanced return response
         return {
             'success': True,
             'transaction_index': transaction_index,
@@ -390,7 +371,7 @@ def process_single_transaction(transaction_data, transaction_index):
             'company_name': company_details['name'],
             'date': transaction_data['date'],
             'description': transaction_data['narration'],
-            'partner': partner_info['name'] if partner_info else None,
+            'partner': transaction_data.get('partner'),  # Transaction-level partner (reference only)
             'reference': transaction_data['ref'],
             
             # Additional detailed fields
@@ -401,7 +382,6 @@ def process_single_transaction(transaction_data, transaction_index):
             'journal_code': journal_details['code'],
             'journal_name': journal_details['name'],
             'journal_type': journal_details['type'],
-            'partner_details': partner_info,
             'line_count': len(transaction_data['line_items']),
             'created_accounts': created_accounts,
             'line_items_processed': [
@@ -410,11 +390,13 @@ def process_single_transaction(transaction_data, transaction_index):
                     'account_id': resolved_line_items[i]['account_id'],
                     'debit': resolved_line_items[i]['debit'],
                     'credit': resolved_line_items[i]['credit'],
-                    'partner_id': partner_id
+                    'partner_name': transaction_data['line_items'][i].get('partner'),
+                    'partner_id': resolved_line_items[i].get('partner_id'),
+                    'partner_details': line_partners[i]
                 }
                 for i in range(len(transaction_data['line_items']))
             ],
-            'message': 'Flexible bank transaction entry created successfully'
+            'message': 'Flexible bank transaction entry created successfully with per-line partners'
         }
         
     except xmlrpc.client.Fault as e:
@@ -691,12 +673,12 @@ def create_new_account_with_verification(models, db, uid, password, account_name
         traceback.print_exc()
         return None
 
-def create_journal_entry_flexible_with_retry(models, db, uid, password, journal_id, line_items, data, partner_id, context, max_retries=3):
+def create_journal_entry_flexible_with_retry(models, db, uid, password, journal_id, line_items, data, context, max_retries=3):
     """Create journal entry with retry mechanism for account availability issues"""
     
     for attempt in range(max_retries):
         try:
-            return create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, partner_id, context)
+            return create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, context)
             
         except Exception as e:
             error_str = str(e).lower()
@@ -1175,10 +1157,10 @@ def validate_and_fix_date(date_str):
         print(f"⚠️  Invalid date format {date_str} corrected to {corrected_date}")
         return corrected_date
 
-def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, partner_id, context):
-    """Create journal entry using flexible line items with partner support"""
+def create_journal_entry_flexible(models, db, uid, password, journal_id, line_items, data, context):
+    """Create journal entry using flexible line items with per-line partner support"""
     try:
-        print(f"📝 Creating flexible journal entry...")
+        print(f"📝 Creating flexible journal entry with per-line partners...")
         
         # Prepare line_ids for Odoo (using (0, 0, values) format)
         line_ids = []
@@ -1193,7 +1175,7 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
             'force_company': context.get('allowed_company_ids', [1])[0] if context.get('allowed_company_ids') else 1
         })
         
-        # Create journal entry
+        # Create journal entry (no transaction-level partner since partners are per-line)
         move_data = {
             'journal_id': journal_id,
             'date': data['date'],
@@ -1202,11 +1184,6 @@ def create_journal_entry_flexible(models, db, uid, password, journal_id, line_it
             'line_ids': line_ids,
             'move_type': 'entry',  # Explicitly set as journal entry
         }
-        
-        # Add partner to the main journal entry if available
-        if partner_id:
-            move_data['partner_id'] = partner_id
-            print(f"📝 Adding partner ID {partner_id} to journal entry")
         
         print(f"📝 Creating move with reference: {data['ref']}")
         print(f"📝 Narration: {data['narration']}")
