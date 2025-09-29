@@ -360,43 +360,58 @@ def process_single_transaction(transaction_data, transaction_index):
         print(f"✅ Journal Entry ID: {journal_entry_id}")
         print(f"✅ Transaction completed successfully")
         
-        # Step 7: Prepare enhanced return response
+        # Step 7: Get account codes for cleaner output
+        account_codes = []
+        for i in range(len(resolved_line_items)):
+            account_id = resolved_line_items[i]['account_id']
+            # Fetch account code
+            account_info = models.execute_kw(
+                db, uid, password,
+                'account.account', 'read',
+                [[account_id], ['code']], 
+                {'context': context}
+            )
+            account_codes.append(account_info[0]['code'] if account_info else 'N/A')
+        
+        # Prepare clean return response
         return {
             'success': True,
             'transaction_index': transaction_index,
             'journal_entry_id': journal_entry_id,
-            
-            # Required fields as requested
-            'amount': total_debits,
             'company_name': company_details['name'],
             'date': transaction_data['date'],
-            'description': transaction_data['narration'],
-            'partner': transaction_data.get('partner'),  # Transaction-level partner (reference only)
             'reference': transaction_data['ref'],
+            'amount': total_debits,
+            'transaction_partner': transaction_data.get('partner'),  # Overall transaction partner from input
             
-            # Additional detailed fields
-            'original_date': original_date,
-            'date_was_modified': date_was_modified,
-            'company_id': company_id,
-            'journal_id': journal_id,
-            'journal_code': journal_details['code'],
-            'journal_name': journal_details['name'],
-            'journal_type': journal_details['type'],
-            'line_count': len(transaction_data['line_items']),
-            'created_accounts': created_accounts,
-            'line_items_processed': [
+            # Clean line items showing what was uploaded to Odoo
+            'line_items': [
                 {
                     'account_name': transaction_data['line_items'][i]['name'],
-                    'account_id': resolved_line_items[i]['account_id'],
+                    'account_code': account_codes[i],
+                    'label': transaction_data['narration'],  # What appears as label in Odoo
+                    'partner': transaction_data['line_items'][i].get('partner'),  # Line item partner from input
                     'debit': resolved_line_items[i]['debit'],
-                    'credit': resolved_line_items[i]['credit'],
-                    'partner_name': transaction_data['line_items'][i].get('partner'),
-                    'partner_id': resolved_line_items[i].get('partner_id'),
-                    'partner_details': line_partners[i]
+                    'credit': resolved_line_items[i]['credit']
                 }
                 for i in range(len(transaction_data['line_items']))
             ],
-            'message': 'Flexible bank transaction entry created successfully with per-line partners'
+            
+            # Additional metadata
+            'journal': {
+                'id': journal_id,
+                'name': journal_details['name'],
+                'code': journal_details['code']
+            },
+            'created_accounts': [
+                {
+                    'name': acc['name'],
+                    'code': acc['code'],
+                    'type': acc['account_type']
+                }
+                for acc in created_accounts
+            ] if created_accounts else [],
+            'message': 'Transaction created successfully'
         }
         
     except xmlrpc.client.Fault as e:
