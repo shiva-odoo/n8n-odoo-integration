@@ -85,26 +85,90 @@ Each line item must be assigned to the most appropriate expense account based on
 - Example: Office supplier selling "Stationery" (7504) AND "Computer equipment" (0090)
 - Assign the most specific account code for each line item
 
-**VENDOR/SUPPLIER COMPANY DETECTION:**
-Look for these indicators in vendor information to determine VAT treatment:
-- Vendor name contains: "Construction", "Building", "Property Management", "Real Estate"
-- Services described as: "Construction services", "Building work", "Property management"
+**CYPRUS VAT REVERSE CHARGE DETECTION (COMPREHENSIVE):**
+
+The reverse charge mechanism applies when the vendor/supplier falls into ANY of the following categories:
+
+**CATEGORY 1: CONSTRUCTION & PROPERTY SERVICES**
+Look for these indicators:
+- Vendor name contains: "Construction", "Building", "Property Management", "Real Estate", "Contractor", "Builder"
+- Services described as: "Construction services", "Building work", "Property management", "Repair services", "Maintenance services", "Demolition", "Installation services"
 - Document mentions: "Reverse charge applicable", "Customer to account for VAT"
 
-**VAT TREATMENT LOGIC:**
-- **NORMAL VENDORS:** Standard VAT treatment
-  - Main transaction: GROSS amount (net + VAT)
-  - Debit: Expense accounts (per line item) - Net amounts only
-  - Debit: 2202 (Input VAT) - VAT amount reclaimable
-  - Credit: 2100 (Accounts Payable) - Full amount including VAT
+**CATEGORY 2: FOREIGN/EU SERVICE PROVIDERS**
+Look for these indicators:
+- Vendor located outside Cyprus (check address, VAT number format)
+- EU VAT number format (non-Cyprus)
+- Services provided from abroad: Legal, Accounting, Consulting, IT services, Marketing, Design, Professional services, Advisory services, Royalties, License fees
+- Cross-border B2B services under general reverse charge rule
 
-- **CONSTRUCTION/PROPERTY VENDORS:** Reverse charge
-  - Main transaction: NET amount only
-  - Debit: Expense accounts (per line item) - Net amounts
-  - Credit: 2100 (Accounts Payable) - Net amount only
-  - Create BOTH VAT entries in additional_entries:
-    - Input VAT (2202) - Debit VAT amount (reclaimable)
-    - Output VAT (2201) - Credit VAT amount (owed to authorities)
+**CATEGORY 3: GAS & ELECTRICITY SUPPLIERS**
+Look for these indicators:
+- Pure gas supply to registered business
+- Pure electricity supply to registered traders/merchants
+- Utility companies selling gas/electricity (not mixed utility bills to consumers)
+- Vendor name contains: "Energy", "Power", "Gas Company", "Electricity Authority"
+
+**CATEGORY 4: SCRAP METAL & WASTE DEALERS**
+Look for these indicators:
+- Scrap metal supplies
+- Waste materials supplies
+- Vendor name contains: "Scrap", "Recycling", "Waste Management", "Metal Recycling"
+- Products: Scrap iron, aluminum, copper, steel, waste materials
+
+**CATEGORY 5: ELECTRONICS SUPPLIERS (HIGH-RISK GOODS)**
+Look for these indicators:
+- Mobile phones (smartphones, cell phones)
+- Tablets and PC tablets
+- Laptops and computers
+- Microprocessors and CPUs
+- Integrated circuits and chips
+- Gaming consoles (PlayStation, Xbox, Nintendo)
+- Other devices operating in networks
+- Vendor selling electronics in bulk/wholesale
+
+**CATEGORY 6: PRECIOUS METALS DEALERS**
+Look for these indicators:
+- Raw or semi-finished precious metals
+- Gold, silver, platinum supplies
+- Bullion dealers
+- Vendor name contains: "Precious Metals", "Gold", "Silver", "Bullion"
+- Products: Gold bars, silver ingots, precious metal materials
+
+**CATEGORY 7: TELECOMMUNICATIONS SERVICES (EU)**
+Look for these indicators:
+- EU-based telecom service providers
+- International telecommunications services
+- Services from EU suppliers for Cyprus use
+- Vendor name contains international telecom indicators
+
+**CATEGORY 8: IMMOVABLE PROPERTY TRANSFERS**
+Look for these indicators:
+- Property transfers related to debt restructuring
+- Foreclosure sales
+- Debt-for-asset swaps
+- Forced property transfers
+- Bank repossessions
+
+**VAT TREATMENT LOGIC:**
+
+**NORMAL VENDORS (NO REVERSE CHARGE):**
+- Standard VAT treatment for domestic Cyprus suppliers not in reverse charge categories
+- Main transaction: GROSS amount (net + VAT)
+- Debit: Expense accounts (per line item) - Net amounts only
+- Debit: 2202 (Input VAT) - VAT amount reclaimable
+- Credit: 2100 (Accounts Payable) - Full amount including VAT
+- Create ONE additional entry: Input VAT (2202) debit
+
+**REVERSE CHARGE VENDORS (ALL 8 CATEGORIES ABOVE):**
+- Main transaction: NET amount only
+- Debit: Expense accounts (per line item) - Net amounts
+- Credit: 2100 (Accounts Payable) - Net amount only
+- Create TWO VAT entries in additional_entries:
+  - Input VAT (2202) - Debit VAT amount (reclaimable)
+  - Output VAT (2201) - Credit VAT amount (owed to authorities)
+- Set requires_reverse_charge: true
+- Set vat_treatment to appropriate category (e.g., "Construction Reverse Charge", "Foreign Services Reverse Charge", "Electronics Reverse Charge")
 
 **MIXED LINE ITEMS HANDLING:**
 When line items map to different expense accounts:
@@ -114,31 +178,31 @@ When line items map to different expense accounts:
 - VAT handling remains the same (vendor-level decision)
 
 **CRITICAL VAT/TAX HANDLING RULE:**
-- If vendor is NORMAL company with VAT: Create Input VAT entry in additional_entries
-- If vendor is CONSTRUCTION/PROPERTY company with VAT: Create BOTH Input VAT AND Output VAT entries in additional_entries
-- For NORMAL vendors with VAT: Create Input VAT entry:
-  {{
-    "account_code": "2202",
-    "account_name": "Input VAT (Purchases)",
-    "debit_amount": [tax_amount],
-    "credit_amount": 0,
-    "description": "Input VAT on purchase"
-  }}
-- For CONSTRUCTION/PROPERTY vendors with VAT: Create BOTH entries:
-  {{
-    "account_code": "2202",
-    "account_name": "Input VAT (Purchases)",
-    "debit_amount": [tax_amount],
-    "credit_amount": 0,
-    "description": "Reverse charge Input VAT"
-  }},
-  {{
-    "account_code": "2201",
-    "account_name": "Output VAT (Sales)",
-    "debit_amount": 0,
-    "credit_amount": [tax_amount],
-    "description": "Reverse charge Output VAT"
-  }}
+
+For NORMAL vendors with VAT (domestic, not in reverse charge categories):
+{{
+  "account_code": "2202",
+  "account_name": "Input VAT (Purchases)",
+  "debit_amount": [tax_amount],
+  "credit_amount": 0,
+  "description": "Input VAT on purchase"
+}}
+
+For REVERSE CHARGE vendors (any of the 8 categories) with VAT:
+{{
+  "account_code": "2202",
+  "account_name": "Input VAT (Purchases)",
+  "debit_amount": [tax_amount],
+  "credit_amount": 0,
+  "description": "Reverse charge Input VAT"
+}},
+{{
+  "account_code": "2201",
+  "account_name": "Output VAT (Sales)",
+  "debit_amount": 0,
+  "credit_amount": [tax_amount],
+  "description": "Reverse charge Output VAT"
+}}
 
 **DESCRIPTION FIELD:**
 - Create an overall description of the document that summarizes the goods/services provided
@@ -257,8 +321,8 @@ Each additional entry in the additional_entries array must have this exact struc
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
 - Single Service Bill: debit_account="7602", debit_account_name="Consultancy fees", credit_account="2100"
 - Mixed Services Bill: debit_account="MIXED", debit_account_name="Mixed Line Items", credit_account="2100"
-- Normal Vendor with VAT: Standard accounting + Input VAT (2202) in additional_entries
-- Construction/Property Vendor with VAT: Standard accounting + BOTH Input VAT (2202) AND Output VAT (2201) in additional_entries
+- Normal Domestic Vendor with VAT: Standard accounting + Input VAT (2202) in additional_entries
+- Reverse Charge Vendor with VAT: Standard accounting + BOTH Input VAT (2202) AND Output VAT (2201) in additional_entries
 
 **LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
 - "Legal consultation services" → account_code="7600", account_name="Legal fees"
@@ -280,6 +344,7 @@ Each additional entry in the additional_entries array must have this exact struc
 10. **ACCOUNT CODE CONSISTENCY: Use ONLY the exact account codes and names from the bill logic above**
 11. **LINE ITEM ACCOUNT ASSIGNMENT: MANDATORY for every line item - analyze each service individually**
 12. **MIXED BILLS: When line items have different account codes, set debit_account="MIXED"**
+13. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively before determining VAT treatment**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -305,7 +370,7 @@ def ensure_line_item_structure(line_item):
     return result
 
 def validate_bill_data(bills):
-    """Validate extracted bill data for completeness and accuracy including line-level accounts"""
+    """Validate extracted bill data for completeness and accuracy including comprehensive reverse charge detection"""
     validation_results = []
     
     for bill in bills:
@@ -386,54 +451,148 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # Check VAT handling compliance for bills
+        # COMPREHENSIVE REVERSE CHARGE DETECTION
         accounting_assignment = bill.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
+        requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
+        vat_treatment = accounting_assignment.get("vat_treatment", "")
         
-        # Detect if vendor is construction/property company
+        # Detect if vendor falls into any reverse charge category
         vendor_name = vendor_data.get("name", "").lower()
-        is_construction_property = any(keyword in vendor_name for keyword in [
-            "construction", "building", "property", "real estate"
-        ])
+        vendor_country = vendor_data.get("country_code", "")
+        description = vendor_data.get("description", "").lower()
         
-        if tax_amount > 0 and not is_construction_property:
-            # Normal vendor with VAT should have Input VAT entry only
-            if not additional_entries:
-                bill_validation["issues"].append(
-                    "Tax amount detected for normal vendor but no additional_entries created"
-                )
-            else:
-                input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
-                if not input_vat_entries:
+        # All line item descriptions combined for analysis
+        all_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
+        
+        # Category detection keywords
+        reverse_charge_indicators = {
+            "construction": ["construction", "building", "property management", "real estate", 
+                           "contractor", "builder", "repair services", "maintenance services", 
+                           "demolition", "installation services"],
+            "foreign_services": vendor_country and vendor_country != "CY",
+            "gas_electricity": ["energy", "power", "gas company", "electricity authority", 
+                               "natural gas", "electric power"],
+            "scrap_metal": ["scrap", "recycling", "waste management", "metal recycling", 
+                          "scrap metal", "waste materials"],
+            "electronics": ["mobile phone", "smartphone", "tablet", "laptop", "microprocessor", 
+                          "cpu", "integrated circuit", "gaming console", "playstation", "xbox"],
+            "precious_metals": ["precious metals", "gold", "silver", "platinum", "bullion", 
+                              "gold bars", "silver ingots"],
+            "telecom_eu": ["telecommunications", "telecom services"] and vendor_country in ["GR", "DE", "FR", "IT", "ES"],
+            "property_transfer": ["debt restructuring", "foreclosure", "debt-for-asset", 
+                                "property transfer", "bank repossession"]
+        }
+        
+        # Check if vendor qualifies for reverse charge
+        is_reverse_charge_vendor = False
+        detected_category = ""
+        
+        # Check construction/property
+        if any(keyword in vendor_name or keyword in description or keyword in all_descriptions 
+               for keyword in reverse_charge_indicators["construction"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Construction/Property Reverse Charge"
+        
+        # Check foreign services
+        elif reverse_charge_indicators["foreign_services"]:
+            is_reverse_charge_vendor = True
+            detected_category = "Foreign Services Reverse Charge"
+        
+        # Check gas/electricity
+        elif any(keyword in vendor_name or keyword in description 
+                for keyword in reverse_charge_indicators["gas_electricity"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Gas/Electricity Reverse Charge"
+        
+        # Check scrap metal
+        elif any(keyword in vendor_name or keyword in all_descriptions 
+                for keyword in reverse_charge_indicators["scrap_metal"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Scrap Metal Reverse Charge"
+        
+        # Check electronics
+        elif any(keyword in vendor_name or keyword in all_descriptions 
+                for keyword in reverse_charge_indicators["electronics"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Electronics Reverse Charge"
+        
+        # Check precious metals
+        elif any(keyword in vendor_name or keyword in all_descriptions 
+                for keyword in reverse_charge_indicators["precious_metals"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Precious Metals Reverse Charge"
+        
+        # Check EU telecom
+        elif any(keyword in vendor_name or keyword in description 
+                for keyword in reverse_charge_indicators["telecom_eu"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Telecommunications Reverse Charge"
+        
+        # Check property transfer
+        elif any(keyword in description or keyword in all_descriptions 
+                for keyword in reverse_charge_indicators["property_transfer"]):
+            is_reverse_charge_vendor = True
+            detected_category = "Property Transfer Reverse Charge"
+        
+        # Validate VAT handling based on detection
+        if tax_amount > 0:
+            if is_reverse_charge_vendor:
+                # Should have BOTH Input and Output VAT entries
+                if not requires_reverse_charge:
                     bill_validation["issues"].append(
-                        "Tax amount detected for normal vendor but missing Input VAT (2202) entry"
+                        f"Vendor qualifies for reverse charge ({detected_category}) but requires_reverse_charge is false"
                     )
-        elif tax_amount > 0 and is_construction_property:
-            # Construction/property vendor should have BOTH Input and Output VAT entries (reverse charge)
-            if not additional_entries:
-                bill_validation["issues"].append(
-                    "Tax amount detected for construction/property vendor but no additional_entries created - reverse charge requires both VAT entries"
-                )
-            else:
-                input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
-                output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
                 
-                if not input_vat_entries:
+                if not additional_entries:
                     bill_validation["issues"].append(
-                        "Construction/property vendor with tax but missing Input VAT (2202) entry for reverse charge"
+                        f"Vendor qualifies for reverse charge ({detected_category}) but no additional_entries created"
+                    )
+                else:
+                    input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
+                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                    
+                    if not input_vat_entries:
+                        bill_validation["issues"].append(
+                            f"Reverse charge vendor ({detected_category}) missing Input VAT (2202) entry"
+                        )
+                    
+                    if not output_vat_entries:
+                        bill_validation["issues"].append(
+                            f"Reverse charge vendor ({detected_category}) missing Output VAT (2201) entry"
+                        )
+            else:
+                # Normal domestic vendor - should have only Input VAT entry
+                if requires_reverse_charge:
+                    bill_validation["warnings"].append(
+                        "Vendor marked as reverse charge but doesn't match any reverse charge category"
                     )
                 
-                if not output_vat_entries:
+                if not additional_entries:
                     bill_validation["issues"].append(
-                        "Construction/property vendor with tax but missing Output VAT (2201) entry for reverse charge"
+                        "Tax amount detected for normal vendor but no additional_entries created"
                     )
+                else:
+                    input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
+                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                    
+                    if not input_vat_entries:
+                        bill_validation["issues"].append(
+                            "Tax amount detected for normal vendor but missing Input VAT (2202) entry"
+                        )
+                    
+                    if output_vat_entries:
+                        bill_validation["warnings"].append(
+                            "Normal vendor has Output VAT (2201) entry - should only be for reverse charge"
+                        )
         
         # Check account code consistency for main accounting assignment
         credit_account = accounting_assignment.get("credit_account", "")
         
         valid_credit_accounts = ["2100", "2201", "2202"]
+        valid_expense_accounts_with_mixed = valid_expense_accounts + ["MIXED"]
         
-        if debit_account and debit_account not in ["MIXED"] + valid_expense_accounts:
+        if debit_account and debit_account not in valid_expense_accounts_with_mixed:
             bill_validation["issues"].append(f"Invalid debit account code: {debit_account}")
         
         if credit_account and credit_account not in valid_credit_accounts:
@@ -475,9 +634,9 @@ def process_bills_with_claude(pdf_content, company_name):
         # Send to Claude with optimized parameters for structured output
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=18000,  # Increased for line-level account processing
-            temperature=0.0,  # Maximum determinism for consistent parsing
-            system=f"""You are an expert accountant and data extraction system specialized in VENDOR BILLS and EXPENSE transactions with LINE-LEVEL account assignment. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for EXPENSE recognition, VAT regulations, and granular expense categorization.
+            max_tokens=18000,
+            temperature=0.0,
+            system=f"""You are an expert accountant and data extraction system specialized in VENDOR BILLS and EXPENSE transactions with LINE-LEVEL account assignment and COMPREHENSIVE Cyprus VAT reverse charge detection. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for EXPENSE recognition, VAT regulations including ALL reverse charge categories, and granular expense categorization.
 
 **BILL ACCOUNTING EXPERTISE:**
 {bill_system_logic}
@@ -502,17 +661,35 @@ LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 • Example: Office supplier selling Stationery (7504) AND Equipment (0090)
 • Be precise - "Mobile WiFi" is telecommunications (7502), not internet (7503)
 
-VENDOR TYPE DETECTION FOR VAT:
-• Normal vendors = Standard VAT (Input VAT in additional_entries)
-• Construction/Property vendors = Reverse charge (BOTH Input and Output VAT in additional_entries)
+COMPREHENSIVE CYPRUS VAT REVERSE CHARGE DETECTION:
+You must check ALL 8 categories for reverse charge eligibility:
 
-VAT EXPERTISE FOR VENDOR BILLS:
-• Normal vendors with VAT = Create Input VAT additional entry (2202)
-• Construction/Property vendors = Create BOTH Input VAT (2202) AND Output VAT (2201) additional entries
-• When VAT detected = MANDATORY additional_entries processing
+1. CONSTRUCTION & PROPERTY: Construction services, building work, property management, real estate, repairs, maintenance, demolition, installation
+2. FOREIGN/EU SERVICES: Any services from vendors located outside Cyprus (check country code, VAT number, address)
+3. GAS & ELECTRICITY: Gas and electricity supplies to registered business traders
+4. SCRAP METAL & WASTE: Scrap metal dealers, waste materials, recycling companies
+5. ELECTRONICS: Mobile phones, tablets, laptops, microprocessors, CPUs, integrated circuits, gaming consoles
+6. PRECIOUS METALS: Gold, silver, platinum, raw/semi-finished precious metals, bullion
+7. EU TELECOMMUNICATIONS: Telecom services from EU suppliers
+8. PROPERTY TRANSFERS: Foreclosures, debt restructuring, debt-for-asset swaps, bank repossessions
+
+CRITICAL REVERSE CHARGE RULES:
+• If vendor matches ANY of the 8 categories AND has VAT:
+  - Set requires_reverse_charge: true
+  - Set vat_treatment to specific category (e.g., "Electronics Reverse Charge")
+  - Create BOTH Input VAT (2202) AND Output VAT (2201) entries
+  - Main transaction amount should be NET only
+  - Credit account 2100 with NET amount only
+
+• If vendor is normal domestic (not in any category) with VAT:
+  - Set requires_reverse_charge: false
+  - Set vat_treatment: "Standard VAT"
+  - Create ONLY Input VAT (2202) entry
+  - Main transaction amount is GROSS (net + VAT)
+  - Credit account 2100 with GROSS amount
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment.""",
             messages=[
                 {
                     "role": "user",
@@ -558,7 +735,6 @@ Respond only with valid JSON objects. Never include explanatory text, analysis, 
             "error": str(e)
         }
 
-# Copy the rest of the functions from the original process_bill.py
 def download_from_s3(s3_key, bucket_name=None):
     """Download file from S3 using key"""
     try:
@@ -873,24 +1049,33 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-bill-processing",
-            "version": "4.0",
+            "version": "5.0",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
                 "monetary_calculation",
                 "confidence_scoring",
                 "vendor_bill_processing",
-                "construction_property_vat_detection",
+                "comprehensive_reverse_charge_detection",
                 "odoo_accounting_integration",
-                "normal_vs_reverse_charge_vat",
+                "8_category_reverse_charge_support",
                 "line_level_account_assignment",
                 "mixed_service_bill_handling",
-                "granular_expense_categorization"
+                "granular_expense_categorization",
+                "construction_property_detection",
+                "foreign_services_detection",
+                "gas_electricity_detection",
+                "scrap_metal_detection",
+                "electronics_detection",
+                "precious_metals_detection",
+                "eu_telecom_detection",
+                "property_transfer_detection"
             ],
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025'),
-            "odoo_accounting_logic": "integrated"
+            "odoo_accounting_logic": "integrated",
+            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories"
         }
         
     except Exception as e:

@@ -17,7 +17,7 @@ def get_invoice_processing_prompt(company_name):
 **CRITICAL INSTRUCTION: Respond with ONLY the JSON object. Do not include any explanatory text, commentary, analysis, or markdown formatting before or after the JSON. Start your response immediately with the opening curly brace {{.**
 
 **INPUT:** Multi-invoice PDF document
-**COMPANY:** {company_name} (the company issuing these invoices to customers)
+**COMPANY:** {company_name} (the company issuing these invoices)
 **OUTPUT:** Raw JSON object only
 
 **DOCUMENT SPLITTING RULES (Priority Order):**
@@ -35,12 +35,7 @@ def get_invoice_processing_prompt(company_name):
 
 **DATA EXTRACTION FOR EACH INVOICE:**
 
-**DOCUMENT TYPE:** Set as "customer_invoice" for traditional invoices or "share_capital_invoice" for share allotments and capital increases.
-
-**DOCUMENT IDENTIFICATION:**
-- Traditional customer invoices: Services/goods provided to customers
-- Share capital documents: Share allotments, capital increases, shareholder investments
-- Both types represent cash inflow to the company and should be processed
+**DOCUMENT TYPE:** Always set as "customer_invoice" since {company_name} is issuing these invoices.
 
 **COMPANY VALIDATION:**
 - Identify ALL company names in the PDF
@@ -48,69 +43,111 @@ def get_invoice_processing_prompt(company_name):
 - Set company_match: "exact_match", "close_match", "no_match", or "unclear"
 
 **MANDATORY FIELDS:**
-- Customer/Shareholder name (Essential)
-- Invoice/Transaction Date (Required)
+- Customer name (Essential)
+- Invoice Date (Required)
 - Due Date or Payment Terms
-- Invoice/Document Reference
+- Invoice Reference (Invoice number)
 - Currency and Amounts
-- Description (Overall description of the services/goods/shares provided)
+- Description (Overall description of the document including details about line items)
 - Line Items with calculations AND individual account assignments
-- Credit Account (Account to be credited based on transaction type)
-- Debit Account (Account to be debited based on transaction type)
+- Debit Account (Account to be debited based on invoice type)
+- Credit Account (Account to be credited based on invoice type)
 
 **ACCOUNTING ASSIGNMENT RULES:**
 
 {invoice_logic}
 
-**LINE-LEVEL ACCOUNT ASSIGNMENT FOR INVOICES:**
+**LINE-LEVEL ACCOUNT ASSIGNMENT:**
 Each line item must be assigned to the most appropriate revenue account based on the service/product type:
 
-**Service/Product Type → Account Code Mapping:**
-- Primary business services, consulting, professional work → 4000 (Sales)
-- Software development, technical services → 4000 (Sales)
-- Core product sales, manufacturing sales → 4000 (Sales)
-- Main business activities, project work → 4000 (Sales)
-- Secondary/ancillary services not core to business → 4900 (Other sales)
-- Training services (if not main business) → 4900 (Other sales)
-- Support/maintenance services (if not main business) → 4900 (Other sales)
-- Licensing income, IP royalties → 4901 (Royalties received)
-- Commission income from partnerships → 4902 (Commissions received)
-- Property rental income, space subletting → 4904 (Rent income)
-- Equipment sales, asset disposals → 4200 (Sales of assets)
-- Insurance claim settlements → 4903 (Insurance claims)
-- Interest earned, financial income → 4906 (Bank interest received)
-- Shipping charges to customers → 4905 (Distribution and carriage)
-- Miscellaneous income → 8200 (Other non-operating income or expenses)
-- Share capital transactions → 3000 (Share Capital)
+**Service Type → Account Code Mapping:**
+- Software development services → 4000 (Sales - Software Development)
+- IT consulting services → 4001 (Sales - IT Consulting)
+- Cloud hosting services → 4002 (Sales - Cloud Services)
+- Training services → 4003 (Sales - Training)
+- Support services → 4004 (Sales - Support)
+- License sales → 4005 (Sales - Licenses)
+- Hardware sales → 4006 (Sales - Hardware)
+- Professional services → 4007 (Sales - Professional Services)
+- Subscription services → 4008 (Sales - Subscriptions)
+- Maintenance services → 4009 (Sales - Maintenance)
 
 **CRITICAL LINE ITEM ANALYSIS:**
-- Analyze EACH line item individually for revenue type
-- Same customer can receive multiple service types
-- Example: Consulting firm billing for both "Strategic consulting" (4000) AND "Training services" (4900)
-- Example: Software company selling "Core software" (4000) AND "Optional support" (4900)
+- Analyze EACH line item individually for service type
+- Same customer can purchase multiple service types
+- Example: IT company billing for both "Software Development" (4000) AND "Cloud Hosting" (4002)
+- Example: Service provider selling "Consulting" (4001) AND "Training" (4003)
 - Assign the most specific account code for each line item
-- DEFAULT: Use 4000 (Sales) for 80% of business invoices unless clearly secondary
 
-**CONSTRUCTION/PROPERTY COMPANY DETECTION:**
-Look for these indicators in customer information to determine VAT treatment:
-- Customer name contains: "Construction", "Building", "Property Management", "Real Estate"
+**CYPRUS VAT REVERSE CHARGE DETECTION (COMPREHENSIVE):**
+
+When {company_name} issues invoices, reverse charge applies when the CUSTOMER falls into ANY of the following categories:
+
+**CATEGORY 1: CONSTRUCTION & PROPERTY SERVICES (to construction companies)**
+Look for these indicators in CUSTOMER information:
+- Customer name contains: "Construction", "Building", "Property Management", "Real Estate", "Contractor", "Builder"
 - Services described as: "Construction services", "Building work", "Property management"
 - Document mentions: "Reverse charge applicable", "Customer to account for VAT"
 
-**VAT TREATMENT LOGIC:**
-- **NORMAL CUSTOMERS:** Standard VAT treatment
-  - Main transaction: GROSS amount (net + VAT)
-  - Debit: 1100 (Accounts Receivable) - Full amount including VAT
-  - Credit: Revenue accounts (per line item) - Net amounts only
-  - Credit: 2201 (Output VAT) - VAT amount owed to authorities
+**CATEGORY 2: FOREIGN/EU CUSTOMERS (B2B services)**
+Look for these indicators:
+- Customer located outside Cyprus (check address, VAT number format)
+- EU VAT number format (non-Cyprus)
+- Customer country code is not "CY"
+- Cross-border B2B sales under general reverse charge rule
 
-- **CONSTRUCTION/PROPERTY CUSTOMERS:** Reverse charge mechanism
-  - Main transaction: NET amount only
-  - Debit: 1100 (Accounts Receivable) - Net amount only
-  - Credit: Revenue accounts (per line item) - Net amounts
-  - Create BOTH VAT entries in additional_entries:
-    - Input VAT (2202) - Debit VAT amount
-    - Output VAT (2201) - Credit VAT amount
+**CATEGORY 3: GAS & ELECTRICITY TRADERS (if selling gas/electricity)**
+Look for these indicators:
+- Customer is a registered gas/electricity trader/merchant
+- Customer name contains: "Energy", "Power", "Gas Company", "Electricity Authority"
+- Services: Gas or electricity supply to business customers
+
+**CATEGORY 4: SCRAP METAL & WASTE DEALERS (if selling scrap/waste)**
+Look for these indicators:
+- Customer is a scrap metal dealer or waste management company
+- Customer name contains: "Scrap", "Recycling", "Waste Management", "Metal Recycling"
+
+**CATEGORY 5: ELECTRONICS DEALERS (if selling electronics)**
+Look for these indicators:
+- Selling mobile phones, tablets, laptops, microprocessors, CPUs, gaming consoles
+- Customer is an electronics dealer/wholesaler
+- High-risk goods subject to reverse charge
+
+**CATEGORY 6: PRECIOUS METALS DEALERS (if selling precious metals)**
+Look for these indicators:
+- Selling raw or semi-finished precious metals
+- Customer is a precious metals dealer
+- Customer name contains: "Precious Metals", "Gold", "Silver", "Bullion"
+
+**CATEGORY 7: EU TELECOMMUNICATIONS (if providing telecom services to EU)**
+Look for these indicators:
+- Providing telecommunications services to EU business customers
+- Customer in EU receiving telecom services
+
+**CATEGORY 8: IMMOVABLE PROPERTY TRANSFERS**
+Look for these indicators:
+- Property sales related to debt restructuring
+- Real estate transactions with reverse charge provisions
+- Customer is bank or financial institution acquiring property
+
+**VAT TREATMENT LOGIC:**
+
+**NORMAL CUSTOMERS (NO REVERSE CHARGE):**
+- Standard VAT treatment for domestic Cyprus customers not in reverse charge categories
+- Main transaction: GROSS amount (net + VAT)
+- Debit: 1200 (Accounts Receivable) - Full amount including VAT
+- Credit: Revenue accounts (per line item) - Net amounts only
+- Credit: 2201 (Output VAT) - VAT amount to pay to authorities
+- Create ONE additional entry: Output VAT (2201) credit
+
+**REVERSE CHARGE CUSTOMERS (ALL 8 CATEGORIES ABOVE):**
+- Main transaction: NET amount only
+- Debit: 1200 (Accounts Receivable) - Net amount only
+- Credit: Revenue accounts (per line item) - Net amounts
+- NO VAT entries needed (customer accounts for VAT)
+- Set requires_reverse_charge: true
+- Set vat_treatment to appropriate category (e.g., "Foreign Customer Reverse Charge", "Construction Customer Reverse Charge")
+- Add note on invoice: "Reverse charge - Customer to account for VAT"
 
 **MIXED LINE ITEMS HANDLING:**
 When line items map to different revenue accounts:
@@ -120,43 +157,24 @@ When line items map to different revenue accounts:
 - VAT handling remains the same (customer-level decision)
 
 **CRITICAL VAT/TAX HANDLING RULE:**
-- If customer is NORMAL company with VAT: Create Output VAT entry in additional_entries
-- If customer is CONSTRUCTION/PROPERTY company with VAT: Create BOTH Input VAT AND Output VAT entries in additional_entries
-- For NORMAL customers with VAT: Create Output VAT entry:
-  {{
-    "account_code": "2201",
-    "account_name": "Output VAT (Sales)",
-    "debit_amount": 0,
-    "credit_amount": [tax_amount],
-    "description": "Output VAT on customer invoice"
-  }}
-- For CONSTRUCTION/PROPERTY customers with VAT: Create BOTH entries:
-  {{
-    "account_code": "2202",
-    "account_name": "Input VAT (Purchases)",
-    "debit_amount": [tax_amount],
-    "credit_amount": 0,
-    "description": "Reverse charge Input VAT"
-  }},
-  {{
-    "account_code": "2201",
-    "account_name": "Output VAT (Sales)",
-    "debit_amount": 0,
-    "credit_amount": [tax_amount],
-    "description": "Reverse charge Output VAT"
-  }}
 
-**SHARE CAPITAL TRANSACTION HANDLING:**
-- Treat share allotments as invoices for accounting purposes
-- Shareholder becomes the "customer" receiving shares
-- Amount represents cash to be received from shareholder
-- Description should detail share allotment (e.g., "15,000 ordinary shares at €1 each")
-- Use appropriate accounting codes: DEBIT 1100 (Accounts receivable), CREDIT 3000 (Share Capital)
-- Share transactions are VAT-EXEMPT (no VAT entries)
-- All share line items should use account_code="3000", account_name="Share Capital"
+For NORMAL customers with VAT (domestic, not in reverse charge categories):
+{{
+  "account_code": "2201",
+  "account_name": "Output VAT (Sales)",
+  "debit_amount": 0,
+  "credit_amount": [tax_amount],
+  "description": "Output VAT on sales"
+}}
+
+For REVERSE CHARGE customers (any of the 8 categories):
+- NO additional VAT entries
+- Invoice should state "Reverse charge - Customer to account for VAT"
+- requires_reverse_charge: true
+- Customer is responsible for self-assessing VAT
 
 **DESCRIPTION FIELD:**
-- Create an overall description of the services/goods provided to the customer
+- Create an overall description of the document that summarizes the goods/services provided
 - Include key details from line item descriptions
 - Can be a shortened combination of the description fields from each line item
 - Should give a clear understanding of what the invoice is for
@@ -270,19 +288,17 @@ Each additional entry in the additional_entries array must have this exact struc
 }}
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Single Service Invoice: debit_account="1100", credit_account="4000", credit_account_name="Sales"
-- Mixed Services Invoice: debit_account="1100", credit_account="MIXED", credit_account_name="Mixed Line Items"
-- Share Capital Transaction: debit_account="1100", credit_account="3000", credit_account_name="Share Capital"
-- Normal Customer with VAT: Standard accounting + Output VAT (2201) in additional_entries
-- Construction/Property Customer with VAT: Standard accounting + BOTH Input VAT (2202) AND Output VAT (2201) in additional_entries
+- Single Service Invoice: credit_account="4000", credit_account_name="Sales - Software Development", debit_account="1200"
+- Mixed Services Invoice: credit_account="MIXED", credit_account_name="Mixed Line Items", debit_account="1200"
+- Normal Domestic Customer with VAT: Standard accounting + Output VAT (2201) in additional_entries
+- Reverse Charge Customer: Standard accounting + NO VAT entries (customer accounts for VAT)
 
 **LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
-- "Strategic consulting services" → account_code="4000", account_name="Sales"
-- "Training workshop" → account_code="4900", account_name="Other sales"  
-- "Software license royalty" → account_code="4901", account_name="Royalties received"
-- "Commission from partner sales" → account_code="4902", account_name="Commissions received"
-- "Office space rental" → account_code="4904", account_name="Rent income"
-- "15,000 ordinary shares" → account_code="3000", account_name="Share Capital"
+- "Software development services" → account_code="4000", account_name="Sales - Software Development"
+- "Cloud hosting monthly fee" → account_code="4002", account_name="Sales - Cloud Services"
+- "IT consulting hours" → account_code="4001", account_name="Sales - IT Consulting"
+- "Training session" → account_code="4003", account_name="Sales - Training"
+- "Technical support" → account_code="4004", account_name="Sales - Support"
 
 **ABSOLUTE REQUIREMENTS:**
 1. Every field listed above MUST be present in every invoice object
@@ -297,7 +313,7 @@ Each additional entry in the additional_entries array must have this exact struc
 10. **ACCOUNT CODE CONSISTENCY: Use ONLY the exact account codes and names from the invoice logic above**
 11. **LINE ITEM ACCOUNT ASSIGNMENT: MANDATORY for every line item - analyze each service individually**
 12. **MIXED INVOICES: When line items have different account codes, set credit_account="MIXED"**
-13. **DEFAULT TO 4000 (Sales): Use for 80% of business invoices unless clearly secondary services**
+13. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively before determining VAT treatment**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -323,7 +339,7 @@ def ensure_line_item_structure(line_item):
     return result
 
 def validate_invoice_data(invoices):
-    """Validate extracted invoice data for completeness and accuracy including line-level accounts"""
+    """Validate extracted invoice data for completeness and accuracy including comprehensive reverse charge detection"""
     validation_results = []
     
     for invoice in invoices:
@@ -357,7 +373,8 @@ def validate_invoice_data(invoices):
         else:
             # Validate line item account assignments
             valid_revenue_accounts = [
-                "4000", "4900", "4901", "4902", "4904", "4906", "4200", "4903", "4905", "3000", "8200"
+                "4000", "4001", "4002", "4003", "4004", "4005", "4006", "4007", "4008", "4009",
+                "4010", "4100", "4200", "4300", "4400", "4500"
             ]
             
             line_item_accounts = set()
@@ -401,59 +418,135 @@ def validate_invoice_data(invoices):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # Check VAT handling compliance for invoices
+        # COMPREHENSIVE REVERSE CHARGE DETECTION
         accounting_assignment = invoice.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
+        requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
+        vat_treatment = accounting_assignment.get("vat_treatment", "")
         
-        # Detect if customer is construction/property company
+        # Detect if customer falls into any reverse charge category
         customer_name = customer_data.get("name", "").lower()
-        is_construction_property = any(keyword in customer_name for keyword in [
-            "construction", "building", "property", "real estate"
-        ])
+        customer_country = customer_data.get("country_code", "")
+        description = customer_data.get("description", "").lower()
         
-        if tax_amount > 0 and not is_construction_property:
-            # Normal customer with VAT should have Output VAT entry only
-            if not additional_entries:
-                invoice_validation["issues"].append(
-                    "Tax amount detected for normal customer but no additional_entries created"
-                )
-            else:
-                output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
-                if not output_vat_entries:
+        # All line item descriptions combined for analysis
+        all_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
+        
+        # Category detection keywords
+        reverse_charge_indicators = {
+            "construction": ["construction", "building", "property management", "real estate", 
+                           "contractor", "builder"],
+            "foreign_customer": customer_country and customer_country != "CY",
+            "gas_electricity": ["energy trader", "power trader", "gas merchant", "electricity merchant"],
+            "scrap_metal": ["scrap", "recycling", "waste management", "metal recycling"],
+            "electronics": ["electronics dealer", "mobile phone wholesaler", "electronics wholesaler"],
+            "precious_metals": ["precious metals dealer", "gold dealer", "silver dealer", "bullion dealer"],
+            "telecom_eu": ["telecommunications"] and customer_country in ["GR", "DE", "FR", "IT", "ES"],
+            "property_transfer": ["debt restructuring", "foreclosure", "property acquisition"]
+        }
+        
+        # Check if customer qualifies for reverse charge
+        is_reverse_charge_customer = False
+        detected_category = ""
+        
+        # Check construction/property customer
+        if any(keyword in customer_name or keyword in description 
+               for keyword in reverse_charge_indicators["construction"]):
+            is_reverse_charge_customer = True
+            detected_category = "Construction Customer Reverse Charge"
+        
+        # Check foreign customer
+        elif reverse_charge_indicators["foreign_customer"]:
+            is_reverse_charge_customer = True
+            detected_category = "Foreign Customer Reverse Charge"
+        
+        # Check gas/electricity trader
+        elif any(keyword in customer_name 
+                for keyword in reverse_charge_indicators["gas_electricity"]):
+            is_reverse_charge_customer = True
+            detected_category = "Gas/Electricity Trader Reverse Charge"
+        
+        # Check scrap metal dealer
+        elif any(keyword in customer_name 
+                for keyword in reverse_charge_indicators["scrap_metal"]):
+            is_reverse_charge_customer = True
+            detected_category = "Scrap Metal Dealer Reverse Charge"
+        
+        # Check electronics dealer
+        elif any(keyword in customer_name 
+                for keyword in reverse_charge_indicators["electronics"]):
+            is_reverse_charge_customer = True
+            detected_category = "Electronics Dealer Reverse Charge"
+        
+        # Check precious metals dealer
+        elif any(keyword in customer_name 
+                for keyword in reverse_charge_indicators["precious_metals"]):
+            is_reverse_charge_customer = True
+            detected_category = "Precious Metals Dealer Reverse Charge"
+        
+        # Check EU telecom
+        elif any(keyword in description 
+                for keyword in reverse_charge_indicators["telecom_eu"]):
+            is_reverse_charge_customer = True
+            detected_category = "Telecommunications Reverse Charge"
+        
+        # Check property transfer
+        elif any(keyword in description or keyword in all_descriptions 
+                for keyword in reverse_charge_indicators["property_transfer"]):
+            is_reverse_charge_customer = True
+            detected_category = "Property Transfer Reverse Charge"
+        
+        # Validate VAT handling based on detection
+        if tax_amount > 0:
+            if is_reverse_charge_customer:
+                # Should NOT have any VAT entries (customer accounts for VAT)
+                if not requires_reverse_charge:
                     invoice_validation["issues"].append(
-                        "Tax amount detected for normal customer but missing Output VAT (2201) entry"
+                        f"Customer qualifies for reverse charge ({detected_category}) but requires_reverse_charge is false"
                     )
-        elif tax_amount > 0 and is_construction_property:
-            # Construction/property customer should have BOTH Input and Output VAT entries (reverse charge)
-            if not additional_entries:
-                invoice_validation["issues"].append(
-                    "Tax amount detected for construction/property customer but no additional_entries created - reverse charge requires both VAT entries"
-                )
-            else:
-                input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
-                output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
                 
-                if not input_vat_entries:
-                    invoice_validation["issues"].append(
-                        "Construction/property customer with tax but missing Input VAT (2202) entry for reverse charge"
+                if additional_entries:
+                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                    if output_vat_entries:
+                        invoice_validation["issues"].append(
+                            f"Reverse charge customer ({detected_category}) should not have Output VAT entries - customer accounts for VAT"
+                        )
+            else:
+                # Normal domestic customer - should have Output VAT entry
+                if requires_reverse_charge:
+                    invoice_validation["warnings"].append(
+                        "Customer marked as reverse charge but doesn't match any reverse charge category"
                     )
                 
-                if not output_vat_entries:
+                if not additional_entries:
                     invoice_validation["issues"].append(
-                        "Construction/property customer with tax but missing Output VAT (2201) entry for reverse charge"
+                        "Tax amount detected for normal customer but no additional_entries created"
                     )
+                else:
+                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                    
+                    if not output_vat_entries:
+                        invoice_validation["issues"].append(
+                            "Tax amount detected for normal customer but missing Output VAT (2201) entry"
+                        )
+        elif tax_amount == 0 and is_reverse_charge_customer:
+            # Reverse charge customer with no VAT shown - this is correct
+            if not requires_reverse_charge:
+                invoice_validation["warnings"].append(
+                    f"Customer qualifies for reverse charge ({detected_category}) but requires_reverse_charge is false"
+                )
         
         # Check account code consistency for main accounting assignment
         debit_account = accounting_assignment.get("debit_account", "")
         
-        valid_debit_accounts = ["1100"]
-        valid_credit_accounts = ["4000", "4900", "4901", "4902", "4904", "4906", "4200", "4903", "4905", "3000", "8200", "MIXED"]
+        valid_debit_accounts = ["1200", "1000", "1100"]  # Accounts receivable and bank accounts
+        valid_revenue_accounts_with_mixed = valid_revenue_accounts + ["MIXED"]
+        
+        if credit_account and credit_account not in valid_revenue_accounts_with_mixed:
+            invoice_validation["issues"].append(f"Invalid credit account code: {credit_account}")
         
         if debit_account and debit_account not in valid_debit_accounts:
             invoice_validation["issues"].append(f"Invalid debit account code: {debit_account}")
-        
-        if credit_account and credit_account not in valid_credit_accounts:
-            invoice_validation["issues"].append(f"Invalid credit account code: {credit_account}")
         
         # Check confidence levels
         confidence = invoice.get("extraction_confidence", {})
@@ -470,35 +563,6 @@ def validate_invoice_data(invoices):
         validation_results.append(invoice_validation)
     
     return validation_results
-
-def download_from_s3(s3_key, bucket_name=None):
-    """Download file from S3 using key"""
-    try:
-        if not bucket_name:
-            bucket_name = os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
-        
-        # Initialize S3 client
-        aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
-        aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-        aws_region = os.getenv('AWS_REGION', 'eu-north-1')
-        
-        if aws_access_key and aws_secret_key:
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=aws_access_key,
-                aws_secret_access_key=aws_secret_key,
-                region_name=aws_region
-            )
-        else:
-            s3_client = boto3.client('s3', region_name=aws_region)
-        
-        print(f"Downloading from bucket: {bucket_name}, key: {s3_key}")
-        
-        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-        return response['Body'].read()
-        
-    except Exception as e:
-        raise Exception(f"Error downloading from S3: {str(e)}")
 
 def process_invoices_with_claude(pdf_content, company_name):
     """Process PDF document with Claude for invoice splitting and extraction"""
@@ -520,49 +584,63 @@ def process_invoices_with_claude(pdf_content, company_name):
         # Send to Claude with optimized parameters for structured output
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=18000,  # Increased for line-level account processing
-            temperature=0.0,  # Maximum determinism for consistent parsing
-            system=f"""You are an expert accountant and data extraction system specialized in CUSTOMER INVOICES and REVENUE transactions with LINE-LEVEL account assignment. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for REVENUE recognition, EQUITY transactions, VAT regulations, and granular revenue categorization.
+            max_tokens=18000,
+            temperature=0.0,
+            system=f"""You are an expert accountant and data extraction system specialized in CUSTOMER INVOICES and REVENUE transactions with LINE-LEVEL account assignment and COMPREHENSIVE Cyprus VAT reverse charge detection. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for REVENUE recognition, VAT regulations including ALL reverse charge categories, and granular revenue categorization.
 
 **INVOICE ACCOUNTING EXPERTISE:**
 {invoice_system_logic}
 
 CORE ACCOUNTING BEHAVIOR FOR CUSTOMER INVOICES WITH LINE-LEVEL PROCESSING:
-• Always think: "What did we provide?" (CREDIT) and "What do we expect to receive?" (DEBIT)
-• Customer invoices: DEBIT accounts receivable (1100), CREDIT revenue account(s)
+• Always think: "What did we provide?" (CREDIT) and "What do we receive?" (DEBIT)
+• Customer invoices: DEBIT accounts receivable (1200), CREDIT revenue account(s)
 • ANALYZE EACH LINE ITEM INDIVIDUALLY for revenue categorization:
-  - Core business services → CREDIT 4000 (Sales) [DEFAULT for 80% of invoices]
-  - Professional consulting → CREDIT 4000 (Sales)
-  - Software development → CREDIT 4000 (Sales)
-  - Secondary services → CREDIT 4900 (Other sales)
-  - Training (if not core business) → CREDIT 4900 (Other sales)
-  - Licensing income → CREDIT 4901 (Royalties received)
-  - Commission income → CREDIT 4902 (Commissions received)
-  - Share allotments → CREDIT 3000 (Share Capital)
+  - Software development → CREDIT 4000 (Sales - Software Development)
+  - IT consulting → CREDIT 4001 (Sales - IT Consulting)
+  - Cloud services → CREDIT 4002 (Sales - Cloud Services)
+  - Training → CREDIT 4003 (Sales - Training)
+  - Support → CREDIT 4004 (Sales - Support)
+  - Mixed services from same customer → Use appropriate account per line item
 • When line items use different accounts → Set main credit_account to "MIXED"
 • Ensure debits always equal credits
 
 LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 • Each line item gets its own account_code and account_name
-• Same customer can receive multiple service types requiring different accounts
-• Example: Consulting firm billing "Strategic consulting" (4000) AND "Training workshop" (4900)
-• Example: Software company selling "Core software" (4000) AND "Optional support" (4900)
-• Be precise - "Core business services" use 4000, "Secondary services" use 4900
-• DEFAULT: Use 4000 (Sales) for 80% of business invoices unless clearly secondary
+• Same customer can purchase multiple service types requiring different accounts
+• Example: Customer buying "Software Development" (4000) AND "Cloud Hosting" (4002)
+• Example: Client purchasing "Consulting" (4001) AND "Training" (4003)
+• Be precise with revenue categorization
 
-CUSTOMER TYPE DETECTION FOR VAT:
-• Normal customers = Standard VAT (Output VAT in additional_entries)
-• Construction/Property customers = Reverse charge (BOTH Input and Output VAT in additional_entries)
-• Share transactions = VAT exempt (no VAT entries)
+COMPREHENSIVE CYPRUS VAT REVERSE CHARGE DETECTION FOR INVOICES:
+You must check ALL 8 categories to determine if CUSTOMER qualifies for reverse charge:
 
-VAT EXPERTISE FOR CUSTOMER INVOICES:
-• Normal customers with VAT = Create Output VAT additional entry (2201)
-• Construction/Property customers = Create BOTH Input VAT (2202) AND Output VAT (2201) additional entries
-• Share capital transactions = NO VAT entries (exempt)
-• When VAT detected for normal customers = MANDATORY additional_entries with Output VAT
+1. CONSTRUCTION & PROPERTY CUSTOMERS: Construction companies, builders, property management firms
+2. FOREIGN/EU CUSTOMERS: Any customer located outside Cyprus (check country code)
+3. GAS & ELECTRICITY TRADERS: If selling gas/electricity to registered traders
+4. SCRAP METAL DEALERS: If selling scrap/waste to dealers
+5. ELECTRONICS DEALERS: If selling electronics to dealers/wholesalers
+6. PRECIOUS METALS DEALERS: If selling precious metals to dealers
+7. EU TELECOM CUSTOMERS: If providing telecom services to EU businesses
+8. PROPERTY TRANSFERS: Real estate transactions with reverse charge
+
+CRITICAL REVERSE CHARGE RULES FOR INVOICES:
+• If customer matches ANY of the 8 categories:
+  - Set requires_reverse_charge: true
+  - Set vat_treatment to specific category (e.g., "Foreign Customer Reverse Charge")
+  - DO NOT create any VAT entries (customer accounts for VAT themselves)
+  - Invoice amount should be NET only
+  - Debit account 1200 with NET amount only
+  - Add note: "Reverse charge - Customer to account for VAT"
+
+• If customer is normal domestic (not in any category) with VAT:
+  - Set requires_reverse_charge: false
+  - Set vat_treatment: "Standard VAT"
+  - Create Output VAT (2201) entry in additional_entries
+  - Invoice amount is GROSS (net + VAT)
+  - Debit account 1200 with GROSS amount
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every cash inflow transaction AND provide granular line-level account assignments using ONLY the exact account codes provided.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every revenue transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment.""",
             messages=[
                 {
                     "role": "user",
@@ -607,6 +685,35 @@ Respond only with valid JSON objects. Never include explanatory text, analysis, 
             "success": False,
             "error": str(e)
         }
+
+def download_from_s3(s3_key, bucket_name=None):
+    """Download file from S3 using key"""
+    try:
+        if not bucket_name:
+            bucket_name = os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
+        
+        # Initialize S3 client
+        aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+        aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+        aws_region = os.getenv('AWS_REGION', 'eu-north-1')
+        
+        if aws_access_key and aws_secret_key:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                region_name=aws_region
+            )
+        else:
+            s3_client = boto3.client('s3', region_name=aws_region)
+        
+        print(f"Downloading from bucket: {bucket_name}, key: {s3_key}")
+        
+        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        return response['Body'].read()
+        
+    except Exception as e:
+        raise Exception(f"Error downloading from S3: {str(e)}")
 
 def ensure_invoice_structure(invoice):
     """Ensure each invoice has the complete required structure with default values"""
@@ -893,26 +1000,33 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-invoice-processing",
-            "version": "3.0",
+            "version": "5.0",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
                 "monetary_calculation",
                 "confidence_scoring",
-                "revenue_accounting",
                 "customer_invoice_processing",
-                "construction_property_vat_detection",
-                "share_capital_processing",
+                "comprehensive_reverse_charge_detection",
                 "odoo_accounting_integration",
-                "normal_vs_reverse_charge_vat",
+                "8_category_reverse_charge_support",
                 "line_level_account_assignment",
                 "mixed_service_invoice_handling",
-                "granular_revenue_categorization"
+                "granular_revenue_categorization",
+                "construction_customer_detection",
+                "foreign_customer_detection",
+                "gas_electricity_trader_detection",
+                "scrap_metal_dealer_detection",
+                "electronics_dealer_detection",
+                "precious_metals_dealer_detection",
+                "eu_telecom_customer_detection",
+                "property_transfer_detection"
             ],
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025'),
-            "odoo_accounting_logic": "integrated"
+            "odoo_accounting_logic": "integrated",
+            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories (Invoice Perspective)"
         }
         
     except Exception as e:
