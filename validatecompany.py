@@ -1085,7 +1085,7 @@ def search_cyprus_company_with_director_validation(data):
     company_name = data.get('company_name', '')
     registration_number = data.get('registration_number', '')
     director_name = data.get('director_name', '')
-    perform_search = data.get('perform_search', True)
+    perform_search = data.get('perform_search', False)
     
     # Process and validate the company data
     processed_data = process_company_data(company_name, registration_number)
