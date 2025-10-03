@@ -16,13 +16,26 @@ def main(form_data, files):
     webhook_url = "https://kyrasteldeveloper.app.n8n.cloud/webhook/company-onboarding"
     
     try:
-        # Prepare form data for n8n
+        # Prepare form data for n8n - including all new fields
         payload = {
+            # Company Information
             'companyName': form_data.get('companyName', ''),
             'registrationNo': form_data.get('registrationNo', ''),
+            'taxRegNo': form_data.get('taxRegNo', ''),
+            
+            # VAT Information
+            'isVatRegistered': form_data.get('isVatRegistered', ''),
             'vatNo': form_data.get('vatNo', ''),
+            
+            # Industry & Business Model
+            'primaryIndustry': form_data.get('primaryIndustry', ''),
+            'businessDescription': form_data.get('businessDescription', ''),
+            'mainProducts': form_data.get('mainProducts', ''),
+            'businessModel': form_data.get('businessModel', ''),
+            
+            # Representative Information
             'repName': form_data.get('repName', ''),
-            'repEmail': form_data.get('repEmail', ''),
+            'repEmail': form_data.get('repEmail', ''),  
         }
         
         # Prepare files for upload
@@ -35,7 +48,12 @@ def main(form_data, files):
         
         print(f"📤 Sending onboarding data to n8n webhook...")
         print(f"📋 Company: {payload['companyName']}")
-        print(f"📋 Registration: {payload['registrationNo']}")
+        print(f"📋 Registration No: {payload['registrationNo']}")
+        print(f"📋 Tax Reg No: {payload['taxRegNo']}")
+        print(f"📋 VAT Registered: {payload['isVatRegistered']}")
+        if payload['isVatRegistered'] == 'yes':
+            print(f"📋 VAT No: {payload['vatNo']}")
+        print(f"📋 Industry: {payload['primaryIndustry']}")
         print(f"📋 Representative: {payload['repName']} ({payload['repEmail']})")
         print(f"📎 Files: {len(files_to_send)} files attached")
         
