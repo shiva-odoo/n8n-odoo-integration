@@ -6,6 +6,79 @@ import json
 import re
 from odoo_accounting_logic import main as get_accounting_logic
 
+def get_property_capitalization_rules():
+    """Returns IAS 40 property capitalization rules for prompt"""
+    return """
+**IAS 40 PROPERTY CAPITALIZATION RULES (CRITICAL):**
+
+When processing bills, check if expenses should be CAPITALIZED to 0060 (Freehold property) instead of expensed.
+
+**CAPITALIZATION TRIGGERS - Check vendor type AND service description:**
+
+**Vendor Types Requiring Capitalization Analysis:**
+- Architects, design firms, architectural consultants
+- Surveyors, land surveyors, topographical survey companies
+- Valuation firms, appraisers, property valuers, valuation companies
+- Engineering consultants (structural, mechanical, electrical studies for property development)
+- Environmental consultants, geotechnical firms, soil testing companies
+- Planning consultants, town planning advisors, zoning consultants
+- Legal firms (when services specifically relate to property acquisition)
+- Archaeological survey firms (Cyprus-specific requirement)
+
+**Service Descriptions Requiring Capitalization:**
+- "Property valuation", "appraisal fees", "market valuation", "property appraisal"
+- "Architect fees", "architectural design", "feasibility study", "conceptual design", "planning drawings"
+- "Surveyor fees", "land survey", "topographical survey", "boundary survey", "mechanical study", "electrical study"
+- "Site investigation", "geotechnical study", "soil testing", "ground investigation"
+- "Environmental assessment", "environmental impact study", "environmental compliance"
+- "Planning permission", "building permit application", "zoning application", "planning approval"
+- "Property due diligence", "property acquisition legal fees", "conveyancing fees"
+- "Archaeological survey", "heritage assessment" (Cyprus-specific)
+- Property-specific identifiers: building names, plot numbers, property addresses, project names
+
+**CAPITALIZATION DECISION LOGIC:**
+
+IF (vendor is property-related professional) 
+   AND (service relates to specific property development/acquisition)
+   AND (description contains property identifiers OR pre-construction keywords)
+THEN:
+   → account_code = "0060"
+   → account_name = "Freehold property"
+
+ELSE IF (same vendor provides routine/operational services):
+   → Use normal expense accounts (7600, 7602, 7800, etc.)
+
+**EXAMPLES:**
+
+✅ CAPITALIZE to 0060:
+- "Surveyor Fees - Μηχανολογική μελέτη για το έργο ΔΥΟ ΚΑΤΟΙΚΕΣ ΣΤΗΝ ΠΕΓΕΙΑ" → 0060
+- "Surveyor Fees - ΜΗΧΑΝΟΛΟΓΙΚΗ ΜΕΛΕΤΗ ΚΟΛΥΜΒΗΤΙΚΗΣ ΔΕΞΑΜΕΝΗΣ" → 0060
+- "Valuation Fees - Bank of Cyprus property appraisal" → 0060
+- "Architect fees - Feasibility study for Paphos development" → 0060
+- "Legal fees - Property acquisition for Plot 123, Peyia" → 0060
+- "Topographical survey - Land parcel 456/789" → 0060
+- "Geotechnical investigation - Building site Limassol" → 0060
+- "Planning permission application - Residential development Paphos" → 0060
+
+❌ DO NOT CAPITALIZE (Expense normally):
+- "Legal consultation - general corporate advice" → 7600 (Legal fees)
+- "Routine building maintenance and repairs" → 7800 (Repairs and renewals)
+- "Property management monthly fees" → 7100 (Rent)
+- "General market research - Cyprus real estate trends" → 7602 (Consultancy fees)
+- "Architectural consultation - office redesign" → 7602 (Consultancy fees)
+
+**MIXED BILLS WITH PROPERTY ITEMS:**
+If a bill contains BOTH capitalizable property costs AND regular expenses:
+- Set debit_account = "MIXED"
+- Assign each line item to appropriate account (some to 0060, others to expense accounts)
+- Example: Architecture firm billing for property design (0060) AND general office consulting (7602)
+
+**KEY PRINCIPLE:**
+Ask yourself: "Is this cost directly attributable to acquiring or developing a specific property asset?"
+- YES → 0060 (Freehold property)
+- NO → Normal expense account
+"""
+
 def get_bill_processing_prompt(company_name):
     """Create comprehensive bill processing prompt that combines splitting and extraction"""
     
@@ -78,11 +151,15 @@ Each line item must be assigned to the most appropriate expense account based on
 - Shipping, freight, courier → 5100 (Carriage)
 - Government fees, permits → 8200 (Other non-operating income or expenses)
 
+**CRITICAL: PROPERTY CAPITALIZATION OVERRIDE:**
+{get_property_capitalization_rules()}
+
 **CRITICAL LINE ITEM ANALYSIS:**
 - Analyze EACH line item individually for service type
 - Same vendor can provide multiple service types
 - Example: Telecom company billing for both "Internet service" (7503) AND "Mobile WiFi" (7502)
 - Example: Office supplier selling "Stationery" (7504) AND "Computer equipment" (0090)
+- Example: Engineering firm providing "Property mechanical study" (0060) AND "General consulting" (7602)
 - Assign the most specific account code for each line item
 
 **CYPRUS VAT REVERSE CHARGE DETECTION (COMPREHENSIVE):**
@@ -320,12 +397,15 @@ Each additional entry in the additional_entries array must have this exact struc
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
 - Single Service Bill: debit_account="7602", debit_account_name="Consultancy fees", credit_account="2100"
+- Property Development Bill: debit_account="0060", debit_account_name="Freehold property", credit_account="2100"
 - Mixed Services Bill: debit_account="MIXED", debit_account_name="Mixed Line Items", credit_account="2100"
 - Normal Domestic Vendor with VAT: Standard accounting + Input VAT (2202) in additional_entries
 - Reverse Charge Vendor with VAT: Standard accounting + BOTH Input VAT (2202) AND Output VAT (2201) in additional_entries
 
 **LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
 - "Legal consultation services" → account_code="7600", account_name="Legal fees"
+- "Surveyor fees - mechanical study for property development" → account_code="0060", account_name="Freehold property"
+- "Property valuation for bank" → account_code="0060", account_name="Freehold property"
 - "Internet broadband service" → account_code="7503", account_name="Internet"  
 - "Mobile WiFi service" → account_code="7502", account_name="Telephone"
 - "Office supplies" → account_code="7504", account_name="Office stationery"
@@ -343,8 +423,9 @@ Each additional entry in the additional_entries array must have this exact struc
 9. Company match: use "exact_match", "close_match", "no_match", or "unclear" only
 10. **ACCOUNT CODE CONSISTENCY: Use ONLY the exact account codes and names from the bill logic above**
 11. **LINE ITEM ACCOUNT ASSIGNMENT: MANDATORY for every line item - analyze each service individually**
-12. **MIXED BILLS: When line items have different account codes, set debit_account="MIXED"**
-13. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively before determining VAT treatment**
+12. **PROPERTY CAPITALIZATION: Check EVERY bill for property development costs that should go to 0060**
+13. **MIXED BILLS: When line items have different account codes, set debit_account="MIXED"**
+14. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively before determining VAT treatment**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -370,7 +451,7 @@ def ensure_line_item_structure(line_item):
     return result
 
 def validate_bill_data(bills):
-    """Validate extracted bill data for completeness and accuracy including comprehensive reverse charge detection"""
+    """Validate extracted bill data for completeness and accuracy including comprehensive reverse charge detection and property capitalization"""
     validation_results = []
     
     for bill in bills:
@@ -399,15 +480,19 @@ def validate_bill_data(bills):
         
         # Check line items and their account assignments
         line_items = vendor_data.get("line_items", [])
+        description = vendor_data.get("description", "").lower()
+        
         if not line_items:
             bill_validation["warnings"].append("No line items found")
         else:
             # Validate line item account assignments
             valid_expense_accounts = [
+                "0060",  # Property development
                 "7602", "7600", "7601", "7603", "7100", "7190", "7200", "7201", "7102",
                 "7508", "7503", "7502", "7400", "7800", "5100", "8200", "7104", "7700",
                 "7506", "7005", "6201", "6100", "1000", "1020", "5000", "6002", "7402",
-                "7401", "7406", "7500", "7501", "7504", "7300", "7301", "7303", "1090", "1160"
+                "7401", "7406", "7500", "7501", "7504", "7300", "7301", "7303", "1090", "1160",
+                "0080", "0090", "0100", "0110", "0130", "0040", "0030"
             ]
             
             line_item_accounts = set()
@@ -439,6 +524,40 @@ def validate_bill_data(bills):
                     "Only one account code in line items but debit_account is set to 'MIXED'"
                 )
         
+        # Check for property capitalization indicators
+        property_keywords = [
+            "surveyor", "survey", "topographical", "boundary",
+            "architect", "architectural", "design", "feasibility",
+            "valuation", "appraisal", "valuer",
+            "site investigation", "geotechnical", "environmental assessment",
+            "planning permission", "building permit", "zoning",
+            "property acquisition", "land purchase", "μηχανολογική μελέτη",
+            "mechanical study", "electrical study"
+        ]
+        
+        has_property_keywords = any(
+            keyword in description or 
+            any(keyword in item.get("description", "").lower() for item in line_items)
+            for keyword in property_keywords
+        )
+        
+        if has_property_keywords:
+            # Check if any line items use 0060
+            uses_property_account = any(
+                item.get("account_code") == "0060" 
+                for item in line_items
+            )
+            
+            accounting_assignment = bill.get("accounting_assignment", {})
+            debit_account = accounting_assignment.get("debit_account", "")
+            
+            if not uses_property_account and debit_account != "0060":
+                bill_validation["warnings"].append(
+                    "Property-related keywords detected but not capitalized to 0060. "
+                    "Review for IAS 40 compliance - check if costs are directly "
+                    "attributable to property acquisition/development."
+                )
+        
         # Check monetary consistency
         subtotal = vendor_data.get("subtotal", 0)
         tax_amount = vendor_data.get("tax_amount", 0)
@@ -451,7 +570,7 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # COMPREHENSIVE REVERSE CHARGE DETECTION - FIXED
+        # COMPREHENSIVE REVERSE CHARGE DETECTION
         accounting_assignment = bill.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
@@ -460,7 +579,6 @@ def validate_bill_data(bills):
         # Detect if vendor falls into any reverse charge category
         vendor_name = vendor_data.get("name", "").lower()
         vendor_country = vendor_data.get("country_code", "")
-        description = vendor_data.get("description", "").lower()
         
         # All line item descriptions combined for analysis
         all_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
@@ -511,7 +629,7 @@ def validate_bill_data(bills):
             is_reverse_charge_vendor = True
             detected_category = "Precious Metals Reverse Charge"
         
-        # Category 7: Check EU telecom - FIXED LOGIC
+        # Category 7: Check EU telecom
         elif vendor_country in ["GR", "DE", "FR", "IT", "ES"] and \
              any(keyword in vendor_name or keyword in description 
                  for keyword in ["telecommunications", "telecom services"]):
@@ -544,30 +662,6 @@ def validate_bill_data(bills):
                     
                     if not input_vat_entries:
                         bill_validation["issues"].append(
-                            f"Reverse charge vendor ({detected_category}) missing Input VAT (2202) entry"
-                        )
-                    
-                    if not output_vat_entries:
-                        bill_validation["issues"].append(
-                            f"Reverse charge vendor ({detected_category}) missing Output VAT (2201) entry"
-                        )
-            else:
-                # Normal domestic vendor - should have only Input VAT entry
-                if requires_reverse_charge:
-                    bill_validation["warnings"].append(
-                        "Vendor marked as reverse charge but doesn't match any reverse charge category"
-                    )
-                
-                if not additional_entries:
-                    bill_validation["issues"].append(
-                        "Tax amount detected for normal vendor but no additional_entries created"
-                    )
-                else:
-                    input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
-                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
-                    
-                    if not input_vat_entries:
-                        bill_validation["issues"].append(
                             "Tax amount detected for normal vendor but missing Input VAT (2202) entry"
                         )
                     
@@ -577,6 +671,7 @@ def validate_bill_data(bills):
                         )
         
         # Check account code consistency for main accounting assignment
+        accounting_assignment = bill.get("accounting_assignment", {})
         credit_account = accounting_assignment.get("credit_account", "")
         
         valid_credit_accounts = ["2100", "2201", "2202"]
@@ -626,7 +721,28 @@ def process_bills_with_claude(pdf_content, company_name):
             model="claude-sonnet-4-20250514",
             max_tokens=18000,
             temperature=0.0,
-            system=f"""You are an expert accountant and data extraction system specialized in VENDOR BILLS and EXPENSE transactions with LINE-LEVEL account assignment and COMPREHENSIVE Cyprus VAT reverse charge detection. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for EXPENSE recognition, VAT regulations including ALL reverse charge categories, and granular expense categorization.
+            system=f"""You are an expert accountant and data extraction system specialized in VENDOR BILLS and EXPENSE transactions with LINE-LEVEL account assignment, COMPREHENSIVE Cyprus VAT reverse charge detection, and IAS 40 PROPERTY CAPITALIZATION.
+
+Your core behavior is to think and act like a professional accountant who understands:
+- Double-entry bookkeeping for EXPENSE recognition
+- VAT regulations including ALL reverse charge categories
+- Granular expense categorization
+- IAS 40 Investment Property accounting and pre-construction cost capitalization
+
+**CRITICAL PROPERTY CAPITALIZATION EXPERTISE:**
+You must identify when vendor bills contain costs that should be CAPITALIZED to 0060 (Freehold property) under IAS 40, not expensed. Always check:
+1. Is vendor a property-related professional? (architect, surveyor, valuer, engineer, planning consultant)
+2. Does service relate to specific property acquisition/development?
+3. Does description contain property identifiers or pre-construction keywords?
+If YES to all three → Use account 0060 (Freehold property), not expense accounts
+
+**PROPERTY COST EXAMPLES TO CAPITALIZE:**
+- Surveyor fees for property projects → 0060
+- Architect fees for property development → 0060
+- Valuation fees for property acquisition → 0060
+- Site investigations and geotechnical studies → 0060
+- Planning permission applications → 0060
+- Legal fees for property purchase → 0060
 
 **BILL ACCOUNTING EXPERTISE:**
 {bill_system_logic}
@@ -640,6 +756,7 @@ CORE ACCOUNTING BEHAVIOR FOR VENDOR BILLS WITH LINE-LEVEL PROCESSING:
   - Business consulting → DEBIT 7602 (Consultancy fees)
   - Internet services → DEBIT 7503 (Internet)
   - Mobile/phone services → DEBIT 7502 (Telephone)
+  - Property development services → DEBIT 0060 (Freehold property)
   - Mixed services from same vendor → Use appropriate account per line item
 • When line items use different accounts → Set main debit_account to "MIXED"
 • Ensure debits always equal credits
@@ -649,7 +766,9 @@ LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 • Same vendor can provide multiple service types requiring different accounts
 • Example: Telecom company billing Internet (7503) AND Mobile services (7502)
 • Example: Office supplier selling Stationery (7504) AND Equipment (0090)
+• Example: Engineering firm providing Property study (0060) AND General consulting (7602)
 • Be precise - "Mobile WiFi" is telecommunications (7502), not internet (7503)
+• Be precise - "Property mechanical study" is capitalized (0060), not consultancy (7602)
 
 COMPREHENSIVE CYPRUS VAT REVERSE CHARGE DETECTION:
 You must check ALL 8 categories for reverse charge eligibility:
@@ -679,7 +798,7 @@ CRITICAL REVERSE CHARGE RULES:
   - Credit account 2100 with GROSS amount
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment. Always check for property capitalization opportunities under IAS 40.""",
             messages=[
                 {
                     "role": "user",
@@ -1039,7 +1158,7 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-bill-processing",
-            "version": "5.0",
+            "version": "5.1",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
@@ -1052,6 +1171,7 @@ def health_check():
                 "line_level_account_assignment",
                 "mixed_service_bill_handling",
                 "granular_expense_categorization",
+                "ias40_property_capitalization",
                 "construction_property_detection",
                 "foreign_services_detection",
                 "gas_electricity_detection",
@@ -1065,7 +1185,8 @@ def health_check():
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025'),
             "odoo_accounting_logic": "integrated",
-            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories"
+            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories",
+            "accounting_standards": "IAS 40 Investment Property Capitalization"
         }
         
     except Exception as e:
@@ -1073,3 +1194,4 @@ def health_check():
             "healthy": False,
             "error": str(e)
         }
+                    

@@ -184,6 +184,13 @@ def main(data):
         else:
             print(f"Custom accounts creation issue: {custom_accounts_result.get('error', 'Unknown error')}")
 
+        # Disable all journal aliases for this company (including those created by Chart of Accounts)
+        disable_result = disable_all_journal_aliases(models, db, uid, password, company_id)
+        if disable_result['success']:
+            print(f"Disabled aliases on {disable_result['count']} journals")
+        else:
+            print(f"Warning: Could not disable journal aliases: {disable_result.get('error')}")
+
         # Create essential journals after Chart of Accounts is ready
         journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         if journals_result['success']:
@@ -392,6 +399,56 @@ def create_custom_accounts(models, db, uid, password, company_id):
         return {
             'success': False,
             'error': f'Failed to create custom accounts: {str(e)}'
+        }
+
+def disable_all_journal_aliases(models, db, uid, password, company_id):
+    """
+    Disable email aliases on ALL journals for a company (including those created by Chart of Accounts)
+    This prevents email alias conflicts and disables the email-to-journal feature completely
+    """
+    try:
+        print(f"Disabling email aliases for all journals in company {company_id}...")
+        
+        # Find all journals for this company
+        journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search',
+            [[('company_id', '=', company_id)]]
+        )
+        
+        if not journals:
+            return {
+                'success': True,
+                'count': 0,
+                'message': 'No journals found for this company'
+            }
+        
+        # Update each journal to remove/disable alias
+        updated_count = 0
+        for journal_id in journals:
+            try:
+                # Set alias_id to False to disable email alias
+                models.execute_kw(
+                    db, uid, password,
+                    'account.journal', 'write',
+                    [[journal_id], {'alias_id': False}]
+                )
+                updated_count += 1
+            except Exception as e:
+                print(f"Could not disable alias for journal {journal_id}: {str(e)}")
+                continue
+        
+        return {
+            'success': True,
+            'count': updated_count,
+            'message': f'Disabled aliases on {updated_count} journals'
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'count': 0
         }
 
 def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120, check_interval=5):

@@ -5,6 +5,7 @@ This module provides practical tiered accounting rules focused on actually used 
 Common functions: 80% usage frequency
 Rare functions: 20% usage frequency
 Updated VAT rules: Normal companies vs Construction/Property reverse charge
+IAS 40 Property Capitalization: Added 0060 account with comprehensive guidance
 """
 
 def bill_common_accounts_logic():
@@ -46,6 +47,34 @@ def bill_rare_accounts_logic():
     """
     return """
 **RARE BILL ACCOUNTS (Use Only When Common Accounts Don't Fit - 20% Usage):**
+
+**PROPERTY DEVELOPMENT & INVESTMENT PROPERTY (IAS 40):**
+- 0060 - Freehold property / Property Development in Progress
+  Use for capitalizing pre-construction and development costs when directly attributable to property acquisition/development:
+  
+  CAPITALIZE to 0060 when:
+  • Initial acquisition costs (option payments, earnest money, acquisition legal fees)
+  • Valuation expenses (professional appraisals, market analysis, valuation reports)
+  • Architect fees - pre-construction phase (feasibility studies, conceptual design, planning drawings)
+  • Property due diligence (site investigations, geotechnical studies, environmental assessments, archaeological surveys)
+  • Surveyor fees (boundary surveys, topographical surveys, land measurement, mechanical/electrical studies for property)
+  • Planning permission and building permit application fees
+  • Zoning and compliance costs
+  • Transfer taxes and stamp duty on property acquisition
+  • Engineering studies directly related to property development
+  
+  DO NOT capitalize to 0060 (expense normally):
+  • General market research not specific to a property (→ 7602)
+  • Costs before property acquisition becomes probable
+  • Routine maintenance of existing structures (→ 7800)
+  • Ongoing property management fees (→ 7100)
+  • General administrative overhead
+  • Speculative costs without specific development plan
+  
+  INDICATORS for 0060:
+  • Vendor is: surveyor, architect, engineer, valuation company, planning consultant
+  • Description contains: property address, building project name, land survey, plot number
+  • Services are: structural studies, topographical work, architectural design, property valuation
 
 **ASSET PURCHASES:**
 - 0080 - Plant and machinery
@@ -289,6 +318,11 @@ Look for these keywords in documents:
 - "Reverse charge applicable"
 - "Customer to account for VAT"
 
+**PROPERTY DEVELOPMENT VAT (Cyprus-Specific):**
+- 19% VAT on professional services (architects, surveyors, valuers) may be recoverable
+- Property transfer taxes (3-8% tiered) are capitalized as part of land cost, not VAT
+- Construction services may be subject to reverse charge mechanism
+
 **VAT EXEMPTIONS (No VAT entries needed):**
 - Share capital transactions
 - Bank interest and charges
@@ -296,7 +330,7 @@ Look for these keywords in documents:
 - Some government fees
 
 **DEFAULT VAT RATE:** 
-Extract from document or use jurisdiction standard (e.g., 19% in Germany)
+Extract from document or use jurisdiction standard (e.g., 19% in Cyprus/Germany)
 """
 
 # Main function
