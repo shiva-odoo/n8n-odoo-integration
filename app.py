@@ -57,6 +57,7 @@ import process_invoice
 import createsharetransaction
 import process_share_documents
 import processonboardingdoc
+import update_transactions_table as transactions
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -2383,6 +2384,51 @@ def create_share_capital_endpoint():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# ================================
+# DYNAMO DB TABLE UPDATE ENDPOINTS
+# ================================
+
+@app.route("/api/transactions-table/update", methods=["POST"])
+def update_transactions_table():
+    """
+    Create multiple transaction entries in DynamoDB
+    Accepts the JSON array of transactions and creates all entries
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+        
+        # Ensure data is a list
+        if not isinstance(data, list):
+            return jsonify({
+                "success": False,
+                "error": "Expected an array of transactions"
+            }), 400
+        
+        if len(data) == 0:
+            return jsonify({
+                "success": False,
+                "error": "No transactions provided"
+            }), 400
+        
+        # Process all transactions
+        result = transactions.process_transactions(data)
+        
+        status_code = 201 if result["success"] else 207  # 207 for partial success
+        return jsonify(result), status_code
+            
+    except Exception as e:
+        print(f"❌ Transactions table update error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update transactions table",
+            "details": str(e)
+        }), 500
 
 
 # ================================
