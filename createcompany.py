@@ -168,6 +168,13 @@ def main(data):
         else:
             print("Chart of Accounts is ready!")
 
+        # Create custom accounts after Chart of Accounts is ready
+        custom_accounts_result = create_custom_accounts(models, db, uid, password, company_id)
+        if custom_accounts_result['success']:
+            print(f"Successfully created {len(custom_accounts_result['accounts'])} custom accounts")
+        else:
+            print(f"Custom accounts creation issue: {custom_accounts_result.get('error', 'Unknown error')}")
+
         # Create essential journals after Chart of Accounts is ready
         journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         if journals_result['success']:
@@ -205,10 +212,17 @@ def main(data):
         # Add chart of accounts status
         response['chart_of_accounts_status'] = chart_ready['message']
         
+        # Add custom accounts status to response
+        if custom_accounts_result['success']:
+            response['custom_accounts_created'] = custom_accounts_result['accounts']
+            response['message'] += f' with {len(custom_accounts_result["accounts"])} custom accounts'
+        else:
+            response['custom_accounts_warning'] = custom_accounts_result.get('error')
+        
         # Add journal creation status to response
         if journals_result['success']:
             response['journals_created'] = journals_result['journals']
-            response['message'] += f' with {len(journals_result["journals"])} essential journals'
+            response['message'] += f' and {len(journals_result["journals"])} essential journals'
         else:
             response['journal_warning'] = journals_result['error']
         
@@ -250,6 +264,125 @@ def main(data):
         return {
             'success': False,
             'error': f'Unexpected error: {str(e)}'
+        }
+
+def create_custom_accounts(models, db, uid, password, company_id):
+    """
+    Create custom accounts for specific business needs
+    """
+    try:
+        print("Checking account.account model structure...")
+        
+        # Check available fields
+        try:
+            account_fields = models.execute_kw(
+                db, uid, password,
+                'account.account', 'fields_get',
+                [[]], {'attributes': ['string', 'type']}
+            )
+            has_company_ids = 'company_ids' in account_fields
+            print(f"Account model has company_ids field: {has_company_ids}")
+        except Exception as e:
+            print(f"Could not check account fields: {e}")
+            has_company_ids = False
+        
+        # Define custom accounts
+        custom_accounts_data = [
+            {
+                'code': '7101',
+                'name': 'Office space',
+                'account_type': 'expense',
+                'reconcile': False,
+                'note': 'Office space related expenses - rent, coworking, office facilities'
+            },
+            {
+                'code': '7906',
+                'name': 'Non Recoverable VAT on expenses',
+                'account_type': 'expense',
+                'reconcile': False,
+                'note': 'VAT on expenses for non-VAT registered companies - not recoverable, treated as additional expense'
+            }
+        ]
+        
+        created_accounts = []
+        
+        for account_data in custom_accounts_data:
+            try:
+                # Build create data
+                create_data = {
+                    'code': account_data['code'],
+                    'name': account_data['name'],
+                    'account_type': account_data['account_type'],
+                    'reconcile': account_data['reconcile']
+                }
+                
+                # Add company_ids if field exists (Many2many format)
+                if has_company_ids:
+                    # Odoo Many2many format: [(6, 0, [list of ids])]
+                    # Command 6 means "replace all existing relations with this list"
+                    create_data['company_ids'] = [(6, 0, [company_id])]
+                    print(f"Setting company_ids to: {create_data['company_ids']}")
+                
+                note = account_data['note']
+                
+                # Check if account exists for THIS company
+                if has_company_ids:
+                    existing = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search_count',
+                        [[('code', '=', create_data['code']), ('company_ids', 'in', [company_id])]]
+                    )
+                else:
+                    existing = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'search_count',
+                        [[('code', '=', create_data['code'])]]
+                    )
+                
+                if existing:
+                    print(f"Account {create_data['code']} already exists for company {company_id}")
+                    continue
+                
+                # Create the account
+                print(f"Creating account: {create_data['code']} - {create_data['name']} for company {company_id}")
+                account_id = models.execute_kw(
+                    db, uid, password,
+                    'account.account', 'create',
+                    [create_data]
+                )
+                
+                if account_id:
+                    created_accounts.append({
+                        'id': account_id,
+                        'code': create_data['code'],
+                        'name': create_data['name'],
+                        'type': create_data['account_type'],
+                        'purpose': note
+                    })
+                    print(f"✓ Created account: {create_data['code']} - {create_data['name']} (ID: {account_id}) for company {company_id}")
+                    print(f"  Purpose: {note}")
+                    
+            except Exception as account_error:
+                print(f"✗ Failed to create account {account_data.get('code', 'unknown')}: {str(account_error)}")
+                continue
+        
+        if created_accounts:
+            print(f"\n📋 Custom Accounts Summary: Successfully created {len(created_accounts)} custom accounts for company {company_id}")
+            return {
+                'success': True,
+                'accounts': created_accounts,
+                'message': f'Created {len(created_accounts)} custom accounts'
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'No custom accounts were created - they may already exist or model structure is incompatible'
+            }
+            
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Failed to create custom accounts: {str(e)}'
         }
 
 def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120, check_interval=5):
@@ -411,6 +544,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'SAL',
                 'type': 'sale',
                 'company_id': company_id,
+                'alias_id': False,  # Disable email alias to prevent conflicts during testing
                 'purpose': 'Customer invoices and sales transactions'
             },
             {
@@ -418,6 +552,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'PUR',
                 'type': 'purchase',
                 'company_id': company_id,
+                'alias_id': False,  # Disable email alias to prevent conflicts during testing
                 'purpose': 'Vendor bills and purchase transactions'
             },
             {
@@ -425,6 +560,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'BNK',
                 'type': 'bank',
                 'company_id': company_id,
+                'alias_id': False,  # Disable email alias to prevent conflicts during testing
                 'purpose': 'Bank account transactions and reconciliation'
             },
             {
@@ -432,6 +568,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'CSH',
                 'type': 'cash',
                 'company_id': company_id,
+                'alias_id': False,  # Disable email alias to prevent conflicts during testing
                 'purpose': 'Cash transactions and petty cash entries'
             },
             {
@@ -439,6 +576,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'JV',
                 'type': 'general',
                 'company_id': company_id,
+                'alias_id': False,  # Disable email alias to prevent conflicts during testing
                 'purpose': 'Manual journal entries and adjustments - explicitly created by this script'
             }
         ]
@@ -942,6 +1080,3 @@ def list_available_countries():
             'success': False,
             'error': str(e)
         }
-
-
-
