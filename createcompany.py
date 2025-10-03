@@ -518,23 +518,9 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
     try:
         created_journals = []
         
+        # Note: Sales and Purchases journals are automatically created by Chart of Accounts
+        # We only create Bank, Cash, and Journal Voucher journals
         journals_to_create = [
-            {
-                'name': 'Sales',
-                'code': 'SAL',
-                'type': 'sale',
-                'company_id': company_id,
-                'alias_id': False,
-                'purpose': 'Customer invoices and sales transactions'
-            },
-            {
-                'name': 'Purchases',
-                'code': 'PUR',
-                'type': 'purchase',
-                'company_id': company_id,
-                'alias_id': False,
-                'purpose': 'Vendor bills and purchase transactions'
-            },
             {
                 'name': 'Bank',
                 'code': 'BNK',
