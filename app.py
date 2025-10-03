@@ -2388,14 +2388,34 @@ def create_share_capital_endpoint():
 # DYNAMO DB TABLE UPDATE ENDPOINTS
 # ================================
 
+# Add this route to your Flask app
+
+from flask import request, jsonify
+import update_transactions_table as transactions
+
 @app.route("/api/transactions-table/update", methods=["POST"])
 def update_transactions_table():
     """
     Create multiple transaction entries in DynamoDB
-    Accepts the JSON array of transactions and creates all entries
+    Accepts the JSON array of transactions in multiple formats:
+    - Direct array: [transaction1, transaction2, ...]
+    - Wrapped in transactions key: {"transactions": [transaction1, transaction2, ...]}
+    - Nested array: [[transaction1, transaction2, ...]]
     """
     try:
-        data = request.get_json()
+        # Try multiple ways to get JSON data
+        data = None
+        try:
+            data = request.get_json()
+        except Exception:
+            try:
+                data = request.get_json(force=True)
+            except Exception as e:
+                print(f"⚠️ Failed to parse JSON: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON format"
+                }), 400
         
         if not data:
             return jsonify({
@@ -2403,27 +2423,69 @@ def update_transactions_table():
                 "error": "No data provided"
             }), 400
         
-        # Ensure data is a list
-        if not isinstance(data, list):
+        # Handle multiple data formats
+        transactions_list = None
+        
+        # Format 1: Direct array [transaction1, transaction2, ...]
+        if isinstance(data, list):
+            # Check if it's a nested array [[transaction1, transaction2, ...]]
+            if len(data) == 1 and isinstance(data[0], dict) and 'transactions' in data[0]:
+                # Format 2b: [{"transactions": [...]}]
+                transactions_list = data[0]['transactions']
+            elif len(data) > 0 and isinstance(data[0], list):
+                # Format 3: Nested array [[...]]
+                transactions_list = data[0]
+            else:
+                # Format 1: Direct array
+                transactions_list = data
+        
+        # Format 2a: Wrapped in object {"transactions": [...]}
+        elif isinstance(data, dict):
+            if 'transactions' in data:
+                transactions_list = data['transactions']
+            elif 'data' in data:
+                # Alternative key name
+                transactions_list = data['data']
+            else:
+                # Single transaction as object
+                transactions_list = [data]
+        
+        # Validate we have a list
+        if transactions_list is None:
             return jsonify({
                 "success": False,
-                "error": "Expected an array of transactions"
+                "error": "Could not parse transactions data. Expected array of transactions or object with 'transactions' key"
             }), 400
         
-        if len(data) == 0:
+        if not isinstance(transactions_list, list):
+            return jsonify({
+                "success": False,
+                "error": "Transactions must be an array"
+            }), 400
+        
+        if len(transactions_list) == 0:
             return jsonify({
                 "success": False,
                 "error": "No transactions provided"
             }), 400
         
+        # Validate that list contains objects
+        if not all(isinstance(item, dict) for item in transactions_list):
+            return jsonify({
+                "success": False,
+                "error": "All transactions must be objects"
+            }), 400
+        
         # Process all transactions
-        result = transactions.process_transactions(data)
+        result = transactions.process_transactions(transactions_list)
         
         status_code = 201 if result["success"] else 207  # 207 for partial success
         return jsonify(result), status_code
             
     except Exception as e:
         print(f"❌ Transactions table update error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             "success": False,
             "error": "Failed to update transactions table",
