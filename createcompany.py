@@ -47,6 +47,15 @@ def main(data):
     data['country_code'] = country_code
     data['currency_code'] = currency_code
     
+    # Handle VAT number - remove CY prefix if present (Cyprus is always the country)
+    # Odoo expects VAT without country prefix since country is set separately
+    if data.get('vat'):
+        vat = data['vat'].strip().upper()
+        if vat.startswith('CY'):
+            vat = vat[2:]  # Remove CY prefix
+            print(f"Normalized VAT: removed 'CY' prefix, using: {vat}")
+        data['vat'] = vat
+    
     # Odoo connection details
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
@@ -388,25 +397,12 @@ def create_custom_accounts(models, db, uid, password, company_id):
 def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120, check_interval=5):
     """
     Wait for Chart of Accounts to be installed by checking if accounts exist
-    
-    Args:
-        models: Odoo models proxy
-        db: Database name
-        uid: User ID
-        password: API password
-        company_id: Company ID to check
-        max_wait_time: Maximum time to wait in seconds (default: 120)
-        check_interval: Time between checks in seconds (default: 5)
-    
-    Returns:
-        dict: Success status and message
     """
     start_time = time.time()
-    min_accounts_required = 10  # Minimum number of accounts that should exist in a proper chart
+    min_accounts_required = 10
     
     print(f"Waiting for Chart of Accounts installation (max {max_wait_time} seconds)...")
     
-    # First, check what fields are available on account.account
     try:
         account_fields = models.execute_kw(
             db, uid, password,
@@ -421,17 +417,13 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
     
     while time.time() - start_time < max_wait_time:
         try:
-            # Check if accounts exist - use different approaches based on field availability
             if has_company_id:
-                # Use company_id filter if available
                 account_count = models.execute_kw(
                     db, uid, password,
                     'account.account', 'search_count',
                     [[('company_id', '=', company_id)]]
                 )
             else:
-                # Fallback: get all accounts and filter manually or use different approach
-                # First try to get accounts without company filter
                 all_accounts = models.execute_kw(
                     db, uid, password,
                     'account.account', 'search_count',
@@ -447,7 +439,6 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
             print(f"Found {account_count} accounts")
             
             if account_count >= min_accounts_required:
-                # Try to check essential account types if possible
                 try:
                     if has_company_id:
                         essential_account_types = ['asset_receivable', 'liability_payable', 'income', 'expense']
@@ -466,7 +457,6 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
                             time.sleep(check_interval)
                             continue
                     
-                    # Success - accounts are ready
                     elapsed_time = int(time.time() - start_time)
                     return {
                         'success': True,
@@ -476,7 +466,6 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
                     
                 except Exception as type_check_error:
                     print(f"Could not check account types: {type_check_error}")
-                    # If we can't check types but have enough accounts, consider it ready
                     elapsed_time = int(time.time() - start_time)
                     return {
                         'success': True,
@@ -484,14 +473,12 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
                         'accounts_count': account_count
                     }
             
-            # Wait before next check
             time.sleep(check_interval)
             
         except Exception as e:
             print(f"Error checking accounts: {str(e)}")
             time.sleep(check_interval)
     
-    # Timeout reached
     elapsed_time = int(time.time() - start_time)
     try:
         if has_company_id:
@@ -526,25 +513,18 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
 
 def create_essential_journals(models, db, uid, password, company_id, currency_id=None):
     """
-    Create essential journals for a new company (Sales, Purchase, Bank, Cash, Journal Voucher)
-    
-    NOTE: The Chart of Accounts installation may automatically create additional journals
-    like "Miscellaneous Operations". This is normal Odoo behavior. We explicitly create 
-    a "Journal Voucher" journal for manual accounting entries to maintain consistency
-    across all companies created by this script.
+    Create essential journals for a new company
     """
     try:
         created_journals = []
         
-        # Define journals to create explicitly
-        # Note: Chart of Accounts may create additional default journals automatically
         journals_to_create = [
             {
                 'name': 'Sales',
                 'code': 'SAL',
                 'type': 'sale',
                 'company_id': company_id,
-                'alias_id': False,  # Disable email alias to prevent conflicts during testing
+                'alias_id': False,
                 'purpose': 'Customer invoices and sales transactions'
             },
             {
@@ -552,7 +532,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'PUR',
                 'type': 'purchase',
                 'company_id': company_id,
-                'alias_id': False,  # Disable email alias to prevent conflicts during testing
+                'alias_id': False,
                 'purpose': 'Vendor bills and purchase transactions'
             },
             {
@@ -560,7 +540,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'BNK',
                 'type': 'bank',
                 'company_id': company_id,
-                'alias_id': False,  # Disable email alias to prevent conflicts during testing
+                'alias_id': False,
                 'purpose': 'Bank account transactions and reconciliation'
             },
             {
@@ -568,7 +548,7 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'CSH',
                 'type': 'cash',
                 'company_id': company_id,
-                'alias_id': False,  # Disable email alias to prevent conflicts during testing
+                'alias_id': False,
                 'purpose': 'Cash transactions and petty cash entries'
             },
             {
@@ -576,22 +556,19 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                 'code': 'JV',
                 'type': 'general',
                 'company_id': company_id,
-                'alias_id': False,  # Disable email alias to prevent conflicts during testing
-                'purpose': 'Manual journal entries and adjustments - explicitly created by this script'
+                'alias_id': False,
+                'purpose': 'Manual journal entries and adjustments'
             }
         ]
         
-        # Add currency if specified
         if currency_id:
             for journal in journals_to_create:
                 journal['currency_id'] = currency_id
         
-        # Create each journal explicitly
-        print("Creating essential journals (Chart of Accounts may create additional default journals automatically)...")
+        print("Creating essential journals...")
         
         for journal_data in journals_to_create:
             try:
-                # Check if journal with this code already exists for this company
                 existing = models.execute_kw(
                     db, uid, password,
                     'account.journal', 'search_count',
@@ -602,7 +579,6 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                     print(f"Journal {journal_data['code']} ({journal_data['name']}) already exists for company {company_id}")
                     continue
                 
-                # Remove the 'purpose' field before creating (it's just for documentation)
                 create_data = {k: v for k, v in journal_data.items() if k != 'purpose'}
                 
                 journal_id = models.execute_kw(
@@ -620,31 +596,21 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                         'purpose': journal_data['purpose']
                     })
                     print(f"✓ Created journal: {journal_data['name']} ({journal_data['code']}) - ID: {journal_id}")
-                    print(f"  Purpose: {journal_data['purpose']}")
                     
             except Exception as journal_error:
                 print(f"✗ Failed to create journal {journal_data['name']}: {str(journal_error)}")
-                # For sales/purchase journals, this might be due to missing accounts
-                if journal_data['type'] in ['sale', 'purchase']:
-                    print(f"  → This is likely due to Chart of Accounts not being fully ready")
                 continue
         
         if created_journals:
-            print(f"\n📋 Summary: Successfully created {len(created_journals)} essential journals")
-            print("Note: Chart of Accounts may have also created additional default journals (like 'Miscellaneous Operations')")
-            print("The 'Journal Voucher' journal created above is specifically for manual entries and consistency.")
-            
             return {
                 'success': True,
                 'journals': created_journals,
-                'message': f'Created {len(created_journals)} essential journals',
-                'note': 'Chart of Accounts may create additional default journals automatically'
+                'message': f'Created {len(created_journals)} essential journals'
             }
         else:
             return {
                 'success': False,
-                'error': 'No journals were created - they may already exist or Chart of Accounts is not ready',
-                'note': 'Chart of Accounts installation may have created default journals automatically'
+                'error': 'No journals were created - they may already exist'
             }
             
     except Exception as e:
@@ -655,11 +621,9 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
 
 def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code=None):
     """
-    Initiate chart of accounts installation for the company.
-    The actual installation will continue in the background.
+    Initiate chart of accounts installation for the company
     """
     try:
-        # Quick check if accounts already exist
         account_count = models.execute_kw(
             db, uid, password,
             'account.account', 'search_count',
@@ -669,7 +633,6 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
         if account_count > 0:
             return {'success': True, 'message': 'Chart of accounts already exists', 'accounts_found': account_count}
 
-        # Find chart template
         domain = []
         if country_code:
             domain = [('country_id.code', '=', country_code.upper())]
@@ -679,7 +642,6 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
             [domain], {'fields': ['id', 'name'], 'limit': 1}
         )
         if not templates:
-            # fallback: get any template
             templates = models.execute_kw(
                 db, uid, password,
                 'account.chart.template', 'search_read',
@@ -691,9 +653,7 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
         template = templates[0]
         print(f"Using chart template: {template['name']} (ID: {template['id']})")
         
-        # Attempt to initiate chart of accounts installation
         try:
-            # Try the most reliable method first
             models.execute_kw(
                 db, uid, password,
                 'account.chart.template', 'try_loading',
@@ -703,7 +663,6 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
             return {'success': True, 'message': f'Chart of accounts installation initiated with template: {template["name"]}'}
         except Exception as e1:
             try:
-                # Fallback to simpler method
                 models.execute_kw(
                     db, uid, password,
                     'account.chart.template', 'load_for_current_company',
@@ -718,15 +677,12 @@ def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code
 
 def wait_for_chart_of_accounts_simple(models, db, uid, password, company_id, max_wait_time=60):
     """
-    Simplified version that just waits a fixed time and checks basic account existence
+    Simplified version that just waits and checks basic account existence
     """
     print(f"Using simplified chart of accounts check for company {company_id}...")
-    
-    # Wait a reasonable time for chart installation to begin
     time.sleep(10)
     
     try:
-        # Try to get any accounts at all
         account_count = models.execute_kw(
             db, uid, password,
             'account.account', 'search_count',
@@ -736,13 +692,13 @@ def wait_for_chart_of_accounts_simple(models, db, uid, password, company_id, max
         if account_count > 0:
             return {
                 'success': True,
-                'message': f'Found {account_count} accounts in system - proceeding with journal creation',
+                'message': f'Found {account_count} accounts in system - proceeding',
                 'accounts_count': account_count
             }
         else:
             return {
                 'success': False,
-                'message': 'No accounts found - chart of accounts may need manual setup',
+                'message': 'No accounts found - chart may need manual setup',
                 'accounts_count': 0
             }
             
@@ -765,7 +721,6 @@ def get_available_company_fields(models, db, uid, password):
         return list(fields_info.keys())
     except Exception as e:
         print(f"Error getting fields: {e}")
-        # Return basic fields that should exist in most Odoo versions
         return ['name', 'email', 'phone', 'website', 'vat', 'street', 'city', 'zip', 'country_id', 'currency_id']
 
 def create(data):
@@ -809,8 +764,7 @@ def get_state_id(models, db, uid, password, state_name, country_id):
         return None
 
 def list_companies():
-    """Get list of all companies for reference"""
-    
+    """Get list of all companies"""
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
@@ -824,7 +778,6 @@ def list_companies():
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
-        # Get available fields first
         available_fields = get_available_company_fields(models, db, uid, password)
         safe_fields = [field for field in ['id', 'name', 'email', 'phone', 'currency_id', 'country_id', 'vat', 'website'] if field in available_fields]
         
@@ -848,17 +801,7 @@ def list_companies():
         }
 
 def get_company_email_partial(data):
-    """
-    Get email of a company by name with partial matching option
-    
-    Args:
-        company_name (str): The company name to search for
-        exact_match (bool): If True, uses exact match; if False, uses partial match (default: False)
-    
-    Returns:
-        dict: Success status and company data or error message
-    """
-    
+    """Get email of a company by name with partial matching option"""
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
@@ -866,7 +809,7 @@ def get_company_email_partial(data):
     
     try:
         company_name = data['company_name']
-        exact_match = data.get('exact_match', False)  # Default to partial match
+        exact_match = data.get('exact_match', False)
         common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
         models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
         
@@ -874,14 +817,12 @@ def get_company_email_partial(data):
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
-        # Define basic fields that should exist in res.company
         basic_fields = ['id', 'name', 'email']
         
-        # Choose search operator based on exact_match parameter
         if exact_match:
             domain = [('name', '=', company_name)]
         else:
-            domain = [('name', 'ilike', company_name)]  # Case-insensitive partial match
+            domain = [('name', 'ilike', company_name)]
         
         companies = models.execute_kw(
             db, uid, password,
@@ -913,9 +854,7 @@ def get_company_email_partial(data):
         }
 
 def list_company_journals(company_id):
-    """
-    List all journals for a specific company
-    """
+    """List all journals for a specific company"""
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
@@ -950,10 +889,7 @@ def list_company_journals(company_id):
         }
 
 def create_journals_for_existing_company(company_id):
-    """
-    Create essential journals for an existing company that doesn't have them
-    Useful for fixing companies created before this update
-    """
+    """Create essential journals for an existing company"""
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
@@ -967,7 +903,6 @@ def create_journals_for_existing_company(company_id):
         if not uid:
             return {'success': False, 'error': 'Authentication failed'}
         
-        # Get company info to check if it exists and get currency
         company_info = models.execute_kw(
             db, uid, password,
             'res.company', 'read',
@@ -984,7 +919,6 @@ def create_journals_for_existing_company(company_id):
         company_info = company_info[0]
         currency_id = company_info.get('currency_id')[0] if company_info.get('currency_id') else None
         
-        # Wait for Chart of Accounts to be ready
         print(f"Checking Chart of Accounts for company {company_id}...")
         chart_ready = wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=60)
         
@@ -994,7 +928,6 @@ def create_journals_for_existing_company(company_id):
                 'error': f'Chart of Accounts not ready: {chart_ready["message"]}'
             }
         
-        # Create journals
         result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         
         if result['success']:
@@ -1010,9 +943,7 @@ def create_journals_for_existing_company(company_id):
         }
 
 def list_available_currencies():
-    """
-    List all available currencies in the Odoo database
-    """
+    """List all available currencies in the Odoo database"""
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
@@ -1046,9 +977,7 @@ def list_available_currencies():
         }
 
 def list_available_countries():
-    """
-    List all available countries in the Odoo database
-    """
+    """List all available countries in the Odoo database"""
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
     username = os.getenv("ODOO_USERNAME")
