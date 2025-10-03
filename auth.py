@@ -127,7 +127,7 @@ def authenticate_user(username, password):
             'metadata': user.get('metadata', {})
         }
         
-        print(f"✅ User {username} authenticated successfully")
+        print(f"User {username} authenticated successfully")
         
         return {
             "success": True,
@@ -137,41 +137,60 @@ def authenticate_user(username, password):
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error: {e}")
+        print(f"DynamoDB error: {e}")
         return {
             "success": False,
             "error": "Database error occurred"
         }
     except Exception as e:
-        print(f"❌ Authentication error: {e}")
+        print(f"Authentication error: {e}")
         return {
             "success": False,
             "error": "Authentication failed"
         }
 
 def create_user_account(user_data):
-    """Create a new user account in DynamoDB (used by n8n after approval)"""
+    """Create a new user account in DynamoDB (used after approval)"""
     try:
         # Hash the password
         hashed_password = hash_password(user_data['password'])
         
-        # Prepare user item
+        # Prepare user item with ALL fields from user_data
         user_item = {
+            # Core authentication fields
             'username': user_data['username'],
             'password_hash': hashed_password,
             'role': user_data.get('role', 'user'),
             'email': user_data['email'],
             'company_name': user_data['company_name'],
             'company_id': user_data.get('company_id', ''),
+            'business_company_id': user_data.get('business_company_id', ''),  # Odoo company ID
             'status': 'active',
             'created_at': datetime.utcnow().isoformat(),
+            
+            # Additional company information fields from onboarding
+            'trading_name': user_data.get('trading_name', ''),
+            'registration_no': user_data.get('registration_no', ''),
+            'tax_registration_no': user_data.get('tax_registration_no', ''),
+            'business_address': user_data.get('business_address', ''),
+            'is_vat_registered': user_data.get('is_vat_registered', ''),
+            'vat_no': user_data.get('vat_no', ''),
+            'primary_industry': user_data.get('primary_industry', ''),
+            'business_description': user_data.get('business_description', ''),
+            'main_products': user_data.get('main_products', ''),
+            'business_model': user_data.get('business_model', ''),
+            
+            # Metadata (backward compatibility)
             'metadata': user_data.get('metadata', {})
         }
         
         # Save to DynamoDB
         users_table.put_item(Item=user_item)
         
-        print(f"✅ User account created: {user_data['username']}")
+        print(f"User account created: {user_data['username']}")
+        print(f"  - Company: {user_data['company_name']}")
+        print(f"  - Business Company ID: {user_data.get('business_company_id', 'N/A')}")
+        print(f"  - VAT Registered: {user_data.get('is_vat_registered', 'N/A')}")
         
         return {
             "success": True,
@@ -179,13 +198,13 @@ def create_user_account(user_data):
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error creating user: {e}")
+        print(f"DynamoDB error creating user: {e}")
         return {
             "success": False,
             "error": "Failed to create user account"
         }
     except Exception as e:
-        print(f"❌ Error creating user: {e}")
+        print(f"Error creating user: {e}")
         return {
             "success": False,
             "error": "User creation failed"
@@ -229,7 +248,7 @@ def refresh_token(current_token):
         }
         
     except Exception as e:
-        print(f"❌ Token refresh error: {e}")
+        print(f"Token refresh error: {e}")
         return {
             "success": False,
             "error": "Token refresh failed"

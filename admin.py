@@ -31,7 +31,7 @@ def generate_presigned_url(s3_key, expiration=3600):
         )
         return response
     except ClientError as e:
-        print(f"❌ Error generating presigned URL for {s3_key}: {e}")
+        print(f"Error generating presigned URL for {s3_key}: {e}")
         return None
 
 def get_company_documents(submission_id):
@@ -74,7 +74,7 @@ def get_company_documents(submission_id):
         }
         
     except Exception as e:
-        print(f"❌ Error getting company documents: {e}")
+        print(f"Error getting company documents: {e}")
         return {"success": False, "error": "Failed to get documents"}
 
 def convert_decimal(obj):
@@ -123,7 +123,7 @@ def get_all_companies():
                 'rejection_reason': company.get('rejection_reason')
             })
         
-        print(f"📋 Retrieved {len(formatted_companies)} company submissions")
+        print(f"Retrieved {len(formatted_companies)} company submissions")
         
         return {
             "success": True,
@@ -132,13 +132,13 @@ def get_all_companies():
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error: {e}")
+        print(f"DynamoDB error: {e}")
         return {
             "success": False,
             "error": "Failed to retrieve company data"
         }
     except Exception as e:
-        print(f"❌ Error retrieving companies: {e}")
+        print(f"Error retrieving companies: {e}")
         return {
             "success": False,
             "error": "Failed to get companies"
@@ -168,13 +168,13 @@ def get_company_details(submission_id):
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error: {e}")
+        print(f"DynamoDB error: {e}")
         return {
             "success": False,
             "error": "Failed to retrieve company details"
         }
     except Exception as e:
-        print(f"❌ Error retrieving company details: {e}")
+        print(f"Error retrieving company details: {e}")
         return {
             "success": False,
             "error": "Failed to get company details"
@@ -207,18 +207,18 @@ def generate_username_password(company_name, password_length=12):
 def format_company_data_for_business_system(company):
     """Format onboarding company data for business system creation"""
     company_data = {
-        "name": company.get('company_name'),  # required
-        "email": company.get('rep_email'),    # optional - use rep email as company email
-        "phone": None,                        # optional - not collected in onboarding
-        "website": None,                      # optional - not collected in onboarding
-        "vat": company.get('vat_no'),         # optional - VAT number
-        "company_registry": company.get('registration_no'),  # optional - registration number
-        "street": None,                       # optional - not collected in onboarding
-        "city": None,                         # optional - not collected in onboarding
-        "zip": None,                          # optional - not collected in onboarding
-        "state": None,                        # optional - not collected in onboarding
-        "country_code": "IN",                 # optional - default to India
-        "currency_code": "INR"                # optional - default to Indian Rupee
+        "name": company.get('company_name'),
+        "email": company.get('rep_email'),
+        "phone": None,
+        "website": None,
+        "vat": company.get('vat_no'),
+        "company_registry": company.get('registration_no'),
+        "street": None,
+        "city": None,
+        "zip": None,
+        "state": None,
+        "country_code": "IN",
+        "currency_code": "INR"
     }
     
     return company_data
@@ -240,12 +240,12 @@ def send_admin_failure_notification(admin_email, company, error_message, submiss
         }
         
         response = requests.post(webhook_url, json=payload, timeout=10)
-        print(f"📧 Admin failure notification sent: {response.status_code}")
+        print(f"Admin failure notification sent: {response.status_code}")
         
         return response.status_code == 200
         
     except Exception as e:
-        print(f"❌ Error sending admin failure notification: {e}")
+        print(f"Error sending admin failure notification: {e}")
         return False
 
 def send_user_failure_notification(company, error_message):
@@ -267,12 +267,12 @@ def send_user_failure_notification(company, error_message):
         }
         
         response = requests.post(webhook_url, json=payload, timeout=10)
-        print(f"📧 User failure notification sent to {company.get('rep_email')}: {response.status_code}")
+        print(f"User failure notification sent to {company.get('rep_email')}: {response.status_code}")
         
         return response.status_code == 200
         
     except Exception as e:
-        print(f"❌ Error sending user failure notification: {e}")
+        print(f"Error sending user failure notification: {e}")
         return False
 
 def approve_company(submission_id, approved_by_username, admin_email):
@@ -286,7 +286,7 @@ def approve_company(submission_id, approved_by_username, admin_email):
             return company_result
         
         company = company_result["company"]
-        original_status = company['status']  # Store original status for rollback
+        original_status = company['status']
         
         # Check if already manually approved or rejected
         if company['status'] == 'manual_approved':
@@ -311,16 +311,16 @@ def approve_company(submission_id, approved_by_username, admin_email):
         # PRIORITY STEP 1: Create company in Odoo FIRST
         business_company_data = format_company_data_for_business_system(company)
         
-        print(f"🏢 PRIORITY: Creating company in Odoo first: {business_company_data}")
+        print(f"PRIORITY: Creating company in Odoo first: {business_company_data}")
         
         try:
             business_company_result = createcompany.main(business_company_data)
-            print(f"📊 Odoo company creation result: {business_company_result}")
+            print(f"Odoo company creation result: {business_company_result}")
             
             # Check if Odoo company creation failed
             if not business_company_result.get("success"):
                 error_message = business_company_result.get("error", "Unknown Odoo creation error")
-                print(f"❌ CRITICAL: Odoo company creation failed: {error_message}")
+                print(f"CRITICAL: Odoo company creation failed: {error_message}")
                 
                 # Revert status back to pending
                 onboarding_table.update_item(
@@ -343,7 +343,7 @@ def approve_company(submission_id, approved_by_username, admin_email):
                 
         except Exception as odoo_error:
             error_message = str(odoo_error)
-            print(f"❌ CRITICAL: Odoo company creation exception: {error_message}")
+            print(f"CRITICAL: Odoo company creation exception: {error_message}")
             
             # Revert status back to pending
             onboarding_table.update_item(
@@ -366,26 +366,40 @@ def approve_company(submission_id, approved_by_username, admin_email):
         
         # If we get here, Odoo company creation was successful
         business_company_id = business_company_result.get("company_id")
-        print(f"✅ SUCCESS: Odoo company created with ID: {business_company_id}")
+        print(f"SUCCESS: Odoo company created with ID: {business_company_id}")
         
         # Now proceed with the other 3 tasks since Odoo creation succeeded
         
         # Generate username and password
         username, password = generate_username_password(company['company_name'])
         
-        # Step 2: Create user account in users table
+        # Step 2: Create user account in users table with all new fields
         user_data = {
             'username': username,
             'password': password,
             'email': company['rep_email'],
             'company_name': company['company_name'],
             'company_id': f"cmp_{submission_id}",
-            'business_company_id': business_company_id,  # Add Odoo company ID
+            'business_company_id': business_company_id,  # Odoo company ID - NOW WILL BE SAVED
             'role': 'user',
+            
+            # Additional company information fields from onboarding form
+            'trading_name': company.get('trading_name', ''),
+            'registration_no': company.get('registration_no', ''),
+            'tax_registration_no': company.get('tax_registration_no', ''),
+            'business_address': company.get('business_address', ''),
+            'is_vat_registered': company.get('is_vat_registered', ''),
+            'vat_no': company.get('vat_no', ''),
+            'primary_industry': company.get('primary_industry', ''),
+            'business_description': company.get('business_description', ''),
+            'main_products': company.get('main_products', ''),
+            'business_model': company.get('business_model', ''),
+            
+            # Metadata (keep existing structure for backward compatibility)
             'metadata': {
-                'registration_no': company.get('registration_no', ''),
-                'vat_no': company.get('vat_no', ''),
-                'rep_name': company.get('rep_name', '')
+                'rep_name': company.get('rep_name', ''),
+                'rep_email': company.get('rep_email', ''),
+                'vat_no': company.get('vat_no', '')
             }
         }
         
@@ -415,7 +429,7 @@ def approve_company(submission_id, approved_by_username, admin_email):
         # Step 4: Send email with credentials via n8n
         send_credentials_email(company['rep_email'], company['company_name'], username, password)
         
-        print(f"✅ Company {company['company_name']} fully approved by {approved_by_username}")
+        print(f"Company {company['company_name']} fully approved by {approved_by_username}")
         
         return {
             "success": True,
@@ -428,13 +442,13 @@ def approve_company(submission_id, approved_by_username, admin_email):
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error: {e}")
+        print(f"DynamoDB error: {e}")
         return {
             "success": False,
             "error": "Failed to approve company"
         }
     except Exception as e:
-        print(f"❌ Error approving company: {e}")
+        print(f"Error approving company: {e}")
         return {
             "success": False,
             "error": "Approval process failed"
@@ -481,7 +495,7 @@ def reject_company(submission_id, rejected_by_username, reason):
         # Send rejection email via n8n
         send_rejection_email(company['rep_email'], company['company_name'], reason)
         
-        print(f"✅ Company {company['company_name']} rejected by {rejected_by_username}")
+        print(f"Company {company['company_name']} rejected by {rejected_by_username}")
         
         return {
             "success": True,
@@ -489,13 +503,13 @@ def reject_company(submission_id, rejected_by_username, reason):
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error: {e}")
+        print(f"DynamoDB error: {e}")
         return {
             "success": False,
             "error": "Failed to reject company"
         }
     except Exception as e:
-        print(f"❌ Error rejecting company: {e}")
+        print(f"Error rejecting company: {e}")
         return {
             "success": False,
             "error": "Rejection process failed"
@@ -511,16 +525,16 @@ def send_credentials_email(email, company_name, username, password):
             'company_name': company_name,
             'username': username,
             'password': password,
-            'portal_url': 'https://your-domain.com'  # Replace with your actual domain
+            'portal_url': 'https://your-domain.com'
         }
         
         response = requests.post(webhook_url, json=payload, timeout=10)
-        print(f"📧 Credentials email sent to {email}: {response.status_code}")
+        print(f"Credentials email sent to {email}: {response.status_code}")
         
         return response.status_code == 200
         
     except Exception as e:
-        print(f"❌ Error sending credentials email: {e}")
+        print(f"Error sending credentials email: {e}")
         return False
 
 def send_rejection_email(email, company_name, reason):
@@ -535,19 +549,17 @@ def send_rejection_email(email, company_name, reason):
         }
         
         response = requests.post(webhook_url, json=payload, timeout=10)
-        print(f"📧 Rejection email sent to {email}: {response.status_code}")
+        print(f"Rejection email sent to {email}: {response.status_code}")
         
         return response.status_code == 200
         
     except Exception as e:
-        print(f"❌ Error sending rejection email: {e}")
+        print(f"Error sending rejection email: {e}")
         return False
-    
 
 def update_submission_files(submission_id, files_data):
     """Update the files field for a specific onboarding submission"""
     try:
-        # Validate input
         if not submission_id:
             return {
                 "success": False,
@@ -560,7 +572,6 @@ def update_submission_files(submission_id, files_data):
                 "error": "files_data must be a non-empty list"
             }
         
-        # Validate that submission exists
         response = onboarding_table.get_item(
             Key={'submission_id': submission_id}
         )
@@ -571,7 +582,6 @@ def update_submission_files(submission_id, files_data):
                 "error": "Submission not found"
             }
         
-        # Update the files field
         onboarding_table.update_item(
             Key={'submission_id': submission_id},
             UpdateExpression='SET files = :files, updated_at = :updated_at',
@@ -581,7 +591,7 @@ def update_submission_files(submission_id, files_data):
             }
         )
         
-        print(f"✅ Updated files for submission {submission_id} with {len(files_data)} files")
+        print(f"Updated files for submission {submission_id} with {len(files_data)} files")
         
         return {
             "success": True,
@@ -591,19 +601,17 @@ def update_submission_files(submission_id, files_data):
         }
         
     except ClientError as e:
-        print(f"❌ DynamoDB error updating files: {e}")
+        print(f"DynamoDB error updating files: {e}")
         return {
             "success": False,
             "error": "Failed to update submission files"
         }
     except Exception as e:
-        print(f"❌ Error updating submission files: {e}")
+        print(f"Error updating submission files: {e}")
         return {
             "success": False,
             "error": "Update process failed"
         }
-    
-
 
 def update_company_info(submission_id, update_data):
     """
@@ -612,7 +620,6 @@ def update_company_info(submission_id, update_data):
     Updates: phone, website, vat, street, city, zip, state, country_code, currency_code
     """
     try:
-        # Validate input
         if not submission_id:
             return {
                 "success": False,
@@ -625,7 +632,6 @@ def update_company_info(submission_id, update_data):
                 "error": "update_data must be a non-empty dictionary"
             }
         
-        # Validate that submission exists
         response = onboarding_table.get_item(
             Key={'submission_id': submission_id}
         )
@@ -636,12 +642,10 @@ def update_company_info(submission_id, update_data):
                 "error": "Submission not found"
             }
         
-        # Filter out excluded fields - these will NOT be updated
         excluded_fields = {'name', 'email', 'company_registry'}
         filtered_data = {k: v for k, v in update_data.items() 
                         if k not in excluded_fields and v is not None}
         
-        # Check if there's anything left to update after filtering
         if not filtered_data:
             excluded_from_input = [field for field in excluded_fields if field in update_data]
             return {
@@ -652,23 +656,19 @@ def update_company_info(submission_id, update_data):
                 "updated_fields": []
             }
         
-        # Prepare update expressions for DynamoDB
         update_expressions = []
         expression_attribute_values = {':updated_at': datetime.utcnow().isoformat()}
         expression_attribute_names = {}
         
         for key, value in filtered_data.items():
-            # Use attribute names to handle reserved words in DynamoDB
             placeholder = f"#{key}"
             value_placeholder = f":{key}"
             update_expressions.append(f"{placeholder} = {value_placeholder}")
             expression_attribute_values[value_placeholder] = value
             expression_attribute_names[placeholder] = key
         
-        # Build the complete update expression
         update_expression = "SET " + ", ".join(update_expressions) + ", updated_at = :updated_at"
         
-        # Update the company information in DynamoDB
         onboarding_table.update_item(
             Key={'submission_id': submission_id},
             UpdateExpression=update_expression,
@@ -676,14 +676,12 @@ def update_company_info(submission_id, update_data):
             ExpressionAttributeNames=expression_attribute_names
         )
         
-        # Track which fields were excluded from the input
         excluded_from_input = [field for field in excluded_fields if field in update_data]
         
-        # Log successful update
-        print(f"✅ Updated company info for submission {submission_id}")
-        print(f"📝 Updated fields: {list(filtered_data.keys())}")
+        print(f"Updated company info for submission {submission_id}")
+        print(f"Updated fields: {list(filtered_data.keys())}")
         if excluded_from_input:
-            print(f"⚠️  Excluded fields from update: {excluded_from_input}")
+            print(f"Excluded fields from update: {excluded_from_input}")
         
         return {
             "success": True,
@@ -698,14 +696,14 @@ def update_company_info(submission_id, update_data):
     except ClientError as e:
         error_code = e.response['Error']['Code']
         error_message = e.response['Error']['Message']
-        print(f"❌ DynamoDB error updating company info: {error_code} - {error_message}")
+        print(f"DynamoDB error updating company info: {error_code} - {error_message}")
         return {
             "success": False,
             "error": f"Database update failed: {error_message}",
             "error_code": error_code
         }
     except Exception as e:
-        print(f"❌ Error updating company information: {str(e)}")
+        print(f"Error updating company information: {str(e)}")
         return {
             "success": False,
             "error": f"Update process failed: {str(e)}"
