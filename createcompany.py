@@ -198,24 +198,50 @@ def main(data):
         else:
             print(f"Journal creation issue: {journals_result.get('error', 'Unknown error')}")
 
-        # CRITICAL: Final comprehensive alias cleanup
+        # CRITICAL: Final comprehensive alias cleanup with proper timing
         # This removes any aliases that were auto-created during the Chart of Accounts installation
         # or journal creation process, even if we set alias_id=False
         print("\n" + "="*70)
         print("FINAL ALIAS CLEANUP - Removing all auto-created aliases")
         print("="*70)
         
-        # Step 1: Disable aliases on all journals one more time
-        final_disable = disable_all_journal_aliases(models, db, uid, password, company_id)
-        if final_disable['success']:
-            print(f"Step 1: Disabled aliases on {final_disable['count']} journals")
+        # Count aliases BEFORE cleanup
+        total_aliases_before = count_total_aliases(models, db, uid, password)
+        print(f"Total aliases in database BEFORE cleanup: {total_aliases_before}")
         
-        # Step 2: Delete the orphaned alias records from mail.alias table
-        deleted_aliases = delete_company_alias_records(models, db, uid, password, company_id, data['name'])
-        print(f"Step 2: Deleted {deleted_aliases} orphaned alias records")
+        # IMPORTANT: Wait for all async operations to complete
+        print("Waiting 5 seconds for all journal operations to complete...")
+        time.sleep(5)
+        
+        # Step 1: Get company name pattern for alias matching
+        company_name_pattern = data['name'].lower().replace(' ', '-').replace('.', '-')
+        print(f"Looking for aliases matching pattern: {company_name_pattern}")
+        
+        # Step 2: Nuclear option - find and delete ALL aliases matching company name
+        deleted_aliases = nuclear_delete_company_aliases(models, db, uid, password, company_id, company_name_pattern)
+        print(f"Step 1: Deleted {deleted_aliases} alias records using nuclear approach")
+        
+        # Step 3: Verify and count remaining aliases
+        remaining_aliases = verify_no_aliases_remain(models, db, uid, password, company_id)
+        if remaining_aliases > 0:
+            print(f"WARNING: {remaining_aliases} aliases still remain on journals")
+            # Try one more aggressive cleanup
+            print("Attempting final forced cleanup...")
+            time.sleep(2)
+            force_cleanup = force_remove_journal_aliases(models, db, uid, password, company_id)
+            print(f"Force cleanup removed {force_cleanup} additional aliases")
+            remaining_aliases = verify_no_aliases_remain(models, db, uid, password, company_id)
+        
+        # Count aliases AFTER cleanup
+        total_aliases_after = count_total_aliases(models, db, uid, password)
+        print(f"Total aliases in database AFTER cleanup: {total_aliases_after}")
+        print(f"Net aliases removed from database: {total_aliases_before - total_aliases_after}")
+        
+        if remaining_aliases == 0:
+            print("✓ Verified: No aliases remain for this company")
         
         print("="*70)
-        print("Alias cleanup complete - no email aliases will exist for this company")
+        print(f"Alias cleanup complete")
         print("="*70 + "\n")
 
         # Get created company information using only safe/available fields
@@ -262,9 +288,12 @@ def main(data):
         else:
             response['journal_warning'] = journals_result['error']
         
-        # Add alias cleanup info
-        response['aliases_disabled'] = True
+        # Add alias cleanup info with detailed counts
         response['aliases_deleted'] = deleted_aliases
+        response['aliases_remaining_on_journals'] = remaining_aliases
+        response['total_aliases_before_cleanup'] = total_aliases_before
+        response['total_aliases_after_cleanup'] = total_aliases_after
+        response['net_aliases_removed'] = total_aliases_before - total_aliases_after
         
         # Add currency warning if exists
         if currency_warning:
@@ -306,69 +335,254 @@ def main(data):
             'error': f'Unexpected error: {str(e)}'
         }
 
-def delete_company_alias_records(models, db, uid, password, company_id, company_name):
+def count_total_aliases(models, db, uid, password):
+    """Count total number of aliases in the entire database"""
+    try:
+        total = models.execute_kw(
+            db, uid, password,
+            'mail.alias', 'search_count',
+            [[]]
+        )
+        return total
+    except Exception as e:
+        print(f"Could not count aliases: {str(e)}")
+        return -1
+
+def nuclear_delete_company_aliases(models, db, uid, password, company_id, company_name_pattern):
     """
-    Delete alias records from mail.alias table that were auto-created for this company's journals.
-    This is the nuclear option that removes aliases at the database level.
+    Nuclear option: Find and delete ALL aliases matching the company name pattern
+    This bypasses journal linking and goes straight for the alias records
     """
     deleted_count = 0
     
     try:
-        # Search for aliases related to account.journal model
-        journal_aliases = models.execute_kw(
+        print(f"  Searching for aliases matching pattern: *{company_name_pattern}*")
+        
+        # Search for ALL aliases (we'll filter by name pattern)
+        all_alias_ids = models.execute_kw(
             db, uid, password,
             'mail.alias', 'search',
-            [[('alias_model_id.model', '=', 'account.journal')]]
+            [[]]
         )
         
-        if not journal_aliases:
-            print("  No journal aliases found in mail.alias table")
+        if not all_alias_ids:
+            print("  No aliases found in database")
             return 0
         
-        print(f"  Found {len(journal_aliases)} journal-related aliases to check")
+        print(f"  Scanning {len(all_alias_ids)} total aliases...")
         
-        # Get all journals for this company to match against
-        company_journals = models.execute_kw(
-            db, uid, password,
-            'account.journal', 'search',
-            [[('company_id', '=', company_id)]]
-        )
-        
-        # Check each alias and delete if it belongs to this company's journals
-        for alias_id in journal_aliases:
+        # Check each alias and delete if it matches our company
+        for alias_id in all_alias_ids:
             try:
                 alias = models.execute_kw(
                     db, uid, password,
                     'mail.alias', 'read',
-                    [alias_id], {'fields': ['alias_name', 'alias_force_thread_id']}
+                    [alias_id], 
+                    {'fields': ['alias_name', 'alias_model_id', 'alias_force_thread_id']}
                 )[0]
                 
-                alias_name = alias.get('alias_name', '')
-                journal_id = alias.get('alias_force_thread_id')
+                alias_name = alias.get('alias_name', '').lower()
                 
-                # Check if this alias belongs to one of this company's journals
-                # Either by journal_id match or by alias name pattern
-                should_delete = False
+                # Check if this alias matches our company name pattern
+                if company_name_pattern in alias_name:
+                    print(f"    Found matching alias: {alias['alias_name']}")
+                    
+                    # First, try to unlink it from any journal
+                    thread_id = alias.get('alias_force_thread_id')
+                    if thread_id:
+                        try:
+                            models.execute_kw(
+                                db, uid, password,
+                                'account.journal', 'write',
+                                [[thread_id], {'alias_id': False}]
+                            )
+                            print(f"      Unlinked from journal {thread_id}")
+                            time.sleep(0.5)  # Brief pause
+                        except:
+                            pass
+                    
+                    # Now try to delete the alias
+                    try:
+                        models.execute_kw(
+                            db, uid, password,
+                            'mail.alias', 'unlink',
+                            [[alias_id]]
+                        )
+                        print(f"      ✓ Deleted: {alias['alias_name']}")
+                        deleted_count += 1
+                    except Exception as del_error:
+                        print(f"      ✗ Could not delete: {str(del_error)}")
+                        
+            except Exception as read_error:
+                continue
+        
+        return deleted_count
+        
+    except Exception as e:
+        print(f"  Error in nuclear delete: {str(e)}")
+        return deleted_count
+
+def force_remove_journal_aliases(models, db, uid, password, company_id):
+    """
+    Force remove aliases by directly setting alias_id to False on all company journals
+    then attempting to delete any orphaned aliases
+    """
+    removed_count = 0
+    
+    try:
+        # Get all journals with aliases for this company
+        journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search_read',
+            [[('company_id', '=', company_id)]],
+            {'fields': ['id', 'name', 'alias_id']}
+        )
+        
+        alias_ids_to_delete = []
+        
+        for journal in journals:
+            if journal.get('alias_id'):
+                alias_id = journal['alias_id'][0] if isinstance(journal['alias_id'], list) else journal['alias_id']
+                alias_ids_to_delete.append(alias_id)
                 
-                if journal_id and journal_id in company_journals:
-                    should_delete = True
-                    print(f"    Deleting alias for journal {journal_id}: {alias_name}")
-                elif alias_name and company_name.lower().replace(' ', '-') in alias_name.lower():
-                    should_delete = True
-                    print(f"    Deleting alias matching company name: {alias_name}")
+                # Force set to False
+                try:
+                    models.execute_kw(
+                        db, uid, password,
+                        'account.journal', 'write',
+                        [[journal['id']], {'alias_id': False}]
+                    )
+                except:
+                    pass
+        
+        # Wait for changes to propagate
+        time.sleep(1)
+        
+        # Try to delete collected aliases
+        for alias_id in alias_ids_to_delete:
+            try:
+                models.execute_kw(
+                    db, uid, password,
+                    'mail.alias', 'unlink',
+                    [[alias_id]]
+                )
+                removed_count += 1
+            except:
+                pass
+        
+        return removed_count
+        
+    except Exception as e:
+        print(f"Error in force remove: {str(e)}")
+        return removed_count
+
+def verify_no_aliases_remain(models, db, uid, password, company_id):
+    """
+    Verify that no aliases remain for this company's journals
+    Returns the count of remaining aliases
+    """
+    try:
+        # Get all journals for this company
+        company_journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search_read',
+            [[('company_id', '=', company_id)]],
+            {'fields': ['id', 'alias_id']}
+        )
+        
+        remaining_count = 0
+        for journal in company_journals:
+            if journal.get('alias_id'):
+                remaining_count += 1
+        
+        return remaining_count
+        
+    except Exception as e:
+        print(f"  Could not verify aliases: {str(e)}")
+        return -1
+
+def delete_company_alias_records(models, db, uid, password, company_id, company_name):
+    """
+    Delete alias records from mail.alias table that were auto-created for this company's journals.
+    CRITICAL: Must unlink from journals FIRST, then delete the alias records.
+    """
+    deleted_count = 0
+    
+    try:
+        # STEP 1: Get all journals for this company
+        company_journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search_read',
+            [[('company_id', '=', company_id)]],
+            {'fields': ['id', 'name', 'alias_id']}
+        )
+        
+        if not company_journals:
+            print("  No journals found for this company")
+            return 0
+        
+        print(f"  Found {len(company_journals)} journals for company {company_id}")
+        
+        alias_ids_to_delete = []
+        
+        # STEP 2: Collect alias IDs and unlink from journals
+        for journal in company_journals:
+            if journal.get('alias_id'):
+                alias_id = journal['alias_id'][0] if isinstance(journal['alias_id'], list) else journal['alias_id']
+                alias_ids_to_delete.append(alias_id)
                 
-                if should_delete:
+                try:
+                    # Unlink the alias from the journal
+                    models.execute_kw(
+                        db, uid, password,
+                        'account.journal', 'write',
+                        [[journal['id']], {'alias_id': False}]
+                    )
+                    print(f"    Unlinked alias {alias_id} from journal: {journal['name']}")
+                except Exception as e:
+                    print(f"    Could not unlink alias from journal {journal['name']}: {str(e)}")
+        
+        # STEP 3: Wait a moment for unlinking to propagate
+        if alias_ids_to_delete:
+            time.sleep(2)
+        
+        # STEP 4: Now delete the unlinked alias records
+        if alias_ids_to_delete:
+            print(f"\n  Deleting {len(alias_ids_to_delete)} orphaned alias records...")
+            
+            for alias_id in alias_ids_to_delete:
+                try:
+                    # Get alias name for logging
+                    alias_info = models.execute_kw(
+                        db, uid, password,
+                        'mail.alias', 'read',
+                        [alias_id], {'fields': ['alias_name']}
+                    )
+                    alias_name = alias_info[0].get('alias_name', 'unknown') if alias_info else 'unknown'
+                    
+                    # Delete the alias record
                     models.execute_kw(
                         db, uid, password,
                         'mail.alias', 'unlink',
                         [[alias_id]]
                     )
+                    print(f"    ✓ Deleted alias: {alias_name} (ID: {alias_id})")
                     deleted_count += 1
                     
-            except Exception as alias_error:
-                # If we can't delete it, it might already be gone or protected
-                print(f"    Could not process/delete alias {alias_id}: {str(alias_error)}")
-                continue
+                except Exception as alias_error:
+                    print(f"    ✗ Could not delete alias {alias_id}: {str(alias_error)}")
+                    # If deletion fails, try to get more info
+                    try:
+                        alias_details = models.execute_kw(
+                            db, uid, password,
+                            'mail.alias', 'read',
+                            [alias_id], {'fields': ['alias_name', 'alias_model_id', 'alias_force_thread_id']}
+                        )
+                        print(f"      Alias details: {alias_details}")
+                    except:
+                        pass
+        else:
+            print("  No aliases to delete")
         
         return deleted_count
         
