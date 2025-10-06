@@ -22,10 +22,13 @@ N8N_WEBHOOK_URL = "https://kyrasteldeveloper.app.n8n.cloud/webhook/financial-upl
 
 REQUIRED_FIELDS = {
     "tax_information": {
-        "vat_period_category": ["category_a", "category_b", "category_c", "not_applicable"],
+        "vat_period_category": ["Not applicable",
+            "Category A (Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec)",
+            "Category B (Feb-Apr, May-Jul, Aug-Oct, Nov-Jan)",
+            "Category C (Mar-May, Jun-Aug, Sep-Nov, Dec-Feb)"],
         "vat_rates": ["19", "9", "5", "mixed"]
     },
-    "payroll_information": {
+    "payroll_information": {    
         "num_employees": "integer",
         "payroll_frequency": ["monthly", "bi_weekly", "weekly", "no_employees"],
         "uses_ghs": "boolean",
