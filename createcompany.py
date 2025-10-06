@@ -47,24 +47,21 @@ def main(data):
     data['country_code'] = country_code
     data['currency_code'] = currency_code
     
-    # Handle VAT number - remove CY prefix if present (Cyprus is always the country)
-    # Odoo expects VAT without country prefix since country is set separately
-   
-    # Handle VAT number - remove CY prefix if present (Cyprus is always the country)
-# Odoo expects VAT without country prefix since country is set separately
-# IMPORTANT: If no VAT provided, use "/" to explicitly indicate no VAT
+    # ==================== FIX STARTS HERE ====================
+    # Handle VAT number: Normalize it, and if it's empty, set it to '/'
+    vat_input = data.get('vat', '').strip().upper()
 
-    vat_value = data.get('vat')
-    if vat_value and vat_value.strip():  # Check if VAT exists and is not empty/whitespace
-        vat = vat_value.strip().upper()
-        if vat.startswith('CY'):
-            vat = vat[2:]  # Remove CY prefix
-            print(f"Normalized VAT: removed 'CY' prefix, using: {vat}")
-        data['vat'] = vat
+    if vat_input:
+        # If VAT is provided, remove the 'CY' prefix as Odoo handles it via country_id
+        if vat_input.startswith('CY'):
+            vat_input = vat_input[2:]
+            print(f"Normalized VAT: removed 'CY' prefix, using: {vat_input}")
+        data['vat'] = vat_input
     else:
-        # Explicitly set "/" to indicate no VAT number
+        # If no VAT is provided or it's just whitespace, set it to '/'
+        print("No valid VAT provided, setting VAT field to '/' for Odoo.")
         data['vat'] = '/'
-        print("No VAT provided, using '/' to indicate no VAT")
+    # ===================== FIX ENDS HERE =====================
 
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -121,11 +118,10 @@ def main(data):
         
         # Only add fields that exist and have values
         for field, value in field_mapping.items():
+            # Note: The check 'if value' works because both a valid VAT string
+            # and the '/' character will evaluate to True.
             if value and field in available_fields:
                 company_data[field] = value
-
-        if 'vat' in available_fields:
-            company_data['vat'] = data['vat']
 
         # Handle country (always use Cyprus)
         if 'country_id' in available_fields:
