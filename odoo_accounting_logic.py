@@ -24,17 +24,20 @@ def bill_common_accounts_logic():
 1. **7602 - Consultancy fees** - Business consulting, advisory services (NOT legal or accounting)
 2. **7600 - Legal fees** - Law firm bills, legal services ONLY
 3. **7601 - Audit and accountancy fees** - Accountant fees, bookkeeping, tax preparation ONLY
-4. **7100 - Rent** - Office/warehouse rent (NOT equipment rental)
-5. **7190 - Utilities** - Mixed utility bills, combined services
-6. **7200 - Electricity** - Pure electricity bills ONLY
-7. **7201 - Gas** - Pure gas bills ONLY (NOT vehicle fuel)
-8. **7508 - Computer software** - Software subscriptions, SaaS (NOT hardware or internet)
-9. **7503 - Internet** - ISP bills, broadband (NOT software or phones)
-10. **7502 - Telephone** - Phone bills, mobile plans (NOT internet)
-11. **7400 - Traveling** - Transport tickets, business travel (NOT hotels or meals)
-12. **7800 - Repairs and renewals** - Equipment repairs, maintenance (NOT purchases)
-13. **5100 - Carriage** - Shipping, freight, courier services (NOT travel)
-14. **8200 - Other non-operating income or expenses** - Government fees, misc expenses
+4. **7605 - Portfolio management fees** - Investment portfolio management, fund management services
+5. **7100 - Rent** - General property rent (warehouses, retail spaces)
+6. **7101 - Office space** - Office rent, coworking spaces, office facilities, serviced offices
+7. **7190 - Utilities** - Mixed utility bills, combined services
+8. **7200 - Electricity** - Pure electricity bills ONLY
+9. **7201 - Gas** - Pure gas bills ONLY (NOT vehicle fuel)
+10. **7508 - Computer software** - Software subscriptions, SaaS (NOT hardware or internet)
+11. **7503 - Internet** - ISP bills, broadband (NOT software or phones)
+12. **7502 - Telephone** - Phone bills, mobile plans (NOT internet)
+13. **7400 - Traveling** - Transport tickets, business travel (NOT hotels or meals)
+14. **7800 - Repairs and renewals** - Equipment repairs, maintenance (NOT purchases)
+15. **7906 - Non-Recoverable VAT on expenses** - VAT paid by non-VAT registered companies (expense, not recoverable)
+16. **5100 - Carriage** - Shipping, freight, courier services (NOT travel)
+17. **8200 - Other non-operating income or expenses** - Government fees, misc expenses
 
 **STANDARD BILL JOURNAL ENTRY:**
 Dr. [Common Expense Account]    €X,XXX

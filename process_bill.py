@@ -79,6 +79,118 @@ Ask yourself: "Is this cost directly attributable to acquiring or developing a s
 - NO → Normal expense account
 """
 
+def detect_construction_property_reverse_charge(vendor_data, line_items):
+    """
+    Enhanced detection for Cyprus construction/property reverse charge (Article 11B)
+    
+    Returns:
+        tuple: (is_reverse_charge, reason, confidence_level)
+    """
+    vendor_name = vendor_data.get("name", "").lower()
+    vendor_country = vendor_data.get("country_code", "")
+    description = vendor_data.get("description", "").lower()
+    all_line_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
+    
+    # Combined text for searching
+    all_text = f"{vendor_name} {description} {all_line_descriptions}"
+    
+    # Explicit reverse charge indicators (Article 11B references)
+    explicit_reverse_charge = [
+        "άρθρο 11β", "article 11b", "αρθρο 11β",
+        "reverse charge", "αντίστροφη επιβάρυνση",
+        "δεν χρεωνεται φπα", "δεν χρεώνεται φπα",
+        "δεν χρεωνεται ΦΠΑ", "συμφωνα με το αρθρο 11β"
+    ]
+    
+    # Construction/property professional vendor types
+    construction_property_vendors = [
+        # Direct construction
+        "construction", "builder", "contractor", "building", "κατασκευ",
+        
+        # Architects
+        "architect", "architectural", "αρχιτεκτον", "architecture",
+        
+        # Engineers (all types)
+        "engineer", "engineering", "μηχανικ", "mechenergy",
+        "civil engineer", "πολιτικός μηχανικός",
+        "mechanical engineer", "μηχανολόγος",
+        "electrical engineer", "ηλεκτρολόγος",
+        
+        # Surveyors
+        "surveyor", "topographer", "τοπογραφ", "survey",
+        
+        # Design professionals
+        "design studio", "σχεδιαστικό", "design consultant",
+        
+        # Planning
+        "planning consultant", "πολεοδομ", "town planning",
+        
+        # Property services
+        "property management", "real estate", "ακινητ",
+        "demolition", "installation", "κατεδαφ"
+    ]
+    
+    # Construction/property-related services
+    construction_property_services = [
+        # Design & planning
+        "architectural design", "preliminary design", "σχεδιασμός",
+        "feasibility study", "μελέτη σκοπιμότητας",
+        "planning permit", "planning application", "άδεια δόμησης",
+        "building permit", "οικοδομική άδεια",
+        
+        # Engineering services
+        "mechanical study", "μηχανολογική μελέτη", "μηχανολογικ",
+        "electrical study", "ηλεκτρολογική μελέτη", "ηλεκτρολογικ",
+        "structural study", "στατική μελέτη", "στατικ",
+        
+        # Surveying
+        "topographical work", "τοπογραφικές εργασίες", "τοπογραφικ",
+        "land survey", "boundary survey", "αποτύπωση",
+        
+        # Construction work
+        "construction services", "building work", "κατασκευαστικ",
+        "installation services", "εγκατάσταση",
+        "repair services", "επισκευ",
+        
+        # Property development
+        "property development", "building project", "ανάπτυξη ακινητ"
+    ]
+    
+    # Property project identifiers
+    property_project_indicators = [
+        "houses", "κατοικίες", "κατοικι",
+        "residential development", "οικιστικ",
+        "plot", "οικόπεδο", "οικοπεδ",
+        "property", "ακινητ",
+        "building", "κτίριο", "κτιρι",
+        "peyia", "pegeia", "πέγεια", "πεγεια",
+        "paphos", "pafos", "πάφος", "παφος",
+        "limassol", "λεμεσός", "λεμεσος"
+    ]
+    
+    # Level 1: Explicit Article 11B reference (highest confidence)
+    if any(keyword in all_text for keyword in explicit_reverse_charge):
+        return True, "Explicit Article 11B reference in document", "high"
+    
+    # Level 2: Vendor type + Service type (high confidence)
+    is_construction_vendor = any(keyword in vendor_name for keyword in construction_property_vendors)
+    has_construction_service = any(keyword in all_text for keyword in construction_property_services)
+    
+    if is_construction_vendor and has_construction_service:
+        return True, "Construction/property professional providing related services", "high"
+    
+    # Level 3: Service type + Property project (medium confidence)
+    has_property_project = any(keyword in all_text for keyword in property_project_indicators)
+    
+    if has_construction_service and has_property_project:
+        return True, "Construction services for specific property project", "medium"
+    
+    # Level 4: Vendor type + Property project (medium-low confidence)
+    if is_construction_vendor and has_property_project:
+        return True, "Construction professional working on property project", "medium"
+    
+    return False, "", "low"
+
 def get_bill_processing_prompt(company_name):
     """Create comprehensive bill processing prompt that combines splitting and extraction"""
     
@@ -162,19 +274,38 @@ Each line item must be assigned to the most appropriate expense account based on
 - Example: Engineering firm providing "Property mechanical study" (0060) AND "General consulting" (7602)
 - Assign the most specific account code for each line item
 
-**CYPRUS VAT REVERSE CHARGE DETECTION (COMPREHENSIVE):**
+**CYPRUS VAT REVERSE CHARGE DETECTION (COMPREHENSIVE & ENHANCED):**
 
 The reverse charge mechanism applies when the vendor/supplier falls into ANY of the following categories:
 
-**CATEGORY 1: CONSTRUCTION & PROPERTY SERVICES**
+**CATEGORY 1: CONSTRUCTION & PROPERTY SERVICES (ENHANCED)**
 Look for these indicators:
-- Vendor name contains: "Construction", "Building", "Property Management", "Real Estate", "Contractor", "Builder"
-- Services described as: "Construction services", "Building work", "Property management", "Repair services", "Maintenance services", "Demolition", "Installation services"
-- Document mentions: "Reverse charge applicable", "Customer to account for VAT"
+
+**Vendor Types:**
+- Construction companies: "Construction", "Building", "Contractor", "Builder"
+- Architects: "Architect", "Architecture", "Architectural", "Design Studio" (when doing property work)
+- Engineers: "Engineer", "Engineering", "Mechanical Engineer", "Electrical Engineer", "Civil Engineer", "MechEnergy"
+- Surveyors: "Surveyor", "Topographer", "Survey", "Topographical", "Τοπογραφ", "ΤΟΠΟΓΡΑΦΟΙ ΜΗΧΑΝΙΚΟΙ"
+- Design professionals: "Design Studio", "Planning Consultant"
+- Property services: "Property Management", "Real Estate"
+
+**Services (English & Greek):**
+- Architectural: "architectural design", "preliminary design", "feasibility study", "σχεδιασμός"
+- Engineering studies: "mechanical study", "μηχανολογική μελέτη", "electrical study", "ηλεκτρολογική μελέτη", "structural study"
+- Surveying: "topographical work", "τοπογραφικές εργασίες", "land survey", "boundary survey"
+- Planning: "planning permit", "planning application", "άδεια δόμησης", "building permit"
+- Construction: "construction services", "building work", "installation services", "repair services"
+
+**Explicit Indicators:**
+- Document mentions: "Reverse charge applicable", "Article 11B", "άρθρο 11Β", "δεν χρεωνεται ΦΠΑ", "συμφωνα με το αρθρο 11Β"
+
+**Project Identifiers:**
+- Property names: "PEYIA HOUSES", "ΔΥΟ ΚΑΤΟΙΚΕΣ ΣΤΗΝ ΠΕΓΕΙΑ", "2 houses in Pegeia"
+- Location references: building addresses, plot numbers, property projects
 
 **CATEGORY 2: FOREIGN/EU SERVICE PROVIDERS**
 Look for these indicators:
-- Vendor located outside Cyprus (check address, VAT number format)
+- Vendor located outside Cyprus (check address, VAT number format, country code != CY)
 - EU VAT number format (non-Cyprus)
 - Services provided from abroad: Legal, Accounting, Consulting, IT services, Marketing, Design, Professional services, Advisory services, Royalties, License fees
 - Cross-border B2B services under general reverse charge rule
@@ -245,7 +376,7 @@ Look for these indicators:
   - Input VAT (2202) - Debit VAT amount (reclaimable)
   - Output VAT (2201) - Credit VAT amount (owed to authorities)
 - Set requires_reverse_charge: true
-- Set vat_treatment to appropriate category (e.g., "Construction Reverse Charge", "Foreign Services Reverse Charge", "Electronics Reverse Charge")
+- Set vat_treatment to appropriate category (e.g., "Construction/Property Services Reverse Charge", "Foreign Services Reverse Charge")
 
 **MIXED LINE ITEMS HANDLING:**
 When line items map to different expense accounts:
@@ -425,7 +556,8 @@ Each additional entry in the additional_entries array must have this exact struc
 11. **LINE ITEM ACCOUNT ASSIGNMENT: MANDATORY for every line item - analyze each service individually**
 12. **PROPERTY CAPITALIZATION: Check EVERY bill for property development costs that should go to 0060**
 13. **MIXED BILLS: When line items have different account codes, set debit_account="MIXED"**
-14. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively before determining VAT treatment**
+14. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively, especially Category 1 (construction/property professionals)**
+15. **GREEK LANGUAGE: Detect Greek keywords for construction services (μηχανολογική, τοπογραφικ, αρχιτεκτον, etc.)**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -532,7 +664,7 @@ def validate_bill_data(bills):
             "site investigation", "geotechnical", "environmental assessment",
             "planning permission", "building permit", "zoning",
             "property acquisition", "land purchase", "μηχανολογική μελέτη",
-            "mechanical study", "electrical study"
+            "mechanical study", "electrical study", "τοπογραφικ"
         ]
         
         has_property_keywords = any(
@@ -570,78 +702,84 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # COMPREHENSIVE REVERSE CHARGE DETECTION
+        # ENHANCED COMPREHENSIVE REVERSE CHARGE DETECTION
         accounting_assignment = bill.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
         vat_treatment = accounting_assignment.get("vat_treatment", "")
         
-        # Detect if vendor falls into any reverse charge category
-        vendor_name = vendor_data.get("name", "").lower()
-        vendor_country = vendor_data.get("country_code", "")
-        
-        # All line item descriptions combined for analysis
-        all_descriptions = " ".join([item.get("description", "").lower() for item in line_items])
-        
-        # Check if vendor qualifies for reverse charge
+        # Use enhanced detection function for Category 1
         is_reverse_charge_vendor = False
         detected_category = ""
+        confidence_level = "low"
         
-        # Category 1: Check construction/property
-        construction_keywords = ["construction", "building", "property management", "real estate", 
-                                "contractor", "builder", "repair services", "maintenance services", 
-                                "demolition", "installation services"]
-        if any(keyword in vendor_name or keyword in description or keyword in all_descriptions 
-               for keyword in construction_keywords):
+        # Category 1: Enhanced Construction/Property Services Detection
+        is_construction_rc, construction_reason, construction_confidence = detect_construction_property_reverse_charge(
+            vendor_data, line_items
+        )
+        
+        if is_construction_rc:
             is_reverse_charge_vendor = True
-            detected_category = "Construction/Property Reverse Charge"
+            detected_category = f"Construction/Property Services Reverse Charge ({construction_reason})"
+            confidence_level = construction_confidence
         
         # Category 2: Check foreign services
-        elif vendor_country and vendor_country != "CY":
+        elif vendor_data.get("country_code", "") and vendor_data.get("country_code", "") != "CY":
             is_reverse_charge_vendor = True
             detected_category = "Foreign Services Reverse Charge"
+            confidence_level = "high"
         
         # Category 3: Check gas/electricity
-        elif any(keyword in vendor_name or keyword in description 
+        elif any(keyword in vendor_data.get("name", "").lower() or keyword in description 
                 for keyword in ["energy", "power", "gas company", "electricity authority", 
                                "natural gas", "electric power"]):
             is_reverse_charge_vendor = True
             detected_category = "Gas/Electricity Reverse Charge"
+            confidence_level = "medium"
         
         # Category 4: Check scrap metal
-        elif any(keyword in vendor_name or keyword in all_descriptions 
+        elif any(keyword in vendor_data.get("name", "").lower() or 
+                keyword in " ".join([item.get("description", "").lower() for item in line_items])
                 for keyword in ["scrap", "recycling", "waste management", "metal recycling", 
                                "scrap metal", "waste materials"]):
             is_reverse_charge_vendor = True
             detected_category = "Scrap Metal Reverse Charge"
+            confidence_level = "medium"
         
         # Category 5: Check electronics
-        elif any(keyword in vendor_name or keyword in all_descriptions 
+        elif any(keyword in vendor_data.get("name", "").lower() or 
+                keyword in " ".join([item.get("description", "").lower() for item in line_items])
                 for keyword in ["mobile phone", "smartphone", "tablet", "laptop", "microprocessor", 
                                "cpu", "integrated circuit", "gaming console", "playstation", "xbox"]):
             is_reverse_charge_vendor = True
             detected_category = "Electronics Reverse Charge"
+            confidence_level = "medium"
         
         # Category 6: Check precious metals
-        elif any(keyword in vendor_name or keyword in all_descriptions 
+        elif any(keyword in vendor_data.get("name", "").lower() or 
+                keyword in " ".join([item.get("description", "").lower() for item in line_items])
                 for keyword in ["precious metals", "gold", "silver", "platinum", "bullion", 
                                "gold bars", "silver ingots"]):
             is_reverse_charge_vendor = True
             detected_category = "Precious Metals Reverse Charge"
+            confidence_level = "medium"
         
         # Category 7: Check EU telecom
-        elif vendor_country in ["GR", "DE", "FR", "IT", "ES"] and \
-             any(keyword in vendor_name or keyword in description 
+        elif vendor_data.get("country_code", "") in ["GR", "DE", "FR", "IT", "ES"] and \
+             any(keyword in vendor_data.get("name", "").lower() or keyword in description 
                  for keyword in ["telecommunications", "telecom services"]):
             is_reverse_charge_vendor = True
             detected_category = "Telecommunications Reverse Charge"
+            confidence_level = "medium"
         
         # Category 8: Check property transfer
-        elif any(keyword in description or keyword in all_descriptions 
+        elif any(keyword in description or 
+                keyword in " ".join([item.get("description", "").lower() for item in line_items])
                 for keyword in ["debt restructuring", "foreclosure", "debt-for-asset", 
                                "property transfer", "bank repossession"]):
             is_reverse_charge_vendor = True
             detected_category = "Property Transfer Reverse Charge"
+            confidence_level = "medium"
         
         # Validate VAT handling based on detection
         if tax_amount > 0:
@@ -649,12 +787,37 @@ def validate_bill_data(bills):
                 # Should have BOTH Input and Output VAT entries
                 if not requires_reverse_charge:
                     bill_validation["issues"].append(
-                        f"Vendor qualifies for reverse charge ({detected_category}) but requires_reverse_charge is false"
+                        f"Vendor qualifies for reverse charge ({detected_category}, confidence: {confidence_level}) "
+                        f"but requires_reverse_charge is false"
                     )
                 
                 if not additional_entries:
                     bill_validation["issues"].append(
                         f"Vendor qualifies for reverse charge ({detected_category}) but no additional_entries created"
+                    )
+                else:
+                    input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
+                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                    
+                    if not input_vat_entries:
+                        bill_validation["issues"].append(
+                            f"Reverse charge vendor ({detected_category}) missing Input VAT (2202) entry"
+                        )
+                    
+                    if not output_vat_entries:
+                        bill_validation["issues"].append(
+                            f"Reverse charge vendor ({detected_category}) missing Output VAT (2201) entry"
+                        )
+            else:
+                # Normal domestic vendor - should have only Input VAT entry
+                if requires_reverse_charge:
+                    bill_validation["warnings"].append(
+                        "Vendor marked as reverse charge but doesn't match any reverse charge category"
+                    )
+                
+                if not additional_entries:
+                    bill_validation["issues"].append(
+                        "Tax amount detected for normal vendor but no additional_entries created"
                     )
                 else:
                     input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
@@ -728,6 +891,7 @@ Your core behavior is to think and act like a professional accountant who unders
 - VAT regulations including ALL reverse charge categories
 - Granular expense categorization
 - IAS 40 Investment Property accounting and pre-construction cost capitalization
+- Cyprus Article 11B reverse charge mechanism for construction/property services
 
 **CRITICAL PROPERTY CAPITALIZATION EXPERTISE:**
 You must identify when vendor bills contain costs that should be CAPITALIZED to 0060 (Freehold property) under IAS 40, not expensed. Always check:
@@ -743,6 +907,25 @@ If YES to all three → Use account 0060 (Freehold property), not expense accoun
 - Site investigations and geotechnical studies → 0060
 - Planning permission applications → 0060
 - Legal fees for property purchase → 0060
+
+**CRITICAL REVERSE CHARGE EXPERTISE (Category 1 - Construction/Property):**
+You must identify Cyprus domestic vendors providing construction/property services under Article 11B:
+
+**Vendor Types (English & Greek):**
+- Architects: "architect", "architecture", "αρχιτεκτον"
+- Engineers: "engineer", "μηχανικ", "MechEnergy", "mechanical engineer", "electrical engineer"
+- Surveyors: "surveyor", "topographer", "τοπογραφ", "ΤΟΠΟΓΡΑΦΟΙ ΜΗΧΑΝΙΚΟΙ"
+- Design firms: "design studio" (when doing property work)
+
+**Service Keywords (English & Greek):**
+- "mechanical study", "μηχανολογική μελέτη"
+- "topographical work", "τοπογραφικές εργασίες"
+- "architectural design", "preliminary design"
+- "planning permit", "planning application"
+
+**Explicit Indicators:**
+- "Article 11B", "άρθρο 11Β"
+- "δεν χρεωνεται ΦΠΑ", "συμφωνα με το αρθρο 11Β"
 
 **BILL ACCOUNTING EXPERTISE:**
 {bill_system_logic}
@@ -773,7 +956,7 @@ LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 COMPREHENSIVE CYPRUS VAT REVERSE CHARGE DETECTION:
 You must check ALL 8 categories for reverse charge eligibility:
 
-1. CONSTRUCTION & PROPERTY: Construction services, building work, property management, real estate, repairs, maintenance, demolition, installation
+1. CONSTRUCTION & PROPERTY: Construction/property professionals (architects, engineers, surveyors) providing services for specific projects - CHECK BOTH VENDOR TYPE AND SERVICE TYPE
 2. FOREIGN/EU SERVICES: Any services from vendors located outside Cyprus (check country code, VAT number, address)
 3. GAS & ELECTRICITY: Gas and electricity supplies to registered business traders
 4. SCRAP METAL & WASTE: Scrap metal dealers, waste materials, recycling companies
@@ -785,7 +968,7 @@ You must check ALL 8 categories for reverse charge eligibility:
 CRITICAL REVERSE CHARGE RULES:
 • If vendor matches ANY of the 8 categories AND has VAT:
   - Set requires_reverse_charge: true
-  - Set vat_treatment to specific category (e.g., "Electronics Reverse Charge")
+  - Set vat_treatment to specific category (e.g., "Construction/Property Services Reverse Charge")
   - Create BOTH Input VAT (2202) AND Output VAT (2201) entries
   - Main transaction amount should be NET only
   - Credit account 2100 with NET amount only
@@ -798,7 +981,7 @@ CRITICAL REVERSE CHARGE RULES:
   - Credit account 2100 with GROSS amount
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment. Always check for property capitalization opportunities under IAS 40.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment. Always check for property capitalization opportunities under IAS 40. Pay special attention to Greek language keywords for construction/property services.""",
             messages=[
                 {
                     "role": "user",
@@ -1158,16 +1341,18 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-bill-processing",
-            "version": "5.1",
+            "version": "6.0",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
                 "monetary_calculation",
                 "confidence_scoring",
                 "vendor_bill_processing",
-                "comprehensive_reverse_charge_detection",
+                "enhanced_reverse_charge_detection",
                 "odoo_accounting_integration",
                 "8_category_reverse_charge_support",
+                "enhanced_category1_construction_property_detection",
+                "greek_language_support",
                 "line_level_account_assignment",
                 "mixed_service_bill_handling",
                 "granular_expense_categorization",
@@ -1185,8 +1370,9 @@ def health_check():
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025'),
             "odoo_accounting_logic": "integrated",
-            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories",
-            "accounting_standards": "IAS 40 Investment Property Capitalization"
+            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories with Enhanced Category 1",
+            "accounting_standards": "IAS 40 Investment Property Capitalization",
+            "supported_languages": "English, Greek (Ελληνικά)"
         }
         
     except Exception as e:
@@ -1194,4 +1380,3 @@ def health_check():
             "healthy": False,
             "error": str(e)
         }
-                    

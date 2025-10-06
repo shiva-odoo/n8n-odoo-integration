@@ -51,6 +51,7 @@ def generate_jwt(user_data):
         'company_id': user_data.get('company_id', ''),
         'company_name': user_data['company_name'],
         'email': user_data['email'],
+        'is_vat_registered': user_data.get('is_vat_registered', ''),
         'exp': datetime.utcnow() + timedelta(minutes=JWT_EXPIRY_MINUTES),
         'iat': datetime.utcnow()
     }
@@ -124,6 +125,7 @@ def authenticate_user(username, password):
             'role': user['role'],
             'company_name': user['company_name'],
             'company_id': user.get('company_id', ''),
+            'is_vat_registered': user.get('is_vat_registered', ''),
             'metadata': user.get('metadata', {})
         }
         

@@ -1306,7 +1306,7 @@ def onboard_company():
 @app.route("/api/upload", methods=["POST"])
 @jwt_required
 def upload_files():
-    """Upload files with batch tracking"""
+    """Upload files with batch tracking - NOW CHECKS UPLOAD_READY"""
     try:
         current_user = get_current_user()
         files = request.files.getlist("files")
@@ -1325,8 +1325,15 @@ def upload_files():
             'company_id': current_user.get('company_id', '')
         }
         
-        # Call upload.main which now handles batch creation
+        # Call upload.main which now handles:
+        # 1. Upload ready check (NEW)
+        # 2. Batch creation
+        # 3. n8n forwarding
         result = upload.main(form_data, files)
+        
+        # Handle PROFILE_INCOMPLETE error specifically
+        if result.get("error_code") == "PROFILE_INCOMPLETE":
+            return jsonify(result), 403  # Forbidden - profile incomplete
         
         status_code = 200 if result.get("status") == "success" else 500
         return jsonify(result), status_code
@@ -2383,6 +2390,87 @@ def create_share_capital_endpoint():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# ============================================
+# FINANCIAL PROFILE ROUTES (NEW)
+# ============================================
+
+@app.route("/api/profile/financial", methods=["GET"])
+@jwt_required
+def get_financial_profile():
+    """Get user's financial profile"""
+    try:
+        current_user = get_current_user()
+        username = current_user['username']
+        
+        profile = upload.get_financial_profile(username)
+        
+        return jsonify({
+            "status": "success",
+            "data": profile
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/profile/financial", methods=["POST", "PUT"])
+@jwt_required
+def update_financial_profile():
+    """Update user's financial profile"""
+    try:
+        current_user = get_current_user()
+        username = current_user['username']
+        data = request.json
+        
+        # Validate and update profile
+        result = upload.update_financial_profile(username, data)
+        
+        if result["success"]:
+            return jsonify({
+                "status": "success",
+                "message": "Profile updated successfully",
+                "upload_ready": result["upload_ready"]
+            }), 200
+        else:
+            return jsonify({
+                "status": "error",
+                "error": result["error"],
+                "details": result.get("details", [])
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/profile/upload-ready", methods=["GET"])
+@jwt_required
+def check_upload_ready():
+    """Check if user can upload files"""
+    try:
+        current_user = get_current_user()
+        username = current_user['username']
+        
+        result = upload.check_upload_ready(username)
+        
+        return jsonify({
+            "status": "success",
+            "upload_ready": result["upload_ready"],
+            "missing_fields": result.get("missing_fields", [])
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
 
 # ================================
 # DYNAMO DB TABLE UPDATE ENDPOINTS
