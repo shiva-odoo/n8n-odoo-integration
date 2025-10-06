@@ -124,6 +124,9 @@ def main(data):
             if value and field in available_fields:
                 company_data[field] = value
 
+        if 'vat' in available_fields:
+            company_data['vat'] = data['vat']
+
         # Handle country (always use Cyprus)
         if 'country_id' in available_fields:
             country_id = get_country_id(models, db, uid, password, country_code)
