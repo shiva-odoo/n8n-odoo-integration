@@ -14,22 +14,6 @@ if os.path.exists('.env'):
 def main(data):
     """
     Create company from HTTP request data following Odoo documentation
-    
-    Expected data format (based on your form):
-    {
-        "name": "Company Name",                    # required - Company Name
-        "email": "contact@company.com",           # optional - Email
-        "phone": "+1234567890",                   # optional - Phone
-        "website": "https://website.com",         # optional - Website
-        "vat": "VAT123456",                       # optional - Tax ID
-        "company_registry": "REG123456",          # optional - Company ID (registry number)
-        "street": "123 Main St",                  # optional - Address
-        "city": "City Name",                      # optional - City
-        "zip": "12345",                           # optional - ZIP
-        "state": "State Name",                    # optional - State
-        "country_code": "CY",                     # optional - Country (ISO code), defaults to "CY"
-        "currency_code": "EUR"                    # optional - Currency (ISO code), defaults to "EUR"
-    }
     """
     
     # Validate required fields
@@ -46,17 +30,22 @@ def main(data):
     data['country_code'] = country_code
     data['currency_code'] = currency_code
     
-    # Handle VAT number: Normalize it, and if it's empty, set it to '/'
+    # ==================== FIX STARTS HERE ====================
+    # Handle VAT number: Normalize it, and if it's empty OR a hyphen, set it to '/'
     vat_input = data.get('vat', '').strip().upper()
 
-    if vat_input:
+    # Check if the input is empty OR just a hyphen
+    if vat_input and vat_input != '-':
+        # If VAT is provided and it's not a hyphen, process it
         if vat_input.startswith('CY'):
             vat_input = vat_input[2:]
             print(f"Normalized VAT: removed 'CY' prefix, using: {vat_input}")
         data['vat'] = vat_input
     else:
-        print("No valid VAT provided, setting VAT field to '/' for Odoo.")
+        # If no VAT is provided, it's just whitespace, OR it's a hyphen, set it to '/'
+        print(f"Input VAT was '{data.get('vat')}', setting field to '/' for Odoo.")
         data['vat'] = '/'
+    # ===================== FIX ENDS HERE =====================
 
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -144,12 +133,10 @@ def main(data):
                 company_data['state_id'] = state_id
                 company_data.pop('state', None)
         
-        # ==================== LOGGING ADDED HERE ====================
         # Log the exact payload before sending it to Odoo for creation
         print("\n--- ODOO CREATE PAYLOAD ---")
         print(json.dumps(company_data, indent=2))
         print("---------------------------\n")
-        # ==========================================================
 
         # Create company
         company_id = models.execute_kw(
@@ -166,7 +153,6 @@ def main(data):
 
         print(f"Company created successfully with ID: {company_id}")
 
-        # ... (rest of the function remains the same)
         chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, country_code)
         print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
 
@@ -268,7 +254,6 @@ def main(data):
             'success': False,
             'error': f'Unexpected error: {str(e)}'
         }
-
 # --- All other functions (create_custom_accounts, wait_for_chart_of_accounts, etc.) remain unchanged ---
 # --- Paste them below this line if you are replacing the entire file ---
 
