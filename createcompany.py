@@ -1,6 +1,7 @@
 import xmlrpc.client
 import os
 import time
+import json # Import json for pretty printing
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -39,29 +40,23 @@ def main(data):
         }
     
     # ALWAYS default to Cyprus and EUR - force these values regardless of input
-    # This ensures the company is always created for Cyprus with EUR currency
-    country_code = 'CY'  # Always use Cyprus
-    currency_code = 'EUR'  # Always use Euro
+    country_code = 'CY'
+    currency_code = 'EUR'
     
-    # Update the data object to reflect the forced defaults
     data['country_code'] = country_code
     data['currency_code'] = currency_code
     
-    # ==================== FIX STARTS HERE ====================
     # Handle VAT number: Normalize it, and if it's empty, set it to '/'
     vat_input = data.get('vat', '').strip().upper()
 
     if vat_input:
-        # If VAT is provided, remove the 'CY' prefix as Odoo handles it via country_id
         if vat_input.startswith('CY'):
             vat_input = vat_input[2:]
             print(f"Normalized VAT: removed 'CY' prefix, using: {vat_input}")
         data['vat'] = vat_input
     else:
-        # If no VAT is provided or it's just whitespace, set it to '/'
         print("No valid VAT provided, setting VAT field to '/' for Odoo.")
         data['vat'] = '/'
-    # ===================== FIX ENDS HERE =====================
 
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -118,8 +113,6 @@ def main(data):
         
         # Only add fields that exist and have values
         for field, value in field_mapping.items():
-            # Note: The check 'if value' works because both a valid VAT string
-            # and the '/' character will evaluate to True.
             if value and field in available_fields:
                 company_data[field] = value
 
@@ -149,9 +142,15 @@ def main(data):
             state_id = get_state_id(models, db, uid, password, data['state'], company_data['country_id'])
             if state_id:
                 company_data['state_id'] = state_id
-                # Remove the text state field if we have state_id
                 company_data.pop('state', None)
         
+        # ==================== LOGGING ADDED HERE ====================
+        # Log the exact payload before sending it to Odoo for creation
+        print("\n--- ODOO CREATE PAYLOAD ---")
+        print(json.dumps(company_data, indent=2))
+        print("---------------------------\n")
+        # ==========================================================
+
         # Create company
         company_id = models.execute_kw(
             db, uid, password,
@@ -167,47 +166,40 @@ def main(data):
 
         print(f"Company created successfully with ID: {company_id}")
 
-        # Initiate Chart of Accounts installation (use Cyprus for chart selection)
+        # ... (rest of the function remains the same)
         chart_result = ensure_chart_of_accounts(models, db, uid, password, company_id, country_code)
         print(f"Chart of accounts installation initiated: {chart_result.get('message', 'In progress')}")
 
-        # Wait for Chart of Accounts to be ready before creating journals
         print("Waiting for Chart of Accounts installation to complete...")
         chart_ready = wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_time=120)
         
-        # If the advanced method fails, try the simple fallback
         if not chart_ready['success'] and 'company_id' in str(chart_ready.get('message', '')):
             print("Falling back to simplified chart checking method...")
             chart_ready = wait_for_chart_of_accounts_simple(models, db, uid, password, company_id)
         
         if not chart_ready['success']:
             print(f"Warning: {chart_ready['message']}")
-            # Continue anyway, but note that some journals might not be created
         else:
             print("Chart of Accounts is ready!")
 
-        # Create custom accounts after Chart of Accounts is ready
         custom_accounts_result = create_custom_accounts(models, db, uid, password, company_id)
         if custom_accounts_result['success']:
             print(f"Successfully created {len(custom_accounts_result['accounts'])} custom accounts")
         else:
             print(f"Custom accounts creation issue: {custom_accounts_result.get('error', 'Unknown error')}")
 
-        # Disable all journal aliases for this company (including those created by Chart of Accounts)
         disable_result = disable_all_journal_aliases(models, db, uid, password, company_id)
         if disable_result['success']:
             print(f"Disabled aliases on {disable_result['count']} journals")
         else:
             print(f"Warning: Could not disable journal aliases: {disable_result.get('error')}")
 
-        # Create essential journals after Chart of Accounts is ready
         journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         if journals_result['success']:
             print(f"Successfully created {len(journals_result['journals'])} journals")
         else:
             print(f"Journal creation issue: {journals_result.get('error', 'Unknown error')}")
 
-        # Get created company information using only safe/available fields
         safe_read_fields = [
             'name', 'email', 'phone', 'website', 'vat', 'company_registry',
             'currency_id', 'country_id', 'street', 'city', 'zip'
@@ -220,7 +212,6 @@ def main(data):
             {'fields': read_fields}
         )[0]
         
-        # Prepare response with safe field access
         response = {
             'success': True,
             'company_id': company_id,
@@ -228,50 +219,37 @@ def main(data):
             'message': 'Company created successfully'
         }
         
-        # Add default values info to response (only if defaults were actually applied)
         if data.get('country_code') != country_code:
             response['country_default_applied'] = f'Used default country: {country_code}'
         if data.get('currency_code') != currency_code:
             response['currency_default_applied'] = f'Used default currency: {currency_code}'
         
-        # Add chart of accounts status
         response['chart_of_accounts_status'] = chart_ready['message']
         
-        # Add custom accounts status to response
         if custom_accounts_result['success']:
             response['custom_accounts_created'] = custom_accounts_result['accounts']
             response['message'] += f' with {len(custom_accounts_result["accounts"])} custom accounts'
         else:
             response['custom_accounts_warning'] = custom_accounts_result.get('error')
         
-        # Add journal creation status to response
         if journals_result['success']:
             response['journals_created'] = journals_result['journals']
             response['message'] += f' and {len(journals_result["journals"])} essential journals'
         else:
             response['journal_warning'] = journals_result['error']
         
-        # Add currency warning if exists
         if currency_warning:
             response['currency_warning'] = currency_warning
         
-        # Add optional fields to response if they exist
         optional_response_fields = {
-            'email': 'email',
-            'phone': 'phone', 
-            'website': 'website',
-            'vat': 'vat',
-            'company_registry': 'company_registry',
-            'street': 'street',
-            'city': 'city',
-            'zip': 'zip'
+            'email': 'email', 'phone': 'phone', 'website': 'website', 'vat': 'vat',
+            'company_registry': 'company_registry', 'street': 'street', 'city': 'city', 'zip': 'zip'
         }
         
         for response_key, odoo_field in optional_response_fields.items():
             if odoo_field in company_info:
                 response[response_key] = company_info.get(odoo_field)
         
-        # Handle relational fields safely
         if 'currency_id' in company_info and company_info['currency_id']:
             response['currency'] = company_info['currency_id'][1] if isinstance(company_info['currency_id'], list) else 'N/A'
         
@@ -290,6 +268,9 @@ def main(data):
             'success': False,
             'error': f'Unexpected error: {str(e)}'
         }
+
+# --- All other functions (create_custom_accounts, wait_for_chart_of_accounts, etc.) remain unchanged ---
+# --- Paste them below this line if you are replacing the entire file ---
 
 def create_custom_accounts(models, db, uid, password, company_id):
     """
