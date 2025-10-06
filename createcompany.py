@@ -49,17 +49,23 @@ def main(data):
     
     # Handle VAT number - remove CY prefix if present (Cyprus is always the country)
     # Odoo expects VAT without country prefix since country is set separately
-    if (data.get('vat') == "" or data.get('vat')== None or data.get('vat')=="null"):
-        vat = "/"
+   
+    # Handle VAT number - remove CY prefix if present (Cyprus is always the country)
+# Odoo expects VAT without country prefix since country is set separately
+# IMPORTANT: If no VAT provided, use "/" to explicitly indicate no VAT
+
+    vat_value = data.get('vat')
+    if vat_value and vat_value.strip():  # Check if VAT exists and is not empty/whitespace
+        vat = vat_value.strip().upper()
+        if vat.startswith('CY'):
+            vat = vat[2:]  # Remove CY prefix
+            print(f"Normalized VAT: removed 'CY' prefix, using: {vat}")
         data['vat'] = vat
     else:
-        if data.get('vat'):
-            vat = data['vat'].strip().upper()
-            if vat.startswith('CY'):
-                vat = vat[2:]  # Remove CY prefix
-                print(f"Normalized VAT: removed 'CY' prefix, using: {vat}")
-            data['vat'] = vat
-    
+        # Explicitly set "/" to indicate no VAT number
+        data['vat'] = '/'
+        print("No VAT provided, using '/' to indicate no VAT")
+
     # Odoo connection details
     url = os.getenv("ODOO_URL")
     db = os.getenv("ODOO_DB")
