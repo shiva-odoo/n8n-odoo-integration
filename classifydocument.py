@@ -18,16 +18,39 @@ The user's company is: "{company_name}"
 
 **CLASSIFICATION RULES:**
 
-1. **DOCUMENT RELEVANCE CHECK (Do this FIRST):**
+1. **SHARE DOCUMENT CHECK (Do this FIRST - HIGHEST PRIORITY):**
+   - Does this document contain ANY of these indicators:
+     * Share certificates
+     * Stock certificates
+     * Equity documents
+     * Shareholder agreements with share allocations
+     * Share transfer documents
+     * Corporate filings related to shares/equity
+     * ESOP (Employee Stock Ownership Plan) documents
+     * Share allotment letters
+     * Dividend declarations
+     * Words like "shares", "equity", "stock", "shareholder"
+   - If YES → IMMEDIATELY classify as:
+     * document_type = "share_document"
+     * category = "money_coming_in"
+     * STOP HERE - Do not apply any other rules
+   - If NO → Continue to step 2
+
+🚨 **CRITICAL RULE: ALL SHARE DOCUMENTS = money_coming_in**
+- Share documents ALWAYS represent value/ownership coming to the company
+- NEVER classify share documents as "money_going_out" or "bill"
+- Even if company name appears in "TO:" field on a share document, it's still money_coming_in
+
+2. **DOCUMENT RELEVANCE CHECK:**
    - Is this document a bill, invoice, bank statement, or share document with financial implications?
    - If NO (e.g., contracts, memos, letters, reports, certificates without financial data) → classify as illegible_document
 
-2. **ILLEGIBLE DOCUMENT CHECK (Do this SECOND):**
+3. **ILLEGIBLE DOCUMENT CHECK:**
    - Can you extract document number/ID? (YES/NO)
    - Can you extract total monetary amount? (YES/NO)
    - If BOTH answers are NO → classify as illegible_document
 
-3. **MANDATORY COMPANY ROLE IDENTIFICATION - ULTRA STRICT VERIFICATION:**
+4. **MANDATORY COMPANY ROLE IDENTIFICATION - ULTRA STRICT VERIFICATION:**
 
 ⚠️ **CRITICAL INSTRUCTION: READ THIS CAREFULLY BEFORE PROCEEDING**
 
@@ -143,15 +166,15 @@ Before finalizing classification, ask yourself:
 - Never guess - better to flag as illegible than misclassify
 
 **DOCUMENT TYPES:**
+- "share_document": Share certificates, stock documents, equity documents (ALWAYS money_coming_in)
 - "invoice": User's company ISSUED it, REQUESTING payment (money_coming_in)
 - "bill": User's company RECEIVED it, MUST PAY another company (money_going_out)
 - "bank_statement": Bank-issued statement with transactions
-- "share_document": Share-related documents or corporate filings with financial impact
 - null: Only for illegible documents
 
 **CATEGORIES:**
-- "money_coming_in": User's company RECEIVES money (they are the ISSUER/VENDOR)
-- "money_going_out": User's company PAYS money (they are the RECIPIENT/CUSTOMER)
+- "money_coming_in": User's company RECEIVES money/value (invoices, share documents)
+- "money_going_out": User's company PAYS money (bills only)
 - "bank_statement": Bank statement
 - "illegible_document": Cannot extract key financial data OR cannot determine company role
 
@@ -167,6 +190,8 @@ Before finalizing classification, ask yourself:
 
 Before you output the JSON, you MUST verify:
 
+✓ [ ] I checked if this is a SHARE DOCUMENT first (Step 1)
+✓ [ ] If it's a share document → I set document_type="share_document" and category="money_coming_in"
 ✓ [ ] I found where "{company_name}" appears on the document
 ✓ [ ] I identified if "{company_name}" is in the ISSUER position (header/FROM/vendor)
 ✓ [ ] I identified if "{company_name}" is in the RECIPIENT position (TO/CUSTOMER/bill to)
@@ -178,13 +203,17 @@ Before you output the JSON, you MUST verify:
 ✓ [ ] If any doubt exists → I classified as illegible_document
 
 **VALIDATION RULES:**
+- ALL share documents MUST be: document_type="share_document", category="money_coming_in"
 - document_type and category must follow the logic above
 - total_amount must be numeric or null
 - If key financial data missing, use null + illegible_document
 - If company role unclear after all checks, use null + illegible_document
 - Response must be valid JSON only
 
-⚠️ **FINAL WARNING: The most common error is classifying a BILL as an INVOICE when the user's company appears in the TO:/CUSTOMER: field. Double-check this before outputting!**"""
+⚠️ **FINAL WARNING: 
+1. ALWAYS check for share documents FIRST before applying any other rules
+2. Share documents are NEVER money_going_out, ALWAYS money_coming_in
+3. The most common error is classifying a BILL as an INVOICE when the user's company appears in the TO:/CUSTOMER: field. Double-check this before outputting!**"""
 
 def download_from_s3(s3_key, bucket_name=None):
     """Download file from S3 using key"""
@@ -370,6 +399,13 @@ def validate_classification(classification_data, company_name):
     # Check for logical consistency
     validation_warnings = []
     
+    # Rule 0: share_document must ALWAYS be money_coming_in
+    if doc_type == "share_document" and category != "money_coming_in":
+        validation_warnings.append(
+            f"CRITICAL ERROR: document_type='share_document' but category='{category}'. "
+            "Share documents MUST ALWAYS be money_coming_in. This is a misclassification."
+        )
+    
     # Rule 1: invoice must always be money_coming_in
     if doc_type == "invoice" and category != "money_coming_in":
         validation_warnings.append(
@@ -384,18 +420,25 @@ def validate_classification(classification_data, company_name):
             "Bills should always be money_going_out."
         )
     
-    # Rule 3: money_coming_in must be invoice (unless bank_statement or share_document)
-    if category == "money_coming_in" and doc_type not in ["invoice", "bank_statement", "share_document"]:
+    # Rule 3: money_coming_in must be invoice, share_document, or bank_statement
+    if category == "money_coming_in" and doc_type not in ["invoice", "share_document", "bank_statement"]:
         validation_warnings.append(
             f"Logical error: category='money_coming_in' but document_type='{doc_type}'. "
-            "Expected 'invoice'."
+            "Expected 'invoice', 'share_document', or 'bank_statement'."
         )
     
-    # Rule 4: money_going_out must be bill (unless bank_statement)
+    # Rule 4: money_going_out must be bill or bank_statement (NEVER share_document)
     if category == "money_going_out" and doc_type not in ["bill", "bank_statement"]:
         validation_warnings.append(
             f"Logical error: category='money_going_out' but document_type='{doc_type}'. "
-            "Expected 'bill'."
+            "Expected 'bill' or 'bank_statement'. Share documents can NEVER be money_going_out."
+        )
+    
+    # Rule 5: Explicit check - share_document can NEVER be money_going_out
+    if doc_type == "share_document" and category == "money_going_out":
+        validation_warnings.append(
+            f"CRITICAL MISCLASSIFICATION: Share documents can NEVER be classified as money_going_out. "
+            f"This must be corrected to money_coming_in."
         )
     
     return {
@@ -419,7 +462,7 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-document-classification",
-            "version": "2.0-strict",
+            "version": "2.1-share-fixed",
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025')
