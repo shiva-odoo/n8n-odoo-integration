@@ -5,7 +5,7 @@ import os
 import json
 
 def get_classification_prompt(company_name):
-    """Create classification prompt with strict company role identification"""
+    """Create classification prompt with ultra-strict company role identification"""
     return f"""You are a highly accurate document classification AI assistant. Perform strict OCR analysis on the uploaded document and extract key information in the specified JSON format. Misclassification can cause critical errors, so follow all rules strictly.
 
 **CRITICAL OUTPUT REQUIREMENT:**
@@ -27,84 +27,133 @@ The user's company is: "{company_name}"
    - Can you extract total monetary amount? (YES/NO)
    - If BOTH answers are NO → classify as illegible_document
 
-3. **MANDATORY COMPANY ROLE IDENTIFICATION (CRITICAL):**
+3. **MANDATORY COMPANY ROLE IDENTIFICATION - ULTRA STRICT VERIFICATION:**
 
-**STEP 1: DETERMINE COMPANY'S ROLE IN THE TRANSACTION**
-You MUST identify which role the user's company plays by analyzing these document indicators:
+⚠️ **CRITICAL INSTRUCTION: READ THIS CAREFULLY BEFORE PROCEEDING**
 
-**A) ISSUER/SENDER INDICATORS (Company is requesting payment):**
-- User's company name appears in "FROM:" field
-- User's company name appears in "BILL TO:" field as the issuer
-- User's company name appears in "VENDOR:" field
-- User's company name appears in "SELLER:" field
-- User's company name appears in "SERVICE PROVIDER:" field
-- Document header shows user's company letterhead/logo
-- Document says "Invoice from [User's Company]"
-- User's company address appears in sender/issuer section
-- User's company bank details appear for receiving payment
+The single most important task is determining: **IS THE USER'S COMPANY PAYING OR GETTING PAID?**
 
-**B) RECIPIENT/CUSTOMER INDICATORS (Company owes payment):**
-- User's company name appears in "TO:" field as recipient
-- User's company name appears in "CUSTOMER:" field
-- User's company name appears in "BILL TO:" field as the customer
-- User's company name appears in "BUYER:" field
-- User's company name appears in "CLIENT:" field
-- Document says "Invoice to [User's Company]"
-- User's company address appears in recipient/customer section
-- Another company's bank details appear for receiving payment FROM user's company
+**STEP 1: IDENTIFY THE DOCUMENT ISSUER (Who created this document?)**
 
-**STEP 2: MANDATORY COMPANY ROLE VERIFICATION**
-Before classifying, you MUST answer these verification questions:
+Look for these ISSUER indicators at the TOP of the document:
+- Company name in header/letterhead
+- Logo at the top
+- "FROM:" field
+- "VENDOR:" field  
+- "SELLER:" field
+- "SERVICE PROVIDER:" field
+- Bank account details for RECEIVING payment (usually at bottom with "Pay to:" or "Remit to:")
 
-1. **WHO IS ISSUING THIS DOCUMENT?**
-   - Look for "Issued by", "From:", company letterhead, logo at top, bank account owner
-   - Answer: [Company Name that issued/created the document]
-   - Is this the user's company? [YES/NO]
-   - ⚠️ CRITICAL: If NOT user's company, then user's company is RECEIVING this bill/invoice!
+**Write down: Document was ISSUED BY: [Company Name]**
 
-2. **WHO WILL RECEIVE THE MONEY?**
-   - Look for bank account details, "Pay to:", "Remit to:", account owner
-   - Answer: [Company Name that will receive payment]
-   - Is this the user's company? [YES/NO]
-   - ⚠️ CRITICAL: If NOT user's company, then category = "money_going_out"!
+**STEP 2: IDENTIFY THE RECIPIENT/CUSTOMER (Who will pay this document?)**
 
-3. **WHO WILL SEND THE MONEY?**
-   - Look for "Bill to:", "Customer:", "Sold to:", the party being charged
-   - Answer: [Company Name that will send payment]
-   - Is this the user's company? [YES/NO]
-   - ⚠️ CRITICAL: If YES user's company, then category = "money_going_out"!
+Look for these RECIPIENT indicators:
+- "TO:" field
+- "CUSTOMER:" field
+- "BILL TO:" field (when it refers to who is being billed)
+- "CLIENT:" field
+- "BUYER:" field
+- "SOLD TO:" field
+- "SHIP TO:" field
+- The party that is being charged/invoiced
 
-**STEP 3: APPLY CLASSIFICATION RULES (ONLY AFTER VERIFICATION)**
+**Write down: Document will be PAID BY: [Company Name]**
 
-**IF USER'S COMPANY IS THE ISSUER/MONEY RECEIVER:**
-- Document type = "invoice"
-- Category = "money_coming_in"
-- Logic: User's company issued this document requesting payment FROM another party
+**STEP 3: COMPARE WITH USER'S COMPANY**
 
-**IF USER'S COMPANY IS THE RECIPIENT/MONEY SENDER:**
-- Document type = "bill"
-- Category = "money_going_out"
-- Logic: User's company received this document and must pay TO another party
+User's company name: "{company_name}"
 
-**CRITICAL ENFORCEMENT RULES:**
-1. **NEVER ASSUME** - Always verify company role through document text analysis
-2. **DOCUMENT CREATOR ≠ MONEY RECEIVER** - Check who actually gets paid
-3. **MULTIPLE VERIFICATION** - Use at least 2 indicators to confirm company role
-4. **CONTRADICTION CHECK** - If indicators conflict, classify as illegible_document
-5. **EXPLICIT IDENTIFICATION** - The user's company role must be explicitly identifiable in document text
+Now answer these questions:
+
+**Q1: Is "{company_name}" the ISSUER of this document?**
+- Check: Is "{company_name}" in the header, logo, or "FROM:" field?
+- Answer: YES or NO
+- If YES → User's company is REQUESTING payment → category = "money_coming_in", document_type = "invoice"
+- If NO → Continue to Q2
+
+**Q2: Is "{company_name}" the RECIPIENT/CUSTOMER of this document?**
+- Check: Is "{company_name}" in "TO:", "CUSTOMER:", "BILL TO:", "CLIENT:" fields?
+- Answer: YES or NO
+- If YES → User's company is PAYING → category = "money_going_out", document_type = "bill"
+- If NO → Continue to Q3
+
+**Q3: Where does "{company_name}" appear on the document?**
+- If it appears ONLY in the TO/CUSTOMER section → category = "money_going_out", document_type = "bill"
+- If it appears ONLY in the FROM/VENDOR section → category = "money_coming_in", document_type = "invoice"
+- If it appears in BOTH or NEITHER → classify as illegible_document
+- If unclear or ambiguous → classify as illegible_document
+
+**STEP 4: APPLY THE GOLDEN RULES (MANDATORY CHECKS)**
+
+🚨 **GOLDEN RULE 1: THE "TO:" / "CUSTOMER:" RULE**
+- If "{company_name}" appears in TO:, CUSTOMER:, BILL TO:, CLIENT:, BUYER:, or SOLD TO: fields
+- THEN category = "money_going_out" and document_type = "bill"
+- NO EXCEPTIONS - The "TO:" party ALWAYS pays!
+
+🚨 **GOLDEN RULE 2: THE "FROM:" / "VENDOR:" RULE**
+- If "{company_name}" appears in FROM:, VENDOR:, SELLER:, or the document header/logo
+- AND another company appears in the TO:/CUSTOMER: field
+- THEN category = "money_coming_in" and document_type = "invoice"
+- NO EXCEPTIONS - The "FROM:" party ALWAYS gets paid!
+
+🚨 **GOLDEN RULE 3: THE BANK ACCOUNT RULE**
+- Find the bank account details on the document (usually at bottom)
+- Read whose name is on the account: "Account holder:", "Pay to:", "Remit to:"
+- If account belongs to "{company_name}" → category = "money_coming_in"
+- If account belongs to ANOTHER company → category = "money_going_out"
+- If no bank details or unclear → use FROM/TO fields instead
+
+🚨 **GOLDEN RULE 4: THE POSITION RULE**
+- Company in document HEADER/TOP = The issuer who will GET PAID
+- Company in document BODY under TO:/CUSTOMER: = The recipient who will PAY
+- "{company_name}" in header/top → money_coming_in
+- "{company_name}" in TO:/CUSTOMER: section → money_going_out
+
+🚨 **GOLDEN RULE 5: THE FINAL VERIFICATION**
+Before finalizing classification, ask yourself:
+- "Will {company_name} RECEIVE money from this transaction?" → If YES: money_coming_in
+- "Will {company_name} SEND/PAY money from this transaction?" → If YES: money_going_out
+- "Am I 100% certain of the answer?" → If NO: illegible_document
+
+**STEP 5: HANDLE EDGE CASES**
+
+**Case A: Document says "INVOICE" but user's company is in TO: field**
+- IGNORE the document title
+- Apply GOLDEN RULE 1
+- Result: document_type = "bill", category = "money_going_out"
+
+**Case B: Document says "BILL" but user's company is in FROM: field**
+- IGNORE the document title  
+- Apply GOLDEN RULE 2
+- Result: document_type = "invoice", category = "money_coming_in"
+
+**Case C: Multiple companies mentioned**
+- Identify which company is in the ISSUER position (top/header)
+- Identify which company is in the RECIPIENT position (TO:/CUSTOMER:)
+- Apply the rules based on where "{company_name}" appears
+
+**Case D: Document in foreign language**
+- Look for structural cues: "FROM:", "TO:", company position on page
+- Top company = issuer, TO: company = recipient
+- Apply the rules accordingly
+
+**Case E: Ambiguous or contradictory indicators**
+- If you cannot determine with 100% certainty → illegible_document
+- Never guess - better to flag as illegible than misclassify
 
 **DOCUMENT TYPES:**
-- "invoice": User's company issued it, requesting payment
-- "bill": User's company received it, must pay another company
+- "invoice": User's company ISSUED it, REQUESTING payment (money_coming_in)
+- "bill": User's company RECEIVED it, MUST PAY another company (money_going_out)
 - "bank_statement": Bank-issued statement with transactions
 - "share_document": Share-related documents or corporate filings with financial impact
 - null: Only for illegible documents
 
 **CATEGORIES:**
-- "money_coming_in": User's company receives money
-- "money_going_out": User's company pays money
+- "money_coming_in": User's company RECEIVES money (they are the ISSUER/VENDOR)
+- "money_going_out": User's company PAYS money (they are the RECIPIENT/CUSTOMER)
 - "bank_statement": Bank statement
-- "illegible_document": Cannot extract key financial data
+- "illegible_document": Cannot extract key financial data OR cannot determine company role
 
 **REQUIRED JSON OUTPUT FORMAT:**
 {{{{
@@ -114,19 +163,28 @@ Before classifying, you MUST answer these verification questions:
   "total_amount": 1250.00
 }}}}
 
-**MANDATORY FINAL COMPANY CHECK:**
-Before outputting JSON, confirm:
-- ✓ I identified the user's company name correctly
-- ✓ I determined the user's company role through document analysis
-- ✓ I verified who receives payment vs who sends payment
-- ✓ My classification matches the user's company position
-- ✓ If company role is unclear, I classified as illegible_document
+**MANDATORY PRE-OUTPUT VERIFICATION CHECKLIST:**
+
+Before you output the JSON, you MUST verify:
+
+✓ [ ] I found where "{company_name}" appears on the document
+✓ [ ] I identified if "{company_name}" is in the ISSUER position (header/FROM/vendor)
+✓ [ ] I identified if "{company_name}" is in the RECIPIENT position (TO/CUSTOMER/bill to)
+✓ [ ] I applied the GOLDEN RULES correctly
+✓ [ ] If "{company_name}" is in TO:/CUSTOMER: → I set category = "money_going_out" and document_type = "bill"
+✓ [ ] If "{company_name}" is in FROM:/header → I set category = "money_coming_in" and document_type = "invoice"
+✓ [ ] I double-checked the bank account owner (if present)
+✓ [ ] My classification passes the logic test: "Will {company_name} pay or get paid?"
+✓ [ ] If any doubt exists → I classified as illegible_document
 
 **VALIDATION RULES:**
 - document_type and category must follow the logic above
 - total_amount must be numeric or null
 - If key financial data missing, use null + illegible_document
-- Response must be valid JSON only"""
+- If company role unclear after all checks, use null + illegible_document
+- Response must be valid JSON only
+
+⚠️ **FINAL WARNING: The most common error is classifying a BILL as an INVOICE when the user's company appears in the TO:/CUSTOMER: field. Double-check this before outputting!**"""
 
 def download_from_s3(s3_key, bucket_name=None):
     """Download file from S3 using key"""
@@ -171,11 +229,11 @@ def process_document_with_claude(pdf_content, company_name):
         # Get prompt
         prompt = get_classification_prompt(company_name)
         
-        # Send to Claude
+        # Send to Claude with extended thinking for complex cases
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1000,  # Reduced for JSON-only response
-            temperature=0.1,
+            max_tokens=2000,  # Increased for better reasoning
+            temperature=0,  # Set to 0 for maximum consistency
             messages=[
                 {
                     "role": "user",
@@ -263,13 +321,20 @@ def main(data):
                 # Parse Claude's JSON response
                 classification_data = json.loads(result["classification"])
                 
+                # Post-processing validation to catch any remaining errors
+                validation_result = validate_classification(classification_data, company_name)
+                
+                if not validation_result["valid"]:
+                    print(f"Validation warning: {validation_result['warning']}")
+                
                 return {
                     "success": True,
                     "result": classification_data,
                     "metadata": {
                         "token_usage": result["token_usage"],
                         "s3_key": s3_key,
-                        "company_name": company_name
+                        "company_name": company_name,
+                        "validation": validation_result
                     }
                 }
                 
@@ -293,6 +358,51 @@ def main(data):
             "error": f"Internal processing error: {str(e)}"
         }
 
+def validate_classification(classification_data, company_name):
+    """
+    Post-processing validation to ensure classification logic is correct
+    
+    Returns dict with validation status and any warnings
+    """
+    doc_type = classification_data.get("document_type")
+    category = classification_data.get("category")
+    
+    # Check for logical consistency
+    validation_warnings = []
+    
+    # Rule 1: invoice must always be money_coming_in
+    if doc_type == "invoice" and category != "money_coming_in":
+        validation_warnings.append(
+            f"Logical error: document_type='invoice' but category='{category}'. "
+            "Invoices should always be money_coming_in."
+        )
+    
+    # Rule 2: bill must always be money_going_out
+    if doc_type == "bill" and category != "money_going_out":
+        validation_warnings.append(
+            f"Logical error: document_type='bill' but category='{category}'. "
+            "Bills should always be money_going_out."
+        )
+    
+    # Rule 3: money_coming_in must be invoice (unless bank_statement or share_document)
+    if category == "money_coming_in" and doc_type not in ["invoice", "bank_statement", "share_document"]:
+        validation_warnings.append(
+            f"Logical error: category='money_coming_in' but document_type='{doc_type}'. "
+            "Expected 'invoice'."
+        )
+    
+    # Rule 4: money_going_out must be bill (unless bank_statement)
+    if category == "money_going_out" and doc_type not in ["bill", "bank_statement"]:
+        validation_warnings.append(
+            f"Logical error: category='money_going_out' but document_type='{doc_type}'. "
+            "Expected 'bill'."
+        )
+    
+    return {
+        "valid": len(validation_warnings) == 0,
+        "warning": " | ".join(validation_warnings) if validation_warnings else None
+    }
+
 def health_check():
     """Health check for the classification service"""
     try:
@@ -309,6 +419,7 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-document-classification",
+            "version": "2.0-strict",
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025')

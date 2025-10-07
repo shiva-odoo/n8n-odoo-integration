@@ -6,6 +6,127 @@ import json
 import re
 from odoo_accounting_logic import main as get_accounting_logic
 
+# AWS DynamoDB configuration
+AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
+dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
+users_table = dynamodb.Table('users')
+
+def get_company_context(company_name):
+    """
+    Fetch comprehensive company details from DynamoDB users table
+    
+    Args:
+        company_name (str): Company name to lookup
+    
+    Returns:
+        dict: Company context or None if not found
+    """
+    try:
+        # Scan table to find matching company (case-sensitive exact match)
+        response = users_table.scan(
+            FilterExpression='company_name = :name',
+            ExpressionAttributeValues={':name': company_name}
+        )
+        
+        if response.get('Items'):
+            company_data = response['Items'][0]
+            
+            # Extract basic company information
+            context = {
+                'company_name': company_data.get('company_name', ''),
+                'is_vat_registered': company_data.get('is_vat_registered', 'unknown'),
+                'primary_industry': company_data.get('primary_industry', ''),
+                'business_description': company_data.get('business_description', ''),
+                'business_model': company_data.get('business_model', ''),
+                'main_products': company_data.get('main_products', ''),
+                'business_address': company_data.get('business_address', ''),
+                'registration_no': company_data.get('registration_no', ''),
+                'vat_no': company_data.get('vat_no', ''),
+                'tax_registration_no': company_data.get('tax_registration_no', ''),
+                'trading_name': company_data.get('trading_name', '')
+            }
+            
+            # Extract tax information
+            tax_info = company_data.get('tax_information', {})
+            context['tax_information'] = {
+                'reverse_charge': tax_info.get('reverse_charge', []),
+                'reverse_charge_other': tax_info.get('reverse_charge_other', ''),
+                'vat_exemptions': tax_info.get('vat_exemptions', ''),
+                'vat_period_category': tax_info.get('vat_period_category', ''),
+                'vat_rates': tax_info.get('vat_rates', [])
+            }
+            
+            # Extract payroll information
+            payroll_info = company_data.get('payroll_information', {})
+            context['payroll_information'] = {
+                'num_employees': payroll_info.get('num_employees', 0),
+                'payroll_frequency': payroll_info.get('payroll_frequency', ''),
+                'social_insurance': payroll_info.get('social_insurance', ''),
+                'uses_ghs': payroll_info.get('uses_ghs', False)
+            }
+            
+            # Extract business operations
+            business_ops = company_data.get('business_operations', {})
+            context['business_operations'] = {
+                'international': business_ops.get('international', False),
+                'inventory_management': business_ops.get('inventory_management', ''),
+                'multi_location': business_ops.get('multi_location', False),
+                'seasonal_business': business_ops.get('seasonal_business', False),
+                'peak_seasons': business_ops.get('peak_seasons', '')
+            }
+            
+            # Extract special circumstances
+            special_circumstances = company_data.get('special_circumstances', {})
+            context['special_circumstances'] = {}
+            
+            # Construction circumstances
+            construction = special_circumstances.get('construction', {})
+            if construction.get('enabled', False):
+                context['special_circumstances']['construction'] = {
+                    'enabled': True,
+                    'project_duration': construction.get('project_duration', '')
+                }
+            
+            # Retail/E-commerce circumstances
+            retail_ecommerce = special_circumstances.get('retail_ecommerce', {})
+            if retail_ecommerce.get('enabled', False):
+                context['special_circumstances']['retail_ecommerce'] = {
+                    'enabled': True,
+                    'platform_type': retail_ecommerce.get('platform_type', '')
+                }
+            
+            # Banking information
+            banking_info = company_data.get('banking_information', {})
+            context['banking_information'] = {
+                'primary_bank': banking_info.get('primary_bank', ''),
+                'primary_currency': banking_info.get('primary_currency', ''),
+                'multi_currency': banking_info.get('multi_currency', False),
+                'currencies_list': banking_info.get('currencies_list', [])
+            }
+            
+            # Extract metadata
+            metadata = company_data.get('metadata', {})
+            context['metadata'] = {
+                'rep_name': metadata.get('rep_name', ''),
+                'rep_email': metadata.get('rep_email', ''),
+                'vat_no': metadata.get('vat_no', '')
+            }
+            
+            print(f"✅ Company context loaded for: {company_name}")
+            print(f"   VAT Registered: {context['is_vat_registered']}")
+            print(f"   Industry: {context['primary_industry']}")
+            print(f"   Reverse Charge Categories: {context['tax_information']['reverse_charge']}")
+            print(f"   Special Circumstances: {list(context['special_circumstances'].keys())}")
+            
+            return context
+        else:
+            print(f"⚠️  No company context found for: {company_name}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error fetching company context: {e}")
+        return None
+
 def get_property_capitalization_rules():
     """Returns IAS 40 property capitalization rules for prompt"""
     return """
@@ -191,11 +312,264 @@ def detect_construction_property_reverse_charge(vendor_data, line_items):
     
     return False, "", "low"
 
-def get_bill_processing_prompt(company_name):
+def get_vat_instructions(company_context):
+    """Generate VAT handling instructions based on company registration status"""
+    
+    if not company_context:
+        return """
+**VAT TREATMENT (COMPANY CONTEXT UNAVAILABLE):**
+- Company VAT status unknown - use conservative approach
+- Default to standard VAT treatment with account 2202 (Input VAT)
+- Flag for manual review
+"""
+    
+    is_vat_registered = company_context.get('is_vat_registered', 'unknown')
+    
+    if is_vat_registered == 'yes':
+        return """
+**VAT TREATMENT FOR THIS COMPANY (VAT REGISTERED):**
+✅ Company IS registered for VAT
+✅ VAT is RECOVERABLE - use account 2202 (Input VAT)
+✅ Standard VAT accounting applies
+
+**For Normal Vendors (No Reverse Charge):**
+Debit: [Expense Account] - Net amount
+Debit: 2202 (Input VAT) - VAT amount (RECOVERABLE)
+Credit: 2100 (Accounts Payable) - Total amount
+
+**Additional Entry:**
+{
+  "account_code": "2202",
+  "account_name": "Input VAT (Purchases)",
+  "debit_amount": [vat_amount],
+  "credit_amount": 0,
+  "description": "Recoverable Input VAT",
+  "tax_grid": "+4"
+}
+
+**For Reverse Charge Vendors:**
+Still create BOTH 2202 (Input VAT) AND 2201 (Output VAT) entries as per reverse charge rules.
+"""
+    
+    elif is_vat_registered == 'no':
+        return """
+**🔴 CRITICAL VAT TREATMENT FOR THIS COMPANY (NOT VAT REGISTERED):**
+❌ Company is NOT registered for VAT
+❌ VAT is NON-RECOVERABLE - MUST use account 7906 (Non-Recoverable VAT on expenses)
+❌ VAT becomes an EXPENSE, not a recoverable asset
+❌ NEVER use account 2202 (Input VAT) for this company
+
+**Accounting Entry for Non-VAT Registered Company:**
+Debit: [Expense Account] - Net amount
+Debit: 7906 (Non-Recoverable VAT on expenses) - VAT amount (EXPENSE)
+Credit: 2100 (Accounts Payable) - Total amount
+
+**Additional Entry Structure:**
+{
+  "account_code": "7906",
+  "account_name": "Non-Recoverable VAT on expenses",
+  "debit_amount": [vat_amount],
+  "credit_amount": 0,
+  "description": "Non-recoverable VAT - company not VAT registered"
+}
+
+**IMPORTANT:** 
+- Even for reverse charge vendors, use 7906 instead of 2202
+- No Output VAT (2201) entry needed since company cannot recover VAT
+- All VAT amounts are expenses for non-VAT registered companies
+"""
+    
+    else:
+        return """
+**VAT TREATMENT (COMPANY VAT STATUS UNKNOWN):**
+⚠️  Company VAT registration status not specified
+- Use conservative approach with standard VAT treatment
+- Default to account 2202 (Input VAT) 
+- Flag for manual verification
+"""
+
+def get_company_context_section(company_context):
+    """Generate company context section for prompt"""
+    
+    if not company_context:
+        return """
+**COMPANY CONTEXT:** Not available - proceed with standard processing
+"""
+    
+    # Build context sections
+    basic_info = f"""
+**Company:** {company_context.get('company_name', 'N/A')}
+**VAT Status:** {'✅ VAT Registered' if company_context.get('is_vat_registered') == 'yes' else '❌ NOT VAT Registered' if company_context.get('is_vat_registered') == 'no' else '⚠️ Unknown'}
+**Primary Industry:** {company_context.get('primary_industry', 'N/A')}
+**Business Description:** {company_context.get('business_description', 'N/A')}
+**Business Model:** {company_context.get('business_model', 'N/A')}
+**Main Products/Services:** {company_context.get('main_products', 'N/A')}
+**Business Address:** {company_context.get('business_address', 'N/A')}
+**Registration No:** {company_context.get('registration_no', 'N/A')}
+**VAT No:** {company_context.get('vat_no', 'N/A')}"""
+
+    # Tax information section
+    tax_info = company_context.get('tax_information', {})
+    tax_section = f"""
+**TAX INFORMATION:**
+- Reverse Charge Categories: {', '.join(tax_info.get('reverse_charge', []))}
+- Additional Reverse Charge: {tax_info.get('reverse_charge_other', 'N/A')}
+- VAT Exemptions: {tax_info.get('vat_exemptions', 'N/A')}
+- VAT Period Category: {tax_info.get('vat_period_category', 'N/A')}
+- VAT Rates: {', '.join(map(str, tax_info.get('vat_rates', [])))}%"""
+
+    # Payroll information section
+    payroll_info = company_context.get('payroll_information', {})
+    payroll_section = f"""
+**PAYROLL INFORMATION:**
+- Number of Employees: {payroll_info.get('num_employees', 0)}
+- Payroll Frequency: {payroll_info.get('payroll_frequency', 'N/A')}
+- Social Insurance: {payroll_info.get('social_insurance', 'N/A')}
+- Uses GHS: {'Yes' if payroll_info.get('uses_ghs', False) else 'No'}"""
+
+    # Business operations section
+    business_ops = company_context.get('business_operations', {})
+    operations_section = f"""
+**BUSINESS OPERATIONS:**
+- International Operations: {'Yes' if business_ops.get('international', False) else 'No'}
+- Inventory Management: {business_ops.get('inventory_management', 'N/A')}
+- Multi-Location: {'Yes' if business_ops.get('multi_location', False) else 'No'}
+- Seasonal Business: {'Yes' if business_ops.get('seasonal_business', False) else 'No'}
+- Peak Seasons: {business_ops.get('peak_seasons', 'N/A')}"""
+
+    # Special circumstances section
+    special_circumstances = company_context.get('special_circumstances', {})
+    special_section = "**SPECIAL CIRCUMSTANCES:**"
+    if special_circumstances:
+        if 'construction' in special_circumstances:
+            construction = special_circumstances['construction']
+            special_section += f"\n- Construction Project: Active (Duration: {construction.get('project_duration', 'N/A')})"
+        if 'retail_ecommerce' in special_circumstances:
+            retail = special_circumstances['retail_ecommerce']
+            special_section += f"\n- Retail/E-commerce: Active (Platform: {retail.get('platform_type', 'N/A')})"
+    else:
+        special_section += "\n- None specified"
+
+    # Banking information section
+    banking_info = company_context.get('banking_information', {})
+    banking_section = f"""
+**BANKING INFORMATION:**
+- Primary Bank: {banking_info.get('primary_bank', 'N/A')}
+- Primary Currency: {banking_info.get('primary_currency', 'N/A')}
+- Multi-Currency: {'Yes' if banking_info.get('multi_currency', False) else 'No'}
+- Supported Currencies: {', '.join(banking_info.get('currencies_list', []))}"""
+
+    return f"""
+**COMPANY CONTEXT - USE THIS TO IMPROVE ACCURACY:**
+
+{basic_info}
+
+{tax_section}
+
+{payroll_section}
+
+{operations_section}
+
+{special_section}
+
+{banking_section}
+
+**USE THIS CONTEXT TO:**
+1. ✅ Validate expense types align with company's industry and business model
+2. ✅ Determine if property-related costs should be capitalized (especially if property development/construction industry)
+3. ✅ Assign more accurate account codes based on industry-specific services
+4. ✅ Flag unusual expenses that don't match business description for review
+5. ✅ Apply correct VAT treatment based on registration status
+6. ✅ Apply specific reverse charge rules based on company's registered categories
+7. ✅ Handle payroll-related documents appropriately based on employee count and frequency
+8. ✅ Consider seasonal patterns and special circumstances for expense classification
+
+**INDUSTRY-SPECIFIC GUIDANCE:**
+{get_industry_specific_guidance(company_context)}
+
+**REVERSE CHARGE SPECIFIC GUIDANCE:**
+{get_reverse_charge_guidance(company_context)}
+"""
+
+def get_reverse_charge_guidance(company_context):
+    """Provide specific reverse charge guidance based on company's registered categories"""
+    
+    tax_info = company_context.get('tax_information', {})
+    reverse_charge_categories = tax_info.get('reverse_charge', [])
+    
+    if not reverse_charge_categories:
+        return "- No specific reverse charge categories registered"
+    
+    guidance = "- Company is registered for reverse charge on: " + ", ".join(reverse_charge_categories)
+    
+    # Add specific guidance based on categories
+    if 'construction' in reverse_charge_categories:
+        guidance += "\n- CONSTRUCTION: Pay special attention to construction/property services (Article 11B)"
+    
+    if 'other' in reverse_charge_categories:
+        other_desc = tax_info.get('reverse_charge_other', '')
+        if other_desc:
+            guidance += f"\n- OTHER: {other_desc}"
+    
+    return guidance
+
+def get_industry_specific_guidance(company_context):
+    """Provide industry-specific account assignment guidance"""
+    
+    industry = company_context.get('primary_industry', '').lower()
+    business_desc = company_context.get('business_description', '').lower()
+    special_circumstances = company_context.get('special_circumstances', {})
+    
+    # Property/Real Estate/Construction industries
+    if any(keyword in industry or keyword in business_desc for keyword in 
+           ['property', 'real estate', 'construction', 'development', 'rental']):
+        guidance = """
+- Property-related professional fees (architects, surveyors, engineers) → Likely 0060 (Freehold property) if for development
+- Property management fees → 7100 (Rent) or specific property management account
+- Rental property repairs → Check if capitalizable (major improvements) or expense (routine maintenance)
+- Legal fees → Check if for property acquisition (0060) or general operations (7600)"""
+        
+        # Add construction-specific guidance if active project
+        if 'construction' in special_circumstances:
+            guidance += "\n- ACTIVE CONSTRUCTION PROJECT: High likelihood of capitalizable costs to 0060"
+        
+        return guidance
+    
+    # Investment/Portfolio Management
+    elif any(keyword in industry for keyword in ['investment', 'portfolio', 'fund', 'holding']):
+        return """
+- Portfolio management fees → 7605 (Portfolio management fees)
+- Investment advisory → 7602 (Consultancy fees) or 7605
+- Fund administration → 7603 (Professional fees)
+- Holding company costs → Generally operational expenses unless property-related
+"""
+    
+    # Tech/Software companies
+    elif any(keyword in industry for keyword in ['technology', 'software', 'IT', 'saas']):
+        return """
+- Software subscriptions → 7508 (Computer software)
+- IT consulting → 7602 (Consultancy fees)
+- Cloud services → 7508 (Computer software)
+- Development tools → 7508 or capitalize if significant asset
+"""
+    
+    else:
+        return """
+- Match expenses to industry-standard account codes
+- Flag expenses that seem unusual for this industry
+"""
+
+def get_bill_processing_prompt(company_name, company_context=None):
     """Create comprehensive bill processing prompt that combines splitting and extraction"""
     
     # Get bill accounting logic with VAT rules
     bill_logic = get_accounting_logic("bill")
+    
+    # Get VAT instructions based on company context
+    vat_instructions = get_vat_instructions(company_context)
+    
+    # Get company context section
+    company_context_section = get_company_context_section(company_context)
     
     return f"""You are an advanced bill processing AI. Your task is to analyze a multi-bill PDF document and return structured JSON data.
 
@@ -204,6 +578,8 @@ def get_bill_processing_prompt(company_name):
 **INPUT:** Multi-bill PDF document
 **COMPANY:** {company_name} (the company receiving these bills)
 **OUTPUT:** Raw JSON object only
+
+{company_context_section}
 
 **DOCUMENT SPLITTING RULES (Priority Order):**
 1. **PAGE INDICATOR RULE (HIGHEST PRIORITY):**
@@ -242,6 +618,24 @@ def get_bill_processing_prompt(company_name):
 
 {bill_logic}
 
+**TAX GRID ASSIGNMENT RULES:**
+
+**CRITICAL: Each eligible line item and VAT entry must include the appropriate tax_grid:**
+
+**For VAT Entries:**
+- Input VAT (2202) for recoverable VAT → tax_grid: "+4"
+- Output VAT (2201) for reverse charge → tax_grid: "-1"
+- Non-Recoverable VAT (7906) → No tax grid (expense account)
+
+**For Purchase Value Entries:**
+- Construction/Property services (reverse charge) → tax_grid: "+7"
+- EU acquisitions → tax_grid: "+8"
+- Standard purchases → No tax grid typically required
+
+**For Sales Value Entries (if applicable):**
+- Standard rate sales (19%) → tax_grid: "+5"
+- Reduced rate sales (9%, 5%) → tax_grid: "+6"
+
 **LINE-LEVEL ACCOUNT ASSIGNMENT:**
 Each line item must be assigned to the most appropriate expense account based on the service/product type:
 
@@ -249,8 +643,10 @@ Each line item must be assigned to the most appropriate expense account based on
 - Legal services, law firm fees → 7600 (Legal fees)
 - Accounting, bookkeeping, tax services → 7601 (Audit and accountancy fees)  
 - Business consulting, advisory → 7602 (Consultancy fees)
+- Portfolio/investment management → 7605 (Portfolio management fees)
 - Other professional services → 7603 (Professional fees)
-- Office/warehouse rent → 7100 (Rent)
+- General property rent → 7100 (Rent)
+- Office space, coworking, serviced offices → 7101 (Office space)
 - Mixed utility bills → 7190 (Utilities)
 - Pure electricity bills → 7200 (Electricity)
 - Pure gas bills → 7201 (Gas)
@@ -358,25 +754,17 @@ Look for these indicators:
 - Forced property transfers
 - Bank repossessions
 
+{vat_instructions}
+
 **VAT TREATMENT LOGIC:**
 
-**NORMAL VENDORS (NO REVERSE CHARGE):**
-- Standard VAT treatment for domestic Cyprus suppliers not in reverse charge categories
-- Main transaction: GROSS amount (net + VAT)
-- Debit: Expense accounts (per line item) - Net amounts only
-- Debit: 2202 (Input VAT) - VAT amount reclaimable
-- Credit: 2100 (Accounts Payable) - Full amount including VAT
-- Create ONE additional entry: Input VAT (2202) debit
+**NORMAL VENDORS (NO REVERSE CHARGE) - VAT Treatment depends on company registration:**
+{'''- IF Company is VAT Registered: Use 2202 (Input VAT - Recoverable)
+- IF Company is NOT VAT Registered: Use 7906 (Non-Recoverable VAT on expenses)''' if not company_context or company_context.get('is_vat_registered') != 'no' else '- Company NOT VAT Registered: MUST use 7906 (Non-Recoverable VAT on expenses)'}
 
-**REVERSE CHARGE VENDORS (ALL 8 CATEGORIES ABOVE):**
-- Main transaction: NET amount only
-- Debit: Expense accounts (per line item) - Net amounts
-- Credit: 2100 (Accounts Payable) - Net amount only
-- Create TWO VAT entries in additional_entries:
-  - Input VAT (2202) - Debit VAT amount (reclaimable)
-  - Output VAT (2201) - Credit VAT amount (owed to authorities)
-- Set requires_reverse_charge: true
-- Set vat_treatment to appropriate category (e.g., "Construction/Property Services Reverse Charge", "Foreign Services Reverse Charge")
+**REVERSE CHARGE VENDORS (ALL 8 CATEGORIES ABOVE) - VAT Treatment depends on company registration:**
+{'''- IF Company is VAT Registered: Create BOTH Input VAT (2202) AND Output VAT (2201) entries
+- IF Company is NOT VAT Registered: Use 7906 (Non-Recoverable VAT) instead of 2202, NO Output VAT entry''' if not company_context or company_context.get('is_vat_registered') != 'no' else '- Company NOT VAT Registered: Use 7906 (Non-Recoverable VAT) only, NO Output VAT (2201) entry'}
 
 **MIXED LINE ITEMS HANDLING:**
 When line items map to different expense accounts:
@@ -384,33 +772,6 @@ When line items map to different expense accounts:
 - Set debit_account_name to "Mixed Line Items"
 - Each line item contains its own account_code and account_name
 - VAT handling remains the same (vendor-level decision)
-
-**CRITICAL VAT/TAX HANDLING RULE:**
-
-For NORMAL vendors with VAT (domestic, not in reverse charge categories):
-{{
-  "account_code": "2202",
-  "account_name": "Input VAT (Purchases)",
-  "debit_amount": [tax_amount],
-  "credit_amount": 0,
-  "description": "Input VAT on purchase"
-}}
-
-For REVERSE CHARGE vendors (any of the 8 categories) with VAT:
-{{
-  "account_code": "2202",
-  "account_name": "Input VAT (Purchases)",
-  "debit_amount": [tax_amount],
-  "credit_amount": 0,
-  "description": "Reverse charge Input VAT"
-}},
-{{
-  "account_code": "2201",
-  "account_name": "Output VAT (Sales)",
-  "debit_amount": 0,
-  "credit_amount": [tax_amount],
-  "description": "Reverse charge Output VAT"
-}}
 
 **DESCRIPTION FIELD:**
 - Create an overall description of the document that summarizes the goods/services provided
@@ -513,7 +874,15 @@ Each line item in the line_items array must have this exact structure:
   "line_total": 0,
   "tax_rate": 0,
   "account_code": "",
-  "account_name": ""
+  "account_name": "",
+  "tax_grid": ""
+}}
+**For reverse charge bills:**
+{{
+  "description": "Architectural design services",
+  "account_code": "0060",
+  "account_name": "Freehold property",
+  "tax_grid": "+7"  // <- This is missing in your output
 }}
 
 **ADDITIONAL ENTRIES STRUCTURE (for VAT and complex transactions):**
@@ -523,18 +892,31 @@ Each additional entry in the additional_entries array must have this exact struc
   "account_name": "",
   "debit_amount": 0,
   "credit_amount": 0,
-  "description": ""
+  "description": "",
+  "tax_grid": ""
 }}
+
+**TAX GRID EXAMPLES:**
+- Input VAT on reverse charge: tax_grid: "+4"
+- Output VAT on reverse charge: tax_grid: "-1"
+- Purchase value for reverse charge: tax_grid: "+7"
+- Standard rate sales value: tax_grid: "+5"
+- Reduced rate sales value: tax_grid: "+6"
+- EU acquisitions value: tax_grid: "+8"
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
 - Single Service Bill: debit_account="7602", debit_account_name="Consultancy fees", credit_account="2100"
 - Property Development Bill: debit_account="0060", debit_account_name="Freehold property", credit_account="2100"
 - Mixed Services Bill: debit_account="MIXED", debit_account_name="Mixed Line Items", credit_account="2100"
-- Normal Domestic Vendor with VAT: Standard accounting + Input VAT (2202) in additional_entries
-- Reverse Charge Vendor with VAT: Standard accounting + BOTH Input VAT (2202) AND Output VAT (2201) in additional_entries
+- Normal Domestic Vendor with VAT (VAT Registered Company): Standard accounting + Input VAT (2202) in additional_entries with tax_grid "+4"
+- Normal Domestic Vendor with VAT (NON-VAT Registered Company): Standard accounting + Non-Recoverable VAT (7906) in additional_entries
+- Reverse Charge Vendor with VAT (VAT Registered): Standard accounting + BOTH Input VAT (2202) with tax_grid "+4" AND Output VAT (2201) with tax_grid "-1" in additional_entries
+- Reverse Charge Vendor with VAT (NON-VAT Registered): Standard accounting + Non-Recoverable VAT (7906) only in additional_entries
 
 **LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
 - "Legal consultation services" → account_code="7600", account_name="Legal fees"
+- "Portfolio management services" → account_code="7605", account_name="Portfolio management fees"
+- "Office space rental - coworking" → account_code="7101", account_name="Office space"
 - "Surveyor fees - mechanical study for property development" → account_code="0060", account_name="Freehold property"
 - "Property valuation for bank" → account_code="0060", account_name="Freehold property"
 - "Internet broadband service" → account_code="7503", account_name="Internet"  
@@ -558,11 +940,13 @@ Each additional entry in the additional_entries array must have this exact struc
 13. **MIXED BILLS: When line items have different account codes, set debit_account="MIXED"**
 14. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively, especially Category 1 (construction/property professionals)**
 15. **GREEK LANGUAGE: Detect Greek keywords for construction services (μηχανολογική, τοπογραφικ, αρχιτεκτον, etc.)**
+16. **VAT ACCOUNT SELECTION: Use company VAT registration status to determine correct VAT account (2202 vs 7906)**
+17. **TAX GRID ASSIGNMENT: Include appropriate tax_grid for all eligible entries (VAT entries and purchase values)**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
 def ensure_line_item_structure(line_item):
-    """Ensure each line item has the complete required structure including account assignment"""
+    """Ensure each line item has the complete required structure including account assignment and tax grid"""
     default_line_item = {
         "description": "",
         "quantity": 0,
@@ -570,7 +954,8 @@ def ensure_line_item_structure(line_item):
         "line_total": 0,
         "tax_rate": 0,
         "account_code": "",
-        "account_name": ""
+        "account_name": "",
+        "tax_grid": ""
     }
     
     result = {}
@@ -582,7 +967,7 @@ def ensure_line_item_structure(line_item):
     
     return result
 
-def validate_bill_data(bills):
+def validate_bill_data(bills, company_context=None):
     """Validate extracted bill data for completeness and accuracy including comprehensive reverse charge detection and property capitalization"""
     validation_results = []
     
@@ -617,9 +1002,10 @@ def validate_bill_data(bills):
         if not line_items:
             bill_validation["warnings"].append("No line items found")
         else:
-            # Validate line item account assignments
+            # Validate line item account assignments and tax grids
             valid_expense_accounts = [
                 "0060",  # Property development
+                "7906", "7605", "7101",  # New accounts
                 "7602", "7600", "7601", "7603", "7100", "7190", "7200", "7201", "7102",
                 "7508", "7503", "7502", "7400", "7800", "5100", "8200", "7104", "7700",
                 "7506", "7005", "6201", "6100", "1000", "1020", "5000", "6002", "7402",
@@ -631,6 +1017,7 @@ def validate_bill_data(bills):
             for i, item in enumerate(line_items):
                 account_code = item.get("account_code", "")
                 account_name = item.get("account_name", "")
+                tax_grid = item.get("tax_grid", "")
                 
                 if not account_code:
                     bill_validation["issues"].append(f"Line item {i+1} missing account_code")
@@ -639,6 +1026,10 @@ def validate_bill_data(bills):
                 
                 if not account_name:
                     bill_validation["issues"].append(f"Line item {i+1} missing account_name")
+                
+                # Validate tax grid if present
+                if tax_grid and not tax_grid.startswith(('+', '-')):
+                    bill_validation["warnings"].append(f"Line item {i+1} has unusual tax_grid format: {tax_grid}")
                 
                 if account_code:
                     line_item_accounts.add(account_code)
@@ -702,9 +1093,57 @@ def validate_bill_data(bills):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # ENHANCED COMPREHENSIVE REVERSE CHARGE DETECTION
+        # CRITICAL: VAT ACCOUNT VALIDATION BASED ON COMPANY REGISTRATION
         accounting_assignment = bill.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
+        
+        if company_context:
+            is_vat_registered = company_context.get('is_vat_registered', 'unknown')
+            
+            if tax_amount > 0:
+                has_2202 = any(e.get("account_code") == "2202" for e in additional_entries)
+                has_7906 = any(e.get("account_code") == "7906" for e in additional_entries)
+                
+                # Validate tax grids on VAT entries
+                for entry in additional_entries:
+                    if entry.get("account_code") == "2202":
+                        if entry.get("tax_grid") != "+4":
+                            bill_validation["warnings"].append(
+                                f"Input VAT (2202) should have tax_grid '+4', found: {entry.get('tax_grid', 'none')}"
+                            )
+                    elif entry.get("account_code") == "2201":
+                        if entry.get("tax_grid") != "-1":
+                            bill_validation["warnings"].append(
+                                f"Output VAT (2201) should have tax_grid '-1', found: {entry.get('tax_grid', 'none')}"
+                            )
+                
+                if is_vat_registered == 'no':
+                    # Non-VAT registered: MUST use 7906, NEVER 2202
+                    if has_2202:
+                        bill_validation["issues"].append(
+                            "Company is NOT VAT registered - CANNOT use 2202 (Input VAT). Must use 7906 (Non-Recoverable VAT)"
+                        )
+                    
+                    if not has_7906:
+                        bill_validation["issues"].append(
+                            "Company is NOT VAT registered - VAT must be posted to 7906 (Non-Recoverable VAT on expenses)"
+                        )
+                
+                elif is_vat_registered == 'yes':
+                    # VAT registered: Should use 2202 for recoverable VAT
+                    if has_7906:
+                        bill_validation["warnings"].append(
+                            "Company IS VAT registered - VAT should be recoverable (2202), not expense (7906)"
+                        )
+                    
+                    # Check for 2202 unless it's reverse charge (which has different rules)
+                    requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
+                    if not has_2202 and not requires_reverse_charge:
+                        bill_validation["warnings"].append(
+                            "Company IS VAT registered - should have Input VAT (2202) entry for recoverable VAT"
+                        )
+        
+        # ENHANCED COMPREHENSIVE REVERSE CHARGE DETECTION
         requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
         vat_treatment = accounting_assignment.get("vat_treatment", "")
         
@@ -784,7 +1223,7 @@ def validate_bill_data(bills):
         # Validate VAT handling based on detection
         if tax_amount > 0:
             if is_reverse_charge_vendor:
-                # Should have BOTH Input and Output VAT entries
+                # Should have proper reverse charge entries based on company VAT status
                 if not requires_reverse_charge:
                     bill_validation["issues"].append(
                         f"Vendor qualifies for reverse charge ({detected_category}, confidence: {confidence_level}) "
@@ -798,40 +1237,37 @@ def validate_bill_data(bills):
                 else:
                     input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
                     output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
+                    non_recoverable_vat_entries = [e for e in additional_entries if e.get("account_code") == "7906"]
                     
-                    if not input_vat_entries:
-                        bill_validation["issues"].append(
-                            f"Reverse charge vendor ({detected_category}) missing Input VAT (2202) entry"
-                        )
+                    if company_context and company_context.get('is_vat_registered') == 'yes':
+                        # VAT registered: should have both 2202 and 2201
+                        if not input_vat_entries:
+                            bill_validation["issues"].append(
+                                f"Reverse charge vendor ({detected_category}) missing Input VAT (2202) entry"
+                            )
+                        
+                        if not output_vat_entries:
+                            bill_validation["issues"].append(
+                                f"Reverse charge vendor ({detected_category}) missing Output VAT (2201) entry"
+                            )
                     
-                    if not output_vat_entries:
-                        bill_validation["issues"].append(
-                            f"Reverse charge vendor ({detected_category}) missing Output VAT (2201) entry"
-                        )
+                    elif company_context and company_context.get('is_vat_registered') == 'no':
+                        # Non-VAT registered: should have only 7906
+                        if not non_recoverable_vat_entries:
+                            bill_validation["issues"].append(
+                                f"Reverse charge vendor - Company NOT VAT registered, should use 7906 (Non-Recoverable VAT)"
+                            )
+                        
+                        if input_vat_entries or output_vat_entries:
+                            bill_validation["issues"].append(
+                                f"Company NOT VAT registered - should not have 2202 or 2201 entries, only 7906"
+                            )
             else:
-                # Normal domestic vendor - should have only Input VAT entry
+                # Normal domestic vendor - validate VAT treatment
                 if requires_reverse_charge:
                     bill_validation["warnings"].append(
                         "Vendor marked as reverse charge but doesn't match any reverse charge category"
                     )
-                
-                if not additional_entries:
-                    bill_validation["issues"].append(
-                        "Tax amount detected for normal vendor but no additional_entries created"
-                    )
-                else:
-                    input_vat_entries = [e for e in additional_entries if e.get("account_code") == "2202"]
-                    output_vat_entries = [e for e in additional_entries if e.get("account_code") == "2201"]
-                    
-                    if not input_vat_entries:
-                        bill_validation["issues"].append(
-                            "Tax amount detected for normal vendor but missing Input VAT (2202) entry"
-                        )
-                    
-                    if output_vat_entries:
-                        bill_validation["warnings"].append(
-                            "Normal vendor has Output VAT (2201) entry - should only be for reverse charge"
-                        )
         
         # Check account code consistency for main accounting assignment
         accounting_assignment = bill.get("accounting_assignment", {})
@@ -862,7 +1298,7 @@ def validate_bill_data(bills):
     
     return validation_results
 
-def process_bills_with_claude(pdf_content, company_name):
+def process_bills_with_claude(pdf_content, company_name, company_context=None):
     """Process PDF document with Claude for bill splitting and extraction"""
     try:
         # Initialize Anthropic client
@@ -873,18 +1309,27 @@ def process_bills_with_claude(pdf_content, company_name):
         # Encode to base64
         pdf_base64 = base64.b64encode(pdf_content).decode('utf-8')
         
-        # Get comprehensive prompt with integrated accounting logic
-        prompt = get_bill_processing_prompt(company_name)
+        # Get comprehensive prompt with integrated accounting logic and company context
+        prompt = get_bill_processing_prompt(company_name, company_context)
         
         # Get bill accounting logic for system prompt
         bill_system_logic = get_accounting_logic("bill")
+        
+        # Build system prompt with company context awareness
+        vat_status_note = ""
+        if company_context:
+            is_vat_registered = company_context.get('is_vat_registered', 'unknown')
+            if is_vat_registered == 'yes':
+                vat_status_note = "\n- Company IS VAT registered: Use 2202 (Input VAT) for recoverable VAT with tax_grid '+4'"
+            elif is_vat_registered == 'no':
+                vat_status_note = "\n- Company NOT VAT registered: Use 7906 (Non-Recoverable VAT) for all VAT amounts"
         
         # Send to Claude with optimized parameters for structured output
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=18000,
             temperature=0.0,
-            system=f"""You are an expert accountant and data extraction system specialized in VENDOR BILLS and EXPENSE transactions with LINE-LEVEL account assignment, COMPREHENSIVE Cyprus VAT reverse charge detection, and IAS 40 PROPERTY CAPITALIZATION.
+            system=f"""You are an expert accountant and data extraction system specialized in VENDOR BILLS and EXPENSE transactions with LINE-LEVEL account assignment, COMPREHENSIVE Cyprus VAT reverse charge detection, IAS 40 PROPERTY CAPITALIZATION, TAX GRID ASSIGNMENT, and COMPANY-SPECIFIC VAT treatment.
 
 Your core behavior is to think and act like a professional accountant who understands:
 - Double-entry bookkeeping for EXPENSE recognition
@@ -892,6 +1337,17 @@ Your core behavior is to think and act like a professional accountant who unders
 - Granular expense categorization
 - IAS 40 Investment Property accounting and pre-construction cost capitalization
 - Cyprus Article 11B reverse charge mechanism for construction/property services
+- Correct VAT accounting based on company VAT registration status
+- Cyprus VAT return box assignments and tax grid mapping{vat_status_note}
+
+**CRITICAL TAX GRID EXPERTISE:**
+You must assign correct tax grids for Cyprus VAT return compliance:
+- Input VAT (2202) for recoverable VAT → tax_grid: "+4"
+- Output VAT (2201) for reverse charge → tax_grid: "-1"
+- Purchase values for reverse charge → tax_grid: "+7"
+- Standard rate sales values → tax_grid: "+5"
+- Reduced rate sales values → tax_grid: "+6"
+- EU acquisitions values → tax_grid: "+8"
 
 **CRITICAL PROPERTY CAPITALIZATION EXPERTISE:**
 You must identify when vendor bills contain costs that should be CAPITALIZED to 0060 (Freehold property) under IAS 40, not expensed. Always check:
@@ -927,6 +1383,11 @@ You must identify Cyprus domestic vendors providing construction/property servic
 - "Article 11B", "άρθρο 11Β"
 - "δεν χρεωνεται ΦΠΑ", "συμφωνα με το αρθρο 11Β"
 
+**CRITICAL VAT ACCOUNT SELECTION:**
+- IF company is VAT registered: Use 2202 (Input VAT - recoverable asset) with tax_grid "+4"
+- IF company is NOT VAT registered: Use 7906 (Non-Recoverable VAT on expenses - expense account)
+- For reverse charge: VAT registered uses both 2202 (tax_grid "+4") + 2201 (tax_grid "-1"), Non-VAT registered uses only 7906
+
 **BILL ACCOUNTING EXPERTISE:**
 {bill_system_logic}
 
@@ -937,6 +1398,9 @@ CORE ACCOUNTING BEHAVIOR FOR VENDOR BILLS WITH LINE-LEVEL PROCESSING:
   - Legal services → DEBIT 7600 (Legal fees)
   - Accounting services → DEBIT 7601 (Audit and accountancy fees)
   - Business consulting → DEBIT 7602 (Consultancy fees)
+  - Portfolio management → DEBIT 7605 (Portfolio management fees)
+  - General rent → DEBIT 7100 (Rent)
+  - Office space/coworking → DEBIT 7101 (Office space)
   - Internet services → DEBIT 7503 (Internet)
   - Mobile/phone services → DEBIT 7502 (Telephone)
   - Property development services → DEBIT 0060 (Freehold property)
@@ -952,6 +1416,7 @@ LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 • Example: Engineering firm providing Property study (0060) AND General consulting (7602)
 • Be precise - "Mobile WiFi" is telecommunications (7502), not internet (7503)
 • Be precise - "Property mechanical study" is capitalized (0060), not consultancy (7602)
+• Be precise - "Coworking space" is office space (7101), not general rent (7100)
 
 COMPREHENSIVE CYPRUS VAT REVERSE CHARGE DETECTION:
 You must check ALL 8 categories for reverse charge eligibility:
@@ -969,19 +1434,24 @@ CRITICAL REVERSE CHARGE RULES:
 • If vendor matches ANY of the 8 categories AND has VAT:
   - Set requires_reverse_charge: true
   - Set vat_treatment to specific category (e.g., "Construction/Property Services Reverse Charge")
-  - Create BOTH Input VAT (2202) AND Output VAT (2201) entries
+  - For VAT registered companies: Create BOTH Input VAT (2202, tax_grid "+4") AND Output VAT (2201, tax_grid "-1") entries
+  - For NON-VAT registered companies: Create ONLY Non-Recoverable VAT (7906) entry
   - Main transaction amount should be NET only
   - Credit account 2100 with NET amount only
 
 • If vendor is normal domestic (not in any category) with VAT:
   - Set requires_reverse_charge: false
   - Set vat_treatment: "Standard VAT"
-  - Create ONLY Input VAT (2202) entry
-  - Main transaction amount is GROSS (net + VAT)
-  - Credit account 2100 with GROSS amount
+  - For VAT registered: Create ONLY Input VAT (2202, tax_grid "+4") entry, credit 2100 with GROSS
+  - For NON-VAT registered: Create ONLY Non-Recoverable VAT (7906) entry, credit 2100 with GROSS
 
+  **CRITICAL TAX GRID FOR LINE ITEMS:**
+- For reverse charge transactions: expense line items must include tax_grid "+7" to report purchase values
+- This applies to ALL line items when requires_reverse_charge is true
+- Example: Construction service line items → tax_grid: "+7"
+  
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment. Always check for property capitalization opportunities under IAS 40. Pay special attention to Greek language keywords for construction/property services.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every expense transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment. Always check for property capitalization opportunities under IAS 40. Pay special attention to Greek language keywords for construction/property services. Most importantly, use the correct VAT account (2202 vs 7906) based on company VAT registration status and assign appropriate tax grids for Cyprus VAT return compliance.""",
             messages=[
                 {
                     "role": "user",
@@ -1267,12 +1737,21 @@ def main(data):
         
         print(f"Processing bills for company: {company_name}, S3 key: {s3_key}")
         
+        # Fetch comprehensive company context from DynamoDB
+        company_context = get_company_context(company_name)
+        
+        if not company_context:
+            print(f"⚠️  Warning: No company context found for {company_name}")
+            print(f"   Proceeding with default VAT treatment assumptions")
+        else:
+            print(f"✅ Company context loaded successfully")
+        
         # Download PDF from S3
         pdf_content = download_from_s3(s3_key, bucket_name)
         print(f"Downloaded PDF, size: {len(pdf_content)} bytes")
         
         # Process with Claude for combined splitting and extraction
-        claude_result = process_bills_with_claude(pdf_content, company_name)
+        claude_result = process_bills_with_claude(pdf_content, company_name, company_context)
         
         if not claude_result["success"]:
             return {
@@ -1294,8 +1773,8 @@ def main(data):
         result_data = parse_result["result"]
         bills = result_data.get("bills", [])
         
-        # Validate extracted bill data
-        validation_results = validate_bill_data(bills)
+        # Validate extracted bill data with company context
+        validation_results = validate_bill_data(bills, company_context)
         
         # Count bills with critical issues
         bills_with_issues = sum(1 for v in validation_results if not v["mandatory_fields_present"])
@@ -1313,6 +1792,10 @@ def main(data):
             "validation_results": validation_results,
             "metadata": {
                 "company_name": company_name,
+                "company_context_loaded": company_context is not None,
+                "company_vat_status": company_context.get('is_vat_registered', 'unknown') if company_context else 'unknown',
+                "company_reverse_charge_categories": company_context.get('tax_information', {}).get('reverse_charge', []) if company_context else [],
+                "company_special_circumstances": list(company_context.get('special_circumstances', {}).keys()) if company_context else [],
                 "s3_key": s3_key,
                 "token_usage": claude_result["token_usage"]
             }
@@ -1341,7 +1824,7 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-bill-processing",
-            "version": "6.0",
+            "version": "8.0",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
@@ -1357,6 +1840,17 @@ def health_check():
                 "mixed_service_bill_handling",
                 "granular_expense_categorization",
                 "ias40_property_capitalization",
+                "comprehensive_company_context_integration",
+                "vat_registration_aware_processing",
+                "non_vat_registered_company_support",
+                "dynamodb_company_lookup",
+                "industry_specific_guidance",
+                "payroll_context_awareness",
+                "special_circumstances_handling",
+                "business_operations_context",
+                "banking_information_context",
+                "tax_grid_assignment",
+                "cyprus_vat_return_compliance",
                 "construction_property_detection",
                 "foreign_services_detection",
                 "gas_electricity_detection",
@@ -1369,10 +1863,21 @@ def health_check():
             "anthropic_configured": bool(os.getenv('ANTHROPIC_API_KEY')),
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025'),
+            "dynamodb_table": "users",
             "odoo_accounting_logic": "integrated",
             "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories with Enhanced Category 1",
             "accounting_standards": "IAS 40 Investment Property Capitalization",
-            "supported_languages": "English, Greek (Ελληνικά)"
+            "supported_languages": "English, Greek (Ελληνικά)",
+            "new_features": [
+                "Comprehensive company context from DynamoDB",
+                "Tax information and reverse charge category awareness", 
+                "Payroll information for document classification",
+                "Special circumstances handling (construction, retail)",
+                "Business operations context integration",
+                "Banking information awareness",
+                "Tax grid assignment for Cyprus VAT return",
+                "Enhanced VAT account selection logic"
+            ]
         }
         
     except Exception as e:
