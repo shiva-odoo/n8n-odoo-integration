@@ -317,7 +317,7 @@ def get_payroll_transaction_guidance(company_context):
     
     return guidance
 
-def get_bank_statement_extraction_prompt(company_name, company_context=None):
+def get_bank_statement_extraction_prompt(company_id, company_context=None):
     """Create bank statement transaction extraction prompt with company context"""
     
     # Get company context section
@@ -328,12 +328,16 @@ def get_bank_statement_extraction_prompt(company_name, company_context=None):
     if company_context and company_context.get('banking_information'):
         primary_bank = company_context['banking_information'].get('primary_bank', 'Bank of Cyprus')
     
+    # Get company display name
+    company_display = company_context.get('company_name') if company_context else str(company_id)
+    
     return f"""# Bank Statement Transaction Extraction
 
 ## Task
 Extract ALL transactions from bank statement text and convert each transaction into the exact JSON format required for double-entry accounting. Process every single transaction found in the statement.
 
-**COMPANY:** {company_name} (the company whose bank statement this is)
+**COMPANY ID:** {company_id}
+**COMPANY:** {company_display} (the company whose bank statement this is)
 
 {company_context_section}
 
@@ -538,7 +542,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 [
   {{
-    "company_id": "{company_name}",
+    "company_id": {company_id},
     "date": "YYYY-MM-DD",
     "ref": "string",
     "narration": "string", 
@@ -599,7 +603,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 9. **STEP 9: Use suspense account** ONLY for truly unclear bank transactions
 10. **STEP 10: Assign correct partner names** (anonymized for employees)
 11. **STEP 11: Create balanced line_items** ensuring debits = credits
-12. **STEP 12: Set company_id** to company name for every transaction
+12. **STEP 12: Set company_id** to the numeric ID provided ({company_id}) for every transaction
 13. **STEP 13: Ensure all numeric values are numbers, not strings**
 
 ## Example Payroll Transaction:
@@ -607,7 +611,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 ### Wage Payment (ANONYMIZED):
 ```json
 {{
-  "company_id": "{company_name}",
+  "company_id": {company_id},
   "date": "2025-06-30",
   "ref": "payroll_300625",
   "narration": "Monthly salary payment",
@@ -638,7 +642,7 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 }}
 ```
 
-**CRITICAL: Return ONLY the JSON array. No markdown formatting, no code blocks, no explanatory text. The response must start with '[' and end with ']'. Every line_item must include a "partner" field. Anonymize employee names in payroll transactions.**
+**CRITICAL: Return ONLY the JSON array. No markdown formatting, no code blocks, no explanatory text. The response must start with '[' and end with ']'. Every line_item must include a "partner" field. Anonymize employee names in payroll transactions. Set company_id to {company_id} (numeric) for all transactions.**
 """
 
 def extract_json_from_response(response_text):
@@ -865,7 +869,7 @@ def download_from_s3(s3_key, bucket_name=None):
     except Exception as e:
         raise Exception(f"Error downloading from S3: {str(e)}")
 
-def process_bank_statement_extraction(pdf_content, company_name, company_context=None):
+def process_bank_statement_extraction(pdf_content, company_id, company_context=None):
     """Process bank statement with Claude for transaction extraction with accounting assignment and company context"""
     try:
         # Initialize Anthropic client
@@ -877,7 +881,7 @@ def process_bank_statement_extraction(pdf_content, company_name, company_context
         pdf_base64 = base64.b64encode(pdf_content).decode('utf-8')
         
         # Get bank statement extraction prompt with company context
-        prompt = get_bank_statement_extraction_prompt(company_name, company_context)
+        prompt = get_bank_statement_extraction_prompt(company_id, company_context)
         
         # Build enhanced system prompt with company awareness
         payroll_context_note = ""
@@ -1157,7 +1161,8 @@ def main(data):
     Args:
         data (dict): Request data containing:
             - s3_key (str): S3 key path to the document
-            - company_name (str): Name of the company for context lookup
+            - company_id (str/int): Company ID for transaction extraction (REQUIRED - numeric ID)
+            - company_name (str, optional): Company name for context lookup
             - bucket_name (str, optional): S3 bucket name
     
     Returns:
@@ -1165,7 +1170,7 @@ def main(data):
     """
     try:
         # Validate required fields
-        required_fields = ['s3_key', 'company_name']
+        required_fields = ['s3_key', 'company_id']
         missing_fields = [field for field in required_fields if field not in data]
         
         if missing_fields:
@@ -1175,26 +1180,43 @@ def main(data):
             }
         
         s3_key = data['s3_key']
-        company_name = data['company_name']
+        company_id = data['company_id']  # This should be the numeric ID
+        company_name = data.get('company_name')  # Optional - for context lookup
         bucket_name = data.get('bucket_name')
         
-        print(f"Processing bank statement for company: {company_name}, S3 key: {s3_key}")
+        # Ensure company_id is numeric
+        try:
+            company_id_numeric = int(company_id)
+        except (ValueError, TypeError):
+            return {
+                "success": False,
+                "error": f"company_id must be a number, received: {company_id} ({type(company_id).__name__})"
+            }
         
-        # Fetch comprehensive company context from DynamoDB
-        company_context = get_company_context(company_name)
+        print(f"Processing bank statement for company_id: {company_id_numeric}, S3 key: {s3_key}")
         
-        if not company_context:
-            print(f"⚠️  Warning: No company context found for {company_name}")
-            print(f"   Proceeding with generic transaction processing")
+        # Fetch comprehensive company context from DynamoDB (if company_name provided)
+        company_context = None
+        if company_name:
+            print(f"Looking up company context for: {company_name}")
+            company_context = get_company_context(company_name)
+            
+            if not company_context:
+                print(f"⚠️  Warning: No company context found for {company_name}")
+                print(f"   Proceeding with generic transaction processing")
+            else:
+                print(f"✅ Company context loaded successfully")
         else:
-            print(f"✅ Company context loaded successfully")
+            print(f"⚠️  No company_name provided - proceeding without company context")
+            print(f"   To enable context-aware processing, include 'company_name' in request")
         
         # Download PDF from S3
         pdf_content = download_from_s3(s3_key, bucket_name)
         print(f"Downloaded PDF, size: {len(pdf_content)} bytes")
         
         # Process bank statement for transaction extraction with company context
-        result = process_bank_statement_extraction(pdf_content, company_name, company_context)
+        # Pass the NUMERIC company_id to the extraction function
+        result = process_bank_statement_extraction(pdf_content, company_id_numeric, company_context)
         
         if result["success"]:
             transactions = result["extraction_result"]
@@ -1217,7 +1239,8 @@ def main(data):
                 },
                 "validation_results": validation_results,
                 "metadata": {
-                    "company_name": company_name,
+                    "company_id": company_id_numeric,  # Always return numeric ID
+                    "company_name": company_context.get('company_name') if company_context else company_name,
                     "company_context_loaded": company_context is not None,
                     "num_employees": company_context.get('payroll_information', {}).get('num_employees', 0) if company_context else 0,
                     "payroll_frequency": company_context.get('payroll_information', {}).get('payroll_frequency', 'unknown') if company_context else 'unknown',
@@ -1311,3 +1334,60 @@ def health_check():
             "healthy": False,
             "error": str(e)
         }
+
+# Example usage for testing
+if __name__ == "__main__":
+    # Test the JSON extraction function with payroll anonymization
+    test_response = '''[
+  {
+    "company_id": "Test Company Ltd",
+    "date": "2025-06-30",
+    "ref": "payroll_300625",
+    "narration": "Monthly salary payment",
+    "partner": "Employee - J.S.",
+    "accounting_assignment": {
+      "debit_account": "7000",
+      "debit_account_name": "Gross wages",
+      "credit_account": "1201",
+      "credit_account_name": "Bank",
+      "transaction_type": "wage_payment",
+      "requires_vat": false,
+      "additional_entries": []
+    },
+    "line_items": [
+      {
+        "name": "Gross wages",
+        "debit": 2500.00,
+        "credit": 0.00,
+        "partner": "Employee - J.S."
+      },
+      {
+        "name": "Bank",
+        "debit": 0.00,
+        "credit": 2500.00,
+        "partner": "Bank of Cyprus - Current A/c"
+      }
+    ]
+  }
+]'''
+    
+    try:
+        result = extract_json_from_response(test_response)
+        print("JSON extraction test successful:")
+        print(json.dumps(result, indent=2))
+        
+        validate_transaction_json(result)
+        print("Validation test successful!")
+        
+        # Test accounting validation
+        validation_results = validate_accounting_assignments(result)
+        print("Accounting validation results:")
+        for validation in validation_results:
+            print(f"Transaction {validation['transaction_index']}: {'Valid' if validation['accounting_valid'] else 'Invalid'}")
+            if validation['issues']:
+                print(f"  Issues: {validation['issues']}")
+            if validation['warnings']:
+                print(f"  Warnings: {validation['warnings']}")
+        
+    except Exception as e:
+        print(f"Test failed: {str(e)}")
