@@ -1,6 +1,8 @@
 import xmlrpc.client
 from datetime import datetime
 import os
+import time  # Added for a small delay
+
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
     try:
@@ -14,11 +16,84 @@ def normalize_date(date_value):
     Normalize date values - if null, "null", "none", empty string, or None, return today's date
     Otherwise return the date value as-is
     """
-    if (date_value is None or 
-        date_value == "" or 
-        str(date_value).lower() in ["null", "none"]):
+    if (date_value is None or
+            date_value == "" or
+            str(date_value).lower() in ["null", "none"]):
         return datetime.now().strftime('%Y-%m-%d')
     return date_value
+
+def find_tax_tag_by_name(models, db, uid, password, tag_name, company_id):
+    """
+    Find tax tag (report line) by name or code
+    Tax tags are used to map transactions to tax report grids
+    
+    Args:
+        tag_name: The tax grid identifier (e.g., "+7", "+4", "-1")
+    
+    Returns:
+        Tax tag ID if found, None otherwise
+    """
+    try:
+        # Clean the tag name (remove spaces, ensure proper format)
+        tag_name = tag_name.strip()
+        
+        print(f"Searching for tax tag: '{tag_name}' in company {company_id}")
+        
+        # Try exact name match first
+        tax_tags = models.execute_kw(
+            db, uid, password,
+            'account.account.tag', 'search_read',
+            [[('name', '=', tag_name), ('applicability', '=', 'taxes')]],
+            {'fields': ['id', 'name', 'country_id'], 'limit': 1}
+        )
+        
+        if tax_tags:
+            print(f"Found tax tag by exact name: {tax_tags[0]}")
+            return tax_tags[0]['id']
+        
+        # Try with country-specific search (Cyprus tax tags often include country prefix)
+        # Get company's country
+        company_data = models.execute_kw(
+            db, uid, password,
+            'res.company', 'search_read',
+            [[('id', '=', company_id)]],
+            {'fields': ['country_id'], 'limit': 1}
+        )
+        
+        if company_data and company_data[0].get('country_id'):
+            country_id = company_data[0]['country_id'][0]
+            
+            # Search for tags with this country
+            tax_tags = models.execute_kw(
+                db, uid, password,
+                'account.account.tag', 'search_read',
+                [[('name', 'ilike', tag_name), ('country_id', '=', country_id), ('applicability', '=', 'taxes')]],
+                {'fields': ['id', 'name', 'country_id'], 'limit': 5}
+            )
+            
+            if tax_tags:
+                print(f"Found {len(tax_tags)} tax tags with country filter: {tax_tags}")
+                # Return the first match
+                return tax_tags[0]['id']
+        
+        # Try partial match without country filter
+        tax_tags = models.execute_kw(
+            db, uid, password,
+            'account.account.tag', 'search_read',
+            [[('name', 'ilike', tag_name), ('applicability', '=', 'taxes')]],
+            {'fields': ['id', 'name', 'country_id'], 'limit': 5}
+        )
+        
+        if tax_tags:
+            print(f"Found {len(tax_tags)} tax tags with partial match: {tax_tags}")
+            return tax_tags[0]['id']
+        
+        print(f"No tax tag found for '{tag_name}'")
+        return None
+        
+    except Exception as e:
+        print(f"Error finding tax tag '{tag_name}': {str(e)}")
+        return None
 
 def find_account_by_name(models, db, uid, password, account_name, company_id, account_code=None):
     """Find account by matching name and/or code using improved company-aware approach"""
@@ -391,37 +466,31 @@ def main(data):
     1. Single bill object: {...}
     2. Array with single bill: [{...}]
     
-    Bill object format:
+    Bill object format with new 'tax_grid' field:
     {
-        "vendor_id": 123,                  # Optional - Vendor ID in Odoo
-        "vendor_name": "ABC Supplies Ltd", # Optional - Vendor name (alternative to vendor_id)
-        "company_id": 1,                   # MANDATORY - Company ID for bill creation
-        "invoice_date": "2025-01-15",      # optional, defaults to today
-        "due_date": "2025-02-15",          # optional, defaults to today if null/empty
-        "vendor_ref": "INV-001",           # optional
-        "description": "Office supplies",
-        "amount": 1500.50,
-        "line_items": [                    # Each line item now has its own account
+        "vendor_id": 123,
+        "vendor_name": "ABC Supplies Ltd",
+        "company_id": 1,
+        "invoice_date": "2025-01-15",
+        "line_items": [
             {
                 "account_code": "7503",
                 "account_name": "Internet",
                 "description": "Internet services",
-                "line_total": 6.85,
                 "price_unit": 6.85,
                 "quantity": 1,
-                "tax_rate": 19
+                "tax_rate": 19,
+                "tax_grid": "+7"  // <-- NEW FIELD
             }
         ],
-        "accounting_assignment": {         # optional - for additional journal entries
-            "credit_account": "2100",      # Account code for credit (usually Accounts Payable)
-            "credit_account_name": "Accounts payable",
-            "additional_entries": [        # Optional VAT entries
+        "accounting_assignment": {
+            "additional_entries": [
                 {
                     "account_code": "2202",
                     "account_name": "Input VAT/Purchases", 
                     "debit_amount": 526.89,
-                    "credit_amount": 0,
-                    "description": "Reverse charge VAT on EU services"
+                    "description": "...",
+                    "tax_grid": "+4"  // <-- NEW FIELD
                 }
             ]
         }
@@ -652,7 +721,7 @@ def main(data):
         print(f"- Is Normal VAT with Manual Entries: {is_normal_vat_with_manual_entries}")
         print(f"- Has Manual VAT: {has_manual_vat}")
 
-        # Handle line items - UPDATED SECTION
+        # Handle line items
         invoice_line_ids = []
         
         if 'line_items' in data and data['line_items']:
@@ -680,7 +749,7 @@ def main(data):
                     'price_unit': price_unit,
                 }
                 
-                # CHANGED: Use line item's own account instead of global debit account
+                # Use line item's own account instead of global debit account
                 account_id = None
                 
                 # Try name-based lookup first for this line item
@@ -713,13 +782,12 @@ def main(data):
                 # Apply tax logic based on VAT treatment
                 if tax_rate is not None and tax_rate > 0:
                     if is_reverse_charge:
-                        # Reverse charge: no automatic tax on line items
                         print(f"Reverse charge detected - skipping automatic tax calculation")
+                        line_item['tax_ids'] = [(6, 0, [])]
                     elif is_normal_vat_with_manual_entries:
-                        # Normal VAT with manual entries: no automatic tax (handled in additional_entries)
                         print(f"Normal VAT with manual entries - skipping automatic tax calculation")
+                        line_item['tax_ids'] = [(6, 0, [])]
                     elif not has_manual_vat:
-                        # Standard automatic tax calculation
                         tax_id = find_tax_by_rate(tax_rate, company_id)
                         if tax_id:
                             line_item['tax_ids'] = [(6, 0, [tax_id])]
@@ -729,6 +797,16 @@ def main(data):
                 elif tax_rate is None or tax_rate == 0:
                     print(f"No tax rate provided or tax rate is 0%, skipping tax calculation")
                 
+                # --- START: ADDED TAX GRID LOGIC ---
+                if item.get('tax_grid'):
+                    tax_tag_id = find_tax_tag_by_name(models, db, uid, password, item['tax_grid'], company_id)
+                    if tax_tag_id:
+                        line_item['tax_tag_ids'] = [(6, 0, [tax_tag_id])]
+                        print(f"Applied tax tag '{item['tax_grid']}' (ID: {tax_tag_id}) to line item")
+                    else:
+                        print(f"Warning: Tax tag '{item['tax_grid']}' not found")
+                # --- END: ADDED TAX GRID LOGIC ---
+                
                 invoice_line_ids.append((0, 0, line_item))
         
         elif data.get('description') and data.get('amount'):
@@ -736,10 +814,7 @@ def main(data):
             try:
                 amount = float(data['amount'])
             except (ValueError, TypeError):
-                return {
-                    'success': False,
-                    'error': 'amount must be a valid number'
-                }
+                return { 'success': False, 'error': 'amount must be a valid number' }
             
             line_item = {
                 'name': data['description'],
@@ -835,6 +910,18 @@ def main(data):
                             'credit': credit_amount,
                             'partner_id': vendor_id,
                         }
+
+                        # --- START: ADDED TAX GRID LOGIC ---
+                        # Add tax tags/grid for additional entries
+                        if entry.get('tax_grid'):
+                            tax_tag_id = find_tax_tag_by_name(models, db, uid, password, entry['tax_grid'], company_id)
+                            if tax_tag_id:
+                                line_data['tax_tag_ids'] = [(6, 0, [tax_tag_id])]
+                                print(f"Applied tax tag '{entry['tax_grid']}' (ID: {tax_tag_id}) to additional entry")
+                            else:
+                                print(f"Warning: Tax tag '{entry['tax_grid']}' not found")
+                        # --- END: ADDED TAX GRID LOGIC ---
+
                         additional_lines.append((0, 0, line_data))
                         
                         # Track input VAT amount for normal VAT treatment
@@ -954,38 +1041,76 @@ def main(data):
                 'error': f'Bill created but failed to post: {str(e)}'
             }
         
-        # Get final bill information after posting including line items
-        bill_info = models.execute_kw(
+        # ### START: ROBUST FIX FOR LINE ITEM RETRIEVAL ###
+        
+        # Add a short delay to ensure the database transaction is complete after posting.
+        # This helps prevent a race condition where we query for lines before they are fully available.
+        print("Waiting for 1 second for database commit after posting...")
+        time.sleep(1)
+
+        # Step 1: Read the entire posted move again to get the definitive list of its line IDs.
+        # This is more reliable than searching for them separately.
+        posted_bill_data = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
-            [[bill_id]], 
-            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
-        )[0]
-        
-        # Get line items
-        line_items = models.execute_kw(
-            db, uid, password,
-            'account.move.line', 'search_read',
-            [[('move_id', '=', bill_id), ('display_type', '=', False)]], 
-            {'fields': ['id', 'name', 'quantity', 'price_unit', 'price_total']}
+            [[bill_id]],
+            {
+                'fields': [
+                    'name', 'amount_total', 'amount_untaxed', 'amount_tax', 
+                    'state', 'invoice_date_due', 'line_ids'  # Crucially, fetch the line IDs
+                ],
+                'context': context
+            }
         )
-        
+
+        if not posted_bill_data:
+            return {
+                'success': False,
+                'error': f'Could not read back the created bill (ID: {bill_id}) after posting.',
+                'bill_id': bill_id
+            }
+
+        bill_info = posted_bill_data[0]
+        line_ids = bill_info.get('line_ids', [])
+
+        detailed_line_items = []
+        if line_ids:
+            # Step 2: Now that we have the exact IDs, read the details of those lines.
+            detailed_line_items = models.execute_kw(
+                db, uid, password,
+                'account.move.line', 'read',
+                [line_ids],  # Use the list of IDs directly
+                {
+                    'fields': [
+                        'id', 'name', 'account_id', 'debit', 'credit', 
+                        'quantity', 'price_unit', 'tax_tag_ids', 'display_type'
+                    ],
+                    'context': context
+                }
+            )
+            # Filter out lines that are just for display (like section headers)
+            if detailed_line_items:
+                detailed_line_items = [line for line in detailed_line_items if not line.get('display_type')]
+
+
+        # Construct the new, more detailed success response
         return {
             'success': True,
             'exists': False,
             'bill_id': bill_id,
             'bill_number': bill_info.get('name'),
             'vendor_name': vendor_info['name'],
-            'total_amount': bill_info.get('amount_total'),
-            'subtotal': bill_info.get('amount_untaxed'),
-            'tax_amount': bill_info.get('amount_tax'),
-            'state': bill_info.get('state'),
             'invoice_date': invoice_date,
-            'due_date': due_date,
+            'due_date': bill_info.get('invoice_date_due'),
             'payment_reference': payment_reference if payment_reference != 'none' else None,
-            'line_items': line_items,
+            'state': bill_info.get('state'),
+            'bill_amount': bill_info.get('amount_untaxed'),
+            'tax_amount': bill_info.get('amount_tax'),
+            'total_amount': bill_info.get('amount_total'),
+            'line_items': detailed_line_items,
             'message': 'Vendor bill created and posted successfully'
         }
+        # ### END: ROBUST FIX FOR LINE ITEM RETRIEVAL ###
         
     except xmlrpc.client.Fault as e:
         return {
@@ -993,6 +1118,8 @@ def main(data):
             'error': f'Odoo API error: {str(e)}'
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             'success': False,
             'error': f'Unexpected error: {str(e)}'
