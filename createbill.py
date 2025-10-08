@@ -1,7 +1,7 @@
 import xmlrpc.client
 from datetime import datetime
 import os
-import time  # Added for a small delay
+import time
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -364,6 +364,54 @@ def find_account_by_code(models, db, uid, password, account_code, company_id):
         print(f"Error finding account {account_code}: {str(e)}")
         return None
 
+def find_tax_by_name(models, db, uid, password, tax_name, company_id, tax_type='purchase'):
+    """
+    Find tax record by its name for a specific company.
+    """
+    try:
+        print(f"Searching for tax with name: '{tax_name}' in company {company_id}")
+        
+        # First, try an exact match
+        domain = [
+            ('name', '=', tax_name),
+            ('company_id', '=', company_id),
+            ('type_tax_use', '=', tax_type)
+        ]
+        tax_ids = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search',
+            [domain],
+            {'limit': 1}
+        )
+        
+        if tax_ids:
+            print(f"Found tax '{tax_name}' by exact match with ID: {tax_ids[0]}")
+            return tax_ids[0]
+
+        # If no exact match, try a case-insensitive match
+        domain_ilike = [
+            ('name', 'ilike', tax_name),
+            ('company_id', '=', company_id),
+            ('type_tax_use', '=', tax_type)
+        ]
+        tax_ids_ilike = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search',
+            [domain_ilike],
+            {'limit': 1}
+        )
+        
+        if tax_ids_ilike:
+            print(f"Found tax '{tax_name}' by case-insensitive match with ID: {tax_ids_ilike[0]}")
+            return tax_ids_ilike[0]
+        
+        print(f"Warning: No tax found for name '{tax_name}' in company {company_id}")
+        return None
+        
+    except Exception as e:
+        print(f"Error finding tax '{tax_name}': {str(e)}")
+        return None
+
 def check_duplicate_bill(models, db, uid, password, vendor_id, invoice_date, total_amount, company_id, vendor_ref=None):
     """
     Check if a bill with the same vendor, date, total amount, and reference already exists in the specified company
@@ -378,7 +426,7 @@ def check_duplicate_bill(models, db, uid, password, vendor_id, invoice_date, tot
             ('move_type', '=', 'in_invoice'),  # Vendor bills only
             ('partner_id', '=', vendor_id),
             ('invoice_date', '=', invoice_date),
-            ('company_id', '=', company_id),   # Filter by company
+            ('company_id', '=', company_id),  # Filter by company
             ('state', '!=', 'cancel'),  # Exclude cancelled bills
         ]
         
@@ -480,20 +528,11 @@ def main(data):
                 "price_unit": 6.85,
                 "quantity": 1,
                 "tax_rate": 19,
-                "tax_grid": "+7"  // <-- NEW FIELD
+                "tax_name": "19% Standard", // <-- NEW FIELD
+                "tax_grid": "+7"
             }
         ],
-        "accounting_assignment": {
-            "additional_entries": [
-                {
-                    "account_code": "2202",
-                    "account_name": "Input VAT/Purchases", 
-                    "debit_amount": 526.89,
-                    "description": "...",
-                    "tax_grid": "+4"  // <-- NEW FIELD
-                }
-            ]
-        }
+        "accounting_assignment": { ... }
     }
     
     Note: Either vendor_id OR vendor_name is required (not both)
@@ -659,22 +698,6 @@ def main(data):
             # Return existing bill details
             return existing_bill
         
-        # Helper function to find tax by rate
-        def find_tax_by_rate(tax_rate, company_id):
-            """Find tax record by rate percentage for specific company"""
-            try:
-                domain = [('amount', '=', tax_rate), ('type_tax_use', '=', 'purchase'), ('company_id', '=', company_id)]
-                
-                tax_ids = models.execute_kw(
-                    db, uid, password,
-                    'account.tax', 'search',
-                    [domain],
-                    {'limit': 1}
-                )
-                return tax_ids[0] if tax_ids else None
-            except:
-                return None
-        
         # Prepare bill data
         bill_data = {
             'move_type': 'in_invoice',
@@ -692,35 +715,6 @@ def main(data):
         if payment_reference and payment_reference != 'none':
             bill_data['payment_reference'] = payment_reference
 
-        # Determine VAT treatment type
-        accounting_assignment = data.get('accounting_assignment', {})
-        additional_entries = accounting_assignment.get('additional_entries', [])
-        
-        # Check for reverse charge: both input and output VAT present
-        has_input_vat = any(
-            'input' in entry.get('account_name', '').lower() and 
-            ('vat' in entry.get('account_name', '').lower() or 'tax' in entry.get('account_name', '').lower())
-            for entry in additional_entries
-        )
-        has_output_vat = any(
-            'output' in entry.get('account_name', '').lower() and 
-            ('vat' in entry.get('account_name', '').lower() or 'tax' in entry.get('account_name', '').lower())
-            for entry in additional_entries
-        )
-        
-        is_reverse_charge = has_input_vat and has_output_vat
-        is_normal_vat_with_manual_entries = has_input_vat and not has_output_vat
-        
-        # Any manual VAT entries (either reverse charge or normal VAT)
-        has_manual_vat = has_input_vat or has_output_vat
-        
-        print(f"VAT Treatment Analysis:")
-        print(f"- Has Input VAT: {has_input_vat}")
-        print(f"- Has Output VAT: {has_output_vat}")
-        print(f"- Is Reverse Charge: {is_reverse_charge}")
-        print(f"- Is Normal VAT with Manual Entries: {is_normal_vat_with_manual_entries}")
-        print(f"- Has Manual VAT: {has_manual_vat}")
-
         # Handle line items
         invoice_line_ids = []
         
@@ -736,11 +730,10 @@ def main(data):
                 try:
                     quantity = float(item.get('quantity', 1.0))
                     price_unit = float(item.get('price_unit', 0.0))
-                    tax_rate = float(item.get('tax_rate', 0.0)) if item.get('tax_rate') else None
                 except (ValueError, TypeError):
                     return {
                         'success': False,
-                        'error': 'quantity, price_unit, and tax_rate must be valid numbers'
+                        'error': 'quantity and price_unit must be valid numbers'
                     }
                 
                 line_item = {
@@ -779,25 +772,17 @@ def main(data):
                         'error': f'Could not find expense account "{account_info}" for line item "{item["description"]}" in company {company_id}. Please check the account name or code.'
                     }
                 
-                # Apply tax logic based on VAT treatment
-                if tax_rate is not None and tax_rate > 0:
-                    if is_reverse_charge:
-                        print(f"Reverse charge detected - skipping automatic tax calculation")
-                        line_item['tax_ids'] = [(6, 0, [])]
-                    elif is_normal_vat_with_manual_entries:
-                        print(f"Normal VAT with manual entries - skipping automatic tax calculation")
-                        line_item['tax_ids'] = [(6, 0, [])]
-                    elif not has_manual_vat:
-                        tax_id = find_tax_by_rate(tax_rate, company_id)
-                        if tax_id:
-                            line_item['tax_ids'] = [(6, 0, [tax_id])]
-                            print(f"Applied automatic tax calculation: {tax_rate}%")
-                        else:
-                            print(f"Warning: No tax found for rate {tax_rate}%, continuing without automatic tax")
-                elif tax_rate is None or tax_rate == 0:
-                    print(f"No tax rate provided or tax rate is 0%, skipping tax calculation")
-                
-                # --- START: ADDED TAX GRID LOGIC ---
+                # --- START: NEW TAX LOGIC using tax_name ---
+                if item.get('tax_name'):
+                    tax_id = find_tax_by_name(models, db, uid, password, item['tax_name'], company_id)
+                    if tax_id:
+                        line_item['tax_ids'] = [(6, 0, [tax_id])]
+                        print(f"Applied tax '{item['tax_name']}' (ID: {tax_id}) using name lookup.")
+                    else:
+                        print(f"Warning: Tax with name '{item['tax_name']}' not found. No tax will be applied to this line.")
+                # --- END: NEW TAX LOGIC ---
+
+                # --- START: TAX GRID LOGIC (Maintained) ---
                 if item.get('tax_grid'):
                     tax_tag_id = find_tax_tag_by_name(models, db, uid, password, item['tax_grid'], company_id)
                     if tax_tag_id:
@@ -805,7 +790,7 @@ def main(data):
                         print(f"Applied tax tag '{item['tax_grid']}' (ID: {tax_tag_id}) to line item")
                     else:
                         print(f"Warning: Tax tag '{item['tax_grid']}' not found")
-                # --- END: ADDED TAX GRID LOGIC ---
+                # --- END: TAX GRID LOGIC ---
                 
                 invoice_line_ids.append((0, 0, line_item))
         
@@ -878,12 +863,22 @@ def main(data):
                 'error': 'Failed to create bill in Odoo'
             }
         
-        # Handle additional journal entries for VAT based on treatment type
-        if additional_entries:
+        # Determine VAT treatment type
+        accounting_assignment = data.get('accounting_assignment', {})
+        additional_entries = accounting_assignment.get('additional_entries', [])
+
+        # --- MODIFIED LOGIC START ---
+        # Handle additional journal entries, but only if it's NOT a reverse charge case.
+        # For reverse charge, the tax set on the line item is expected to handle everything.
+        if additional_entries and accounting_assignment.get('requires_reverse_charge') is not True:
+            print("Processing additional journal entries for non-reverse charge transaction.")
             try:
                 # Prepare additional journal entries
                 additional_lines = []
                 input_vat_amount = 0.0
+
+                has_input_vat = any('input' in entry.get('account_name', '').lower() for entry in additional_entries)
+                is_normal_vat_with_manual_entries = has_input_vat and accounting_assignment.get('requires_reverse_charge') is not True
                 
                 for entry in additional_entries:
                     # Try to find account by name first, then by code
@@ -911,8 +906,7 @@ def main(data):
                             'partner_id': vendor_id,
                         }
 
-                        # --- START: ADDED TAX GRID LOGIC ---
-                        # Add tax tags/grid for additional entries
+                        # --- START: TAX GRID LOGIC (Maintained) ---
                         if entry.get('tax_grid'):
                             tax_tag_id = find_tax_tag_by_name(models, db, uid, password, entry['tax_grid'], company_id)
                             if tax_tag_id:
@@ -920,13 +914,12 @@ def main(data):
                                 print(f"Applied tax tag '{entry['tax_grid']}' (ID: {tax_tag_id}) to additional entry")
                             else:
                                 print(f"Warning: Tax tag '{entry['tax_grid']}' not found")
-                        # --- END: ADDED TAX GRID LOGIC ---
+                        # --- END: TAX GRID LOGIC ---
 
                         additional_lines.append((0, 0, line_data))
                         
                         # Track input VAT amount for normal VAT treatment
-                        if ('input' in entry.get('account_name', '').lower() and 
-                            ('vat' in entry.get('account_name', '').lower() or 'tax' in entry.get('account_name', '').lower())):
+                        if ('input' in entry.get('account_name', '').lower()):
                             input_vat_amount += debit_amount
                         
                         print(f"Added journal entry: {entry.get('account_name')} - Debit: {debit_amount}, Credit: {credit_amount}")
@@ -978,28 +971,24 @@ def main(data):
                 print(f"Warning: Could not add additional journal entries: {str(e)}")
                 import traceback
                 traceback.print_exc()
-        
+        elif accounting_assignment.get('requires_reverse_charge') is True:
+            print("Skipping additional journal entries because 'requires_reverse_charge' is True. Tax on line item will handle it.")
+        # --- MODIFIED LOGIC END ---
+
         # Update with explicit amounts if provided
         update_data = {}
         
-        # Set explicit amounts if provided
         if subtotal is not None:
-            try:
-                update_data['amount_untaxed'] = float(subtotal)
-            except (ValueError, TypeError):
-                pass
+            try: update_data['amount_untaxed'] = float(subtotal)
+            except (ValueError, TypeError): pass
         
         if tax_amount is not None:
-            try:
-                update_data['amount_tax'] = float(tax_amount)
-            except (ValueError, TypeError):
-                pass
+            try: update_data['amount_tax'] = float(tax_amount)
+            except (ValueError, TypeError): pass
         
         if total_amount is not None:
-            try:
-                update_data['amount_total'] = float(total_amount)
-            except (ValueError, TypeError):
-                pass
+            try: update_data['amount_total'] = float(total_amount)
+            except (ValueError, TypeError): pass
         
         # Update the bill with explicit amounts if any were provided
         if update_data:
@@ -1010,29 +999,26 @@ def main(data):
                     [[bill_id], update_data]
                 )
             except Exception as e:
-                # If we can't set the amounts directly, continue with posting
                 print(f"Warning: Could not set explicit amounts: {str(e)}")
         
         # POST THE BILL - Move from draft to posted state
         try:
-            post_result = models.execute_kw(
+            models.execute_kw(
                 db, uid, password,
                 'account.move', 'action_post',
                 [[bill_id]]
             )
             
-            # Verify the bill was posted successfully
-            bill_state = models.execute_kw(
-                db, uid, password,
-                'account.move', 'read',
-                [[bill_id]], 
-                {'fields': ['state']}
-            )[0]['state']
+            bill_state_data = models.execute_kw(
+                db, uid, password, 'account.move', 'read',
+                [[bill_id]], {'fields': ['state']}
+            )
             
-            if bill_state != 'posted':
+            if not bill_state_data or bill_state_data[0]['state'] != 'posted':
+                state = bill_state_data[0]['state'] if bill_state_data else 'unknown'
                 return {
                     'success': False,
-                    'error': f'Bill was created but failed to post. Current state: {bill_state}'
+                    'error': f'Bill was created but failed to post. Current state: {state}'
                 }
                 
         except xmlrpc.client.Fault as e:
@@ -1041,23 +1027,22 @@ def main(data):
                 'error': f'Bill created but failed to post: {str(e)}'
             }
         
-        # ### START: ROBUST FIX FOR LINE ITEM RETRIEVAL ###
+        # ### START: COMPREHENSIVE OUTPUT RETRIEVAL ###
         
-        # Add a short delay to ensure the database transaction is complete after posting.
-        # This helps prevent a race condition where we query for lines before they are fully available.
         print("Waiting for 1 second for database commit after posting...")
         time.sleep(1)
 
-        # Step 1: Read the entire posted move again to get the definitive list of its line IDs.
-        # This is more reliable than searching for them separately.
+        # Step 1: Read the entire posted move to get all details and line IDs.
         posted_bill_data = models.execute_kw(
             db, uid, password,
             'account.move', 'read',
             [[bill_id]],
             {
                 'fields': [
-                    'name', 'amount_total', 'amount_untaxed', 'amount_tax', 
-                    'state', 'invoice_date_due', 'line_ids'  # Crucially, fetch the line IDs
+                    'name', 'state', 'move_type', 'partner_id', 'company_id',
+                    'invoice_date', 'invoice_date_due', 'ref', 'payment_reference',
+                    'amount_untaxed', 'amount_tax', 'amount_total',
+                    'line_ids'  # Crucially, fetch the line IDs
                 ],
                 'context': context
             }
@@ -1079,11 +1064,14 @@ def main(data):
             detailed_line_items = models.execute_kw(
                 db, uid, password,
                 'account.move.line', 'read',
-                [line_ids],  # Use the list of IDs directly
+                [line_ids],
                 {
                     'fields': [
-                        'id', 'name', 'account_id', 'debit', 'credit', 
-                        'quantity', 'price_unit', 'tax_tag_ids', 'display_type'
+                        'id', 'name', 'account_id', 'partner_id',
+                        'debit', 'credit', 'balance',
+                        'quantity', 'price_unit',
+                        'tax_ids', 'tax_tag_ids',
+                        'display_type'
                     ],
                     'context': context
                 }
@@ -1099,18 +1087,21 @@ def main(data):
             'exists': False,
             'bill_id': bill_id,
             'bill_number': bill_info.get('name'),
+            'vendor_id': vendor_id,
             'vendor_name': vendor_info['name'],
-            'invoice_date': invoice_date,
+            'company_id': bill_info.get('company_id'),
+            'invoice_date': bill_info.get('invoice_date'),
             'due_date': bill_info.get('invoice_date_due'),
-            'payment_reference': payment_reference if payment_reference != 'none' else None,
+            'vendor_reference': bill_info.get('ref'),
+            'payment_reference': bill_info.get('payment_reference'),
             'state': bill_info.get('state'),
-            'bill_amount': bill_info.get('amount_untaxed'),
+            'subtotal': bill_info.get('amount_untaxed'),
             'tax_amount': bill_info.get('amount_tax'),
             'total_amount': bill_info.get('amount_total'),
-            'line_items': detailed_line_items,
+            'journal_items': detailed_line_items,
             'message': 'Vendor bill created and posted successfully'
         }
-        # ### END: ROBUST FIX FOR LINE ITEM RETRIEVAL ###
+        # ### END: COMPREHENSIVE OUTPUT RETRIEVAL ###
         
     except xmlrpc.client.Fault as e:
         return {
@@ -1292,7 +1283,6 @@ def list_expense_accounts(company_id, limit=50):
             'count': len(accounts),
             'account_type': 'expense'
         }
-        
     except Exception as e:
         return {
             'success': False,
