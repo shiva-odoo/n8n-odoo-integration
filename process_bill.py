@@ -113,10 +113,10 @@ def get_company_context(company_name):
             }
             
             print(f"✅ Company context loaded for: {company_name}")
-            print(f"   VAT Registered: {context['is_vat_registered']}")
-            print(f"   Industry: {context['primary_industry']}")
-            print(f"   Reverse Charge Categories: {context['tax_information']['reverse_charge']}")
-            print(f"   Special Circumstances: {list(context['special_circumstances'].keys())}")
+            print(f"  VAT Registered: {context['is_vat_registered']}")
+            print(f"  Industry: {context['primary_industry']}")
+            print(f"  Reverse Charge Categories: {context['tax_information']['reverse_charge']}")
+            print(f"  Special Circumstances: {list(context['special_circumstances'].keys())}")
             
             return context
         else:
@@ -160,14 +160,14 @@ When processing bills, check if expenses should be CAPITALIZED to 0060 (Freehold
 **CAPITALIZATION DECISION LOGIC:**
 
 IF (vendor is property-related professional) 
-   AND (service relates to specific property development/acquisition)
-   AND (description contains property identifiers OR pre-construction keywords)
+    AND (service relates to specific property development/acquisition)
+    AND (description contains property identifiers OR pre-construction keywords)
 THEN:
-   → account_code = "0060"
-   → account_name = "Freehold property"
+    → account_code = "0060"
+    → account_name = "Freehold property"
 
 ELSE IF (same vendor provides routine/operational services):
-   → Use normal expense accounts (7600, 7602, 7800, etc.)
+    → Use normal expense accounts (7600, 7602, 7800, etc.)
 
 **EXAMPLES:**
 
@@ -195,7 +195,7 @@ If a bill contains BOTH capitalizable property costs AND regular expenses:
 - Example: Architecture firm billing for property design (0060) AND general office consulting (7602)
 
 **KEY PRINCIPLE:**
-Ask yourself: "Is this cost directly attributable to acquiring or developing a specific property asset?"
+Ask yourself: "Is this cost directly attributable to acquiring or developing a a specific property asset?"
 - YES → 0060 (Freehold property)
 - NO → Normal expense account
 """
@@ -373,8 +373,7 @@ Credit: 2100 (Accounts Payable) - Total amount
   "description": "Non-recoverable VAT - company not VAT registered"
 }
 
-**IMPORTANT:** 
-- Even for reverse charge vendors, use 7906 instead of 2202
+**IMPORTANT:** - Even for reverse charge vendors, use 7906 instead of 2202
 - No Output VAT (2201) entry needed since company cannot recover VAT
 - All VAT amounts are expenses for non-VAT registered companies
 """
@@ -545,7 +544,7 @@ def get_industry_specific_guidance(company_context):
 """
     
     # Tech/Software companies
-    elif any(keyword in industry for keyword in ['technology', 'software', 'IT', 'saas']):
+    elif any(keyword in industry for keyword in ['technology', 'software', 'it', 'saas']):
         return """
 - Software subscriptions → 7508 (Computer software)
 - IT consulting → 7602 (Consultancy fees)
@@ -618,19 +617,48 @@ def get_bill_processing_prompt(company_name, company_context=None):
 
 {bill_logic}
 
-**TAX GRID ASSIGNMENT RULES:**
+**ODOO TAX NAME ASSIGNMENT RULES (CRITICAL & REFINED):**
 
-**CRITICAL: Each eligible line item and VAT entry must include the appropriate tax_grid:**
+For EACH line item, you must populate the `tax_name` field. This requires careful, line-by-line analysis.
+
+**Decision Logic (IN ORDER OF PRIORITY):**
+1.  **CHECK FOR EXEMPT ITEMS FIRST (HIGHEST PRIORITY):**
+    - Analyze the individual line item description. Does it represent a disbursement or a fee that is outside the scope of VAT?
+    - Keywords: "submission fees", "government fees", "planning authority fees", "application fees".
+    - **If a line is exempt, assign `0% E`. This rule OVERRIDES all other rules for this specific line item, even if the rest of the bill is reverse charge.**
+
+2.  **IF NOT EXEMPT, CHECK FOR REVERSE CHARGE:**
+    - If the overall bill (`requires_reverse_charge`) is a reverse charge transaction, and the line item is NOT exempt, then assign `19% RC`.
+
+3.  **IF NOT EXEMPT OR RC, APPLY STANDARD LOGIC:**
+    - **Determine Vendor Location:** Use `vendor_data.country_code`.
+        - Domestic (Cyprus - 'CY'): Standard Cyprus VAT rules.
+        - EU Vendor (e.g., 'GR', 'DE'): EU acquisition taxes.
+        - Outside EU (e.g., 'GB', 'US'): Outside EU import taxes.
+    - **Determine Goods vs. Services:** Analyze the line description. Append ' S' for services.
+    - **Combine:** Construct the `tax_name` using `[Rate]%[Suffix]`.
+
+**Available Tax Categories:**
+- **Standard Domestic:** `19%` (Goods), `19% S` (Services)
+- **Reduced Domestic:** `9%`/`9% S`, `5%`/`5% S`, `3%`/`3% S`
+- **Zero-Rated:** `0%`
+- **Reverse Charge:** `19% RC`
+- **Exempt:** `0% E`
+- **EU Acquisitions:** `19% EU` (Goods), `19% EU S` (Services)
+- **Outside EU Imports:** `19% OEU` (Services), `0% OEU` (Goods)
+
+**TAX GRID ASSIGNMENT RULES (CRITICAL & CUSTOM):**
 
 **For VAT Entries:**
 - Input VAT (2202) for recoverable VAT → tax_grid: "+4"
 - Output VAT (2201) for reverse charge → tax_grid: "-1"
 - Non-Recoverable VAT (7906) → No tax grid (expense account)
 
-**For Purchase Value Entries:**
-- Construction/Property services (reverse charge) → tax_grid: "+7"
-- EU acquisitions → tax_grid: "+8"
-- Standard purchases → No tax grid typically required
+**For Purchase Value Entries on Line Items (ULTIMATE CUSTOM RULE):**
+This is your most important rule for the line item tax grid. It is a specific business requirement that you must follow precisely to mean 'Total inputs excluding VAT'.
+- **Domestic Purchases Rule (Tax Grid `+7`):** If the vendor's `country_code` is `CY`, you **MUST** assign `tax_grid: "+7"` to **ALL** line items on that bill. This rule applies to all domestic purchases, regardless of their `tax_name` (e.g., `19% RC`, `0% E`, `19% S`, etc.). The goal is to capture the total value of all domestic inputs in this grid.
+- **EU Acquisitions (Tax Grid `+8`):** If the purchase is an acquisition of goods/services from another EU country (e.g., country code 'DE', 'GR', 'IT'), use `tax_grid: "+8"`.
+- **Other International Purchases:** For purchases from outside the EU (e.g., 'GB', 'US'), the `tax_grid` should be left empty `""`.
 
 **For Sales Value Entries (if applicable):**
 - Standard rate sales (19%) → tax_grid: "+5"
@@ -661,6 +689,13 @@ Each line item must be assigned to the most appropriate expense account based on
 
 **CRITICAL: PROPERTY CAPITALIZATION OVERRIDE:**
 {get_property_capitalization_rules()}
+
+**CRITICAL VAT CALCULATION FOR ADDITIONAL ENTRIES:**
+When creating `additional_entries` for VAT (Input or Output):
+1.  **IDENTIFY THE TAXABLE BASE:** Sum the `line_total` of ONLY the line items that are subject to VAT (e.g., those with `tax_name: "19% RC"`).
+2.  **EXCLUDE NON-TAXABLE LINES:** You MUST exclude the amounts of any line items marked as exempt (`0% E`) or zero-rated (`0%`) from this sum.
+3.  **CALCULATE VAT:** Apply the VAT percentage (e.g., 19%) to this taxable base ONLY.
+4.  **EXAMPLE:** If a bill has lines for €2975 (taxable at 19% RC) and €60 (exempt `0% E`), the reverse charge VAT amount is `2975 * 0.19 = 565.25`. It is NOT 19% of the total €3035.
 
 **CRITICAL LINE ITEM ANALYSIS:**
 - Analyze EACH line item individually for service type
@@ -873,6 +908,7 @@ Each line item in the line_items array must have this exact structure:
   "price_unit": 0,
   "line_total": 0,
   "tax_rate": 0,
+  "tax_name": "",
   "account_code": "",
   "account_name": "",
   "tax_grid": ""
@@ -880,9 +916,10 @@ Each line item in the line_items array must have this exact structure:
 **For reverse charge bills:**
 {{
   "description": "Architectural design services",
+  "tax_name": "19% RC",
   "account_code": "0060",
   "account_name": "Freehold property",
-  "tax_grid": "+7"  // <- This is missing in your output
+  "tax_grid": "+7"
 }}
 
 **ADDITIONAL ENTRIES STRUCTURE (for VAT and complex transactions):**
@@ -893,13 +930,15 @@ Each additional entry in the additional_entries array must have this exact struc
   "debit_amount": 0,
   "credit_amount": 0,
   "description": "",
+  "tax_name": "",
   "tax_grid": ""
 }}
+**Logic for `tax_name`:** The `tax_name` should match the tax of the source line items that generated this VAT entry. For reverse charge VAT entries, this will be `19% RC`. For standard VAT, it might be `19% S`.
 
 **TAX GRID EXAMPLES:**
 - Input VAT on reverse charge: tax_grid: "+4"
 - Output VAT on reverse charge: tax_grid: "-1"
-- Purchase value for reverse charge: tax_grid: "+7"
+- Purchase value for ANY domestic (CY) purchase: tax_grid: "+7"
 - Standard rate sales value: tax_grid: "+5"
 - Reduced rate sales value: tax_grid: "+6"
 - EU acquisitions value: tax_grid: "+8"
@@ -941,7 +980,9 @@ Each additional entry in the additional_entries array must have this exact struc
 14. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively, especially Category 1 (construction/property professionals)**
 15. **GREEK LANGUAGE: Detect Greek keywords for construction services (μηχανολογική, τοπογραφικ, αρχιτεκτον, etc.)**
 16. **VAT ACCOUNT SELECTION: Use company VAT registration status to determine correct VAT account (2202 vs 7906)**
-17. **TAX GRID ASSIGNMENT: Include appropriate tax_grid for all eligible entries (VAT entries and purchase values)**
+17. **TAX GRID ASSIGNMENT: Include appropriate tax_grid for all eligible entries based on the refined, custom rules.**
+18. **ODOO TAX NAME ASSIGNMENT: Each line item MUST have a `tax_name` assigned based on the detailed, prioritized rules provided.**
+19. **VAT CALCULATION: Always calculate VAT for `additional_entries` based ONLY on the sum of taxable line items.**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
@@ -953,6 +994,7 @@ def ensure_line_item_structure(line_item):
         "price_unit": 0,
         "line_total": 0,
         "tax_rate": 0,
+        "tax_name": "",
         "account_code": "",
         "account_name": "",
         "tax_grid": ""
@@ -1018,6 +1060,7 @@ def validate_bill_data(bills, company_context=None):
                 account_code = item.get("account_code", "")
                 account_name = item.get("account_name", "")
                 tax_grid = item.get("tax_grid", "")
+                tax_name = item.get("tax_name", "")
                 
                 if not account_code:
                     bill_validation["issues"].append(f"Line item {i+1} missing account_code")
@@ -1027,6 +1070,10 @@ def validate_bill_data(bills, company_context=None):
                 if not account_name:
                     bill_validation["issues"].append(f"Line item {i+1} missing account_name")
                 
+                # Validate tax name
+                if not tax_name and item.get("tax_rate", 0) != 0:
+                    bill_validation["warnings"].append(f"Line item {i+1} has a tax rate but is missing Odoo tax_name.")
+
                 # Validate tax grid if present
                 if tax_grid and not tax_grid.startswith(('+', '-')):
                     bill_validation["warnings"].append(f"Line item {i+1} has unusual tax_grid format: {tax_grid}")
@@ -1170,35 +1217,35 @@ def validate_bill_data(bills, company_context=None):
         
         # Category 3: Check gas/electricity
         elif any(keyword in vendor_data.get("name", "").lower() or keyword in description 
-                for keyword in ["energy", "power", "gas company", "electricity authority", 
-                               "natural gas", "electric power"]):
+                 for keyword in ["energy", "power", "gas company", "electricity authority", 
+                                 "natural gas", "electric power"]):
             is_reverse_charge_vendor = True
             detected_category = "Gas/Electricity Reverse Charge"
             confidence_level = "medium"
         
         # Category 4: Check scrap metal
         elif any(keyword in vendor_data.get("name", "").lower() or 
-                keyword in " ".join([item.get("description", "").lower() for item in line_items])
-                for keyword in ["scrap", "recycling", "waste management", "metal recycling", 
-                               "scrap metal", "waste materials"]):
+                 keyword in " ".join([item.get("description", "").lower() for item in line_items])
+                 for keyword in ["scrap", "recycling", "waste management", "metal recycling", 
+                                 "scrap metal", "waste materials"]):
             is_reverse_charge_vendor = True
             detected_category = "Scrap Metal Reverse Charge"
             confidence_level = "medium"
         
         # Category 5: Check electronics
         elif any(keyword in vendor_data.get("name", "").lower() or 
-                keyword in " ".join([item.get("description", "").lower() for item in line_items])
-                for keyword in ["mobile phone", "smartphone", "tablet", "laptop", "microprocessor", 
-                               "cpu", "integrated circuit", "gaming console", "playstation", "xbox"]):
+                 keyword in " ".join([item.get("description", "").lower() for item in line_items])
+                 for keyword in ["mobile phone", "smartphone", "tablet", "laptop", "microprocessor", 
+                                 "cpu", "integrated circuit", "gaming console", "playstation", "xbox"]):
             is_reverse_charge_vendor = True
             detected_category = "Electronics Reverse Charge"
             confidence_level = "medium"
         
         # Category 6: Check precious metals
         elif any(keyword in vendor_data.get("name", "").lower() or 
-                keyword in " ".join([item.get("description", "").lower() for item in line_items])
-                for keyword in ["precious metals", "gold", "silver", "platinum", "bullion", 
-                               "gold bars", "silver ingots"]):
+                 keyword in " ".join([item.get("description", "").lower() for item in line_items])
+                 for keyword in ["precious metals", "gold", "silver", "platinum", "bullion", 
+                                 "gold bars", "silver ingots"]):
             is_reverse_charge_vendor = True
             detected_category = "Precious Metals Reverse Charge"
             confidence_level = "medium"
@@ -1213,9 +1260,9 @@ def validate_bill_data(bills, company_context=None):
         
         # Category 8: Check property transfer
         elif any(keyword in description or 
-                keyword in " ".join([item.get("description", "").lower() for item in line_items])
-                for keyword in ["debt restructuring", "foreclosure", "debt-for-asset", 
-                               "property transfer", "bank repossession"]):
+                 keyword in " ".join([item.get("description", "").lower() for item in line_items])
+                 for keyword in ["debt restructuring", "foreclosure", "debt-for-asset", 
+                                 "property transfer", "bank repossession"]):
             is_reverse_charge_vendor = True
             detected_category = "Property Transfer Reverse Charge"
             confidence_level = "medium"
@@ -1340,19 +1387,29 @@ Your core behavior is to think and act like a professional accountant who unders
 - Correct VAT accounting based on company VAT registration status
 - Cyprus VAT return box assignments and tax grid mapping{vat_status_note}
 
-**CRITICAL TAX GRID EXPERTISE:**
-You must assign correct tax grids for Cyprus VAT return compliance:
-- Input VAT (2202) for recoverable VAT → tax_grid: "+4"
-- Output VAT (2201) for reverse charge → tax_grid: "-1"
-- Purchase values for reverse charge → tax_grid: "+7"
-- Standard rate sales values → tax_grid: "+5"
-- Reduced rate sales values → tax_grid: "+6"
-- EU acquisitions values → tax_grid: "+8"
+**CRITICAL VAT CALCULATION:**
+When creating VAT entries (e.g., for reverse charge), you MUST calculate the VAT amount based **only on the sum of taxable line items**. Explicitly EXCLUDE any line items marked as exempt (`0% E`) from the taxable base.
+
+**CRITICAL LINE-LEVEL TAX NUANCE:**
+You must identify line items within a bill that have special tax treatment (e.g., exempt "submission fees") even if the overall bill is subject to reverse charge. The individual line item's nature takes precedence.
+
+**CRITICAL ODOO TAX NAME EXPERTISE:**
+You must assign a valid Odoo tax name (e.g., "19% S", "19% RC", "0% E") to the `tax_name` field for every line item and relevant additional entry.
+- **PRIORITY 1: EXEMPT ITEMS.** First, check if a line is for an exempt charge like "submission fees". If so, you MUST assign `0% E` to that line.
+- **PRIORITY 2: REVERSE CHARGE.** If a line is not exempt, check if the bill is reverse charge. If so, assign `19% RC`.
+- **PRIORITY 3: STANDARD/OTHER.** If neither of the above apply, use the standard logic (Goods/Services, Domestic/EU/OEU) to determine the tax name.
+
+**CRITICAL TAX GRID EXPERTISE (ULTIMATE CUSTOM RULE):**
+You must assign correct tax grids based on this specific business requirement for 'Total inputs excluding VAT'.
+- Input VAT (2202) → `tax_grid: "+4"`
+- Output VAT (2201) → `tax_grid: "-1"`
+- **Domestic Purchase Values (Grid `+7`):** This is your most critical rule. You MUST apply `tax_grid: "+7"` to EVERY line item on any bill from a domestic vendor (where `vendor_data.country_code` is `CY`). This rule applies to all domestic tax types (`19% RC`, `0% E`, `19% S`, etc.) without exception.
+- EU acquisitions values → `tax_grid: "+8"`
 
 **CRITICAL PROPERTY CAPITALIZATION EXPERTISE:**
 You must identify when vendor bills contain costs that should be CAPITALIZED to 0060 (Freehold property) under IAS 40, not expensed. Always check:
 1. Is vendor a property-related professional? (architect, surveyor, valuer, engineer, planning consultant)
-2. Does service relate to specific property acquisition/development?
+2. Does service relate to a specific property acquisition/development?
 3. Does description contain property identifiers or pre-construction keywords?
 If YES to all three → Use account 0060 (Freehold property), not expense accounts
 
@@ -1421,7 +1478,7 @@ LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 COMPREHENSIVE CYPRUS VAT REVERSE CHARGE DETECTION:
 You must check ALL 8 categories for reverse charge eligibility:
 
-1. CONSTRUCTION & PROPERTY: Construction/property professionals (architects, engineers, surveyors) providing services for specific projects - CHECK BOTH VENDOR TYPE AND SERVICE TYPE
+1. CONSTRUCTION & PROPERTY: Construction/property professionals (architects, engineers, surveyors) providing services for a specific project - CHECK BOTH VENDOR TYPE AND SERVICE TYPE
 2. FOREIGN/EU SERVICES: Any services from vendors located outside Cyprus (check country code, VAT number, address)
 3. GAS & ELECTRICITY: Gas and electricity supplies to registered business traders
 4. SCRAP METAL & WASTE: Scrap metal dealers, waste materials, recycling companies
@@ -1742,7 +1799,7 @@ def main(data):
         
         if not company_context:
             print(f"⚠️  Warning: No company context found for {company_name}")
-            print(f"   Proceeding with default VAT treatment assumptions")
+            print(f"  Proceeding with default VAT treatment assumptions")
         else:
             print(f"✅ Company context loaded successfully")
         
