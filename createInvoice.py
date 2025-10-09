@@ -1,6 +1,7 @@
 import xmlrpc.client
 from datetime import datetime
 import os
+import time
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
     try:
@@ -950,24 +951,25 @@ def main(data):
         
         # POST THE INVOICE - Move from draft to posted state
         try:
-            post_result = models.execute_kw(
+            models.execute_kw(
                 db, uid, password,
                 'account.move', 'action_post',
                 [[invoice_id]]
             )
             
             # Verify the invoice was posted successfully
-            invoice_state = models.execute_kw(
+            invoice_state_data = models.execute_kw(
                 db, uid, password,
                 'account.move', 'read',
                 [[invoice_id]], 
                 {'fields': ['state']}
-            )[0]['state']
+            )
             
-            if invoice_state != 'posted':
+            if not invoice_state_data or invoice_state_data[0]['state'] != 'posted':
+                state = invoice_state_data[0]['state'] if invoice_state_data else 'unknown'
                 return {
                     'success': False,
-                    'error': f'Invoice was created but failed to post. Current state: {invoice_state}'
+                    'error': f'Invoice was created but failed to post. Current state: {state}'
                 }
                 
         except xmlrpc.client.Fault as e:
@@ -975,39 +977,299 @@ def main(data):
                 'success': False,
                 'error': f'Invoice created but failed to post: {str(e)}'
             }
-        
-        # Get final invoice information after posting including line items
-        invoice_info = models.execute_kw(
-            db, uid, password,
-            'account.move', 'read',
-            [[invoice_id]], 
-            {'fields': ['name', 'amount_total', 'amount_untaxed', 'amount_tax', 'state', 'invoice_date_due']}
-        )[0]
-        
-        # Get line items
-        line_items = models.execute_kw(
+
+        # ### START: COMPREHENSIVE OUTPUT RETRIEVAL ###
+
+        print("Waiting for 2 seconds for database commit after posting...")
+        import time
+        time.sleep(2)
+
+        # Step 1: DIRECTLY search for all move lines belonging to this invoice
+        print(f"Searching for all lines with move_id = {invoice_id}")
+        all_move_lines = models.execute_kw(
             db, uid, password,
             'account.move.line', 'search_read',
-            [[('move_id', '=', invoice_id), ('display_type', '=', False)]], 
-            {'fields': ['id', 'name', 'quantity', 'price_unit', 'price_total']}
+            [[('move_id', '=', invoice_id)]],
+            {
+                'fields': [
+                    'id', 'move_id', 'name', 'account_id', 'partner_id',
+                    'debit', 'credit', 'balance',
+                    'quantity', 'price_unit', 'price_subtotal', 'price_total',
+                    'tax_ids', 'tax_tag_ids', 'tax_line_id',
+                    'display_type', 'sequence',
+                    'date', 'date_maturity',
+                    'currency_id', 'amount_currency'
+                ],
+                'context': context
+            }
         )
-        
+
+        print(f"Found {len(all_move_lines)} total lines for move_id {invoice_id}")
+
+        # Debug: print all lines found
+        for idx, line in enumerate(all_move_lines):
+            print(f"Line {idx + 1}: ID={line['id']}, Name={line.get('name')}, Debit={line.get('debit')}, Credit={line.get('credit')}, Display Type={line.get('display_type')}")
+
+        # Step 2: Read the invoice header information
+        posted_invoices = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[('id', '=', invoice_id)]],
+            {
+                'fields': [
+                    'name', 'state', 'move_type', 'partner_id', 'company_id',
+                    'invoice_date', 'invoice_date_due', 'ref', 'payment_reference',
+                    'amount_untaxed', 'amount_tax', 'amount_total',
+                    'currency_id', 'journal_id'
+                ],
+                'context': context,
+                'limit': 1
+            }
+        )
+
+        if not posted_invoices:
+            return {
+                'success': False,
+                'error': f'Could not read back the created invoice (ID: {invoice_id}) after posting.',
+                'invoice_id': invoice_id
+            }
+
+        invoice_info = posted_invoices[0]
+        print(f"Invoice info retrieved: {invoice_info.get('name')}")
+
+        # Step 3: Get detailed customer information
+        customer_id_value = invoice_info['partner_id'][0] if isinstance(invoice_info['partner_id'], list) else invoice_info['partner_id']
+        customer_details = models.execute_kw(
+            db, uid, password,
+            'res.partner', 'read',
+            [[customer_id_value]],
+            {'fields': ['id', 'name', 'email', 'phone', 'vat', 'street', 'city', 'country_id']}
+        )[0]
+
+        # Step 4: Get company information
+        company_id_from_invoice = invoice_info['company_id'][0] if isinstance(invoice_info['company_id'], list) else invoice_info['company_id']
+        company_details = models.execute_kw(
+            db, uid, password,
+            'res.company', 'read',
+            [[company_id_from_invoice]],
+            {'fields': ['id', 'name', 'currency_id', 'country_id']}
+        )[0]
+
+        # Step 5: Get journal information
+        journal_info = None
+        if invoice_info.get('journal_id'):
+            journal_id_value = invoice_info['journal_id'][0] if isinstance(invoice_info['journal_id'], list) else invoice_info['journal_id']
+            journal_info = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'read',
+                [[journal_id_value]],
+                {'fields': ['id', 'name', 'code', 'type']}
+            )[0]
+
+        # Step 6: Process and enrich the lines we found
+        detailed_line_items = []
+
+        print(f"\n=== Processing {len(all_move_lines)} lines ===")
+
+        for line in all_move_lines:
+            # For invoices/bills, we want to INCLUDE product and tax lines
+            # Only skip payment_term, line_section, line_note, etc.
+            display_type = line.get('display_type')
+            
+            if display_type in ['payment_term', 'line_section', 'line_note']:
+                print(f"⏭️  Skipping non-journal line: {line.get('name')} (type: {display_type})")
+                continue
+            
+            # Include all other lines (product, tax, or no display_type)
+            print(f"✅ Processing line: {line.get('name')} - Debit: {line.get('debit')}, Credit: {line.get('credit')}, Type: {display_type}")
+            
+            # Build enriched line
+            enriched_line = {
+                'id': line['id'],
+                'name': line.get('name'),
+                'display_type': display_type,
+                'debit': line.get('debit', 0.0),
+                'credit': line.get('credit', 0.0),
+                'balance': line.get('balance', 0.0),
+                'quantity': line.get('quantity'),
+                'price_unit': line.get('price_unit'),
+                'price_subtotal': line.get('price_subtotal'),
+                'price_total': line.get('price_total'),
+            }
+            
+            # Get account details
+            if line.get('account_id'):
+                account_id_value = line['account_id'][0] if isinstance(line['account_id'], list) else line['account_id']
+                try:
+                    account_details = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'read',
+                        [[account_id_value]],
+                        {'fields': ['id', 'code', 'name', 'account_type']}
+                    )[0]
+                    enriched_line['account'] = {
+                        'id': account_details['id'],
+                        'code': account_details['code'],
+                        'name': account_details['name'],
+                        'type': account_details['account_type']
+                    }
+                    print(f"   Account: {account_details.get('code')} - {account_details['name']}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch account details: {e}")
+            
+            # Get partner details for this line if exists
+            if line.get('partner_id'):
+                partner_id_value = line['partner_id'][0] if isinstance(line['partner_id'], list) else line['partner_id']
+                try:
+                    partner_details = models.execute_kw(
+                        db, uid, password,
+                        'res.partner', 'read',
+                        [[partner_id_value]],
+                        {'fields': ['id', 'name']}
+                    )[0]
+                    enriched_line['partner'] = {
+                        'id': partner_details['id'],
+                        'name': partner_details['name']
+                    }
+                    print(f"   Partner: {partner_details['name']}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch partner details: {e}")
+            
+            # Get tax details if taxes are applied
+            if line.get('tax_ids'):
+                tax_ids_list = line['tax_ids'] if isinstance(line['tax_ids'], list) else [line['tax_ids']]
+                if tax_ids_list:
+                    try:
+                        tax_details = models.execute_kw(
+                            db, uid, password,
+                            'account.tax', 'read',
+                            [tax_ids_list],
+                            {'fields': ['id', 'name', 'amount', 'amount_type', 'type_tax_use']}
+                        )
+                        enriched_line['taxes'] = tax_details
+                        print(f"   Taxes: {[t['name'] for t in tax_details]}")
+                    except Exception as e:
+                        print(f"   ⚠️  Could not fetch tax details: {e}")
+            
+            # Get tax tag details if tax tags are applied
+            if line.get('tax_tag_ids'):
+                tax_tag_ids_list = line['tax_tag_ids'] if isinstance(line['tax_tag_ids'], list) else [line['tax_tag_ids']]
+                if tax_tag_ids_list:
+                    try:
+                        tax_tag_details = models.execute_kw(
+                            db, uid, password,
+                            'account.account.tag', 'read',
+                            [tax_tag_ids_list],
+                            {'fields': ['id', 'name', 'applicability', 'country_id']}
+                        )
+                        enriched_line['tax_tags'] = tax_tag_details
+                        print(f"   Tax Tags: {[t['name'] for t in tax_tag_details]}")
+                    except Exception as e:
+                        print(f"   ⚠️  Could not fetch tax tag details: {e}")
+            
+            # Check if this is a tax line
+            if line.get('tax_line_id'):
+                enriched_line['is_tax_line'] = True
+                tax_id_value = line['tax_line_id'][0] if isinstance(line['tax_line_id'], list) else line['tax_line_id']
+                try:
+                    tax_info = models.execute_kw(
+                        db, uid, password,
+                        'account.tax', 'read',
+                        [[tax_id_value]],
+                        {'fields': ['id', 'name', 'amount']}
+                    )[0]
+                    enriched_line['tax_line_info'] = tax_info
+                    print(f"   Tax Line: {tax_info['name']}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch tax line info: {e}")
+            else:
+                enriched_line['is_tax_line'] = False
+            
+            detailed_line_items.append(enriched_line)
+
+        print(f"\n=== Final Result: {len(detailed_line_items)} line items after filtering ===")
+
+        # Construct the comprehensive success response
         return {
             'success': True,
             'exists': False,
+            'message': 'Customer invoice created and posted successfully',
+            
+            # Invoice header information
             'invoice_id': invoice_id,
             'invoice_number': invoice_info.get('name'),
-            'customer_name': customer_info['name'],
-            'total_amount': invoice_info.get('amount_total'),
+            'state': invoice_info.get('state'),
+            'move_type': invoice_info.get('move_type'),
+            
+            # Dates
+            'invoice_date': invoice_info.get('invoice_date'),
+            'due_date': invoice_info.get('invoice_date_due'),
+            
+            # References
+            'customer_reference': invoice_info.get('ref'),
+            'payment_reference': invoice_info.get('payment_reference'),
+            
+            # Amounts
             'subtotal': invoice_info.get('amount_untaxed'),
             'tax_amount': invoice_info.get('amount_tax'),
-            'state': invoice_info.get('state'),
-            'invoice_date': invoice_date,
-            'due_date': due_date,
-            'payment_reference': payment_reference if payment_reference != 'none' else None,
-            'line_items': line_items,
-            'message': 'Customer invoice created and posted successfully'
+            'total_amount': invoice_info.get('amount_total'),
+            'currency': invoice_info.get('currency_id'),
+            
+            # Customer information
+            'customer': {
+                'id': customer_details['id'],
+                'name': customer_details['name'],
+                'email': customer_details.get('email'),
+                'phone': customer_details.get('phone'),
+                'vat': customer_details.get('vat'),
+                'address': {
+                    'street': customer_details.get('street'),
+                    'city': customer_details.get('city'),
+                    'country': customer_details.get('country_id')
+                }
+            },
+            
+            # Company information
+            'company': {
+                'id': company_details['id'],
+                'name': company_details['name'],
+                'currency': company_details.get('currency_id'),
+                'country': company_details.get('country_id')
+            },
+            
+            # Journal information
+            'journal': journal_info,
+            
+            # Detailed line items (matching your transaction script format)
+            'line_items': [
+                {
+                    'id': line['id'],
+                    'label': line['name'],
+                    'display_type': line.get('display_type'),
+                    'account_code': line['account']['code'] if line.get('account') else None,
+                    'account_name': line['account']['name'] if line.get('account') else None,
+                    'account_type': line['account']['type'] if line.get('account') else None,
+                    'partner': line['partner']['name'] if line.get('partner') else None,
+                    'debit': line['debit'],
+                    'credit': line['credit'],
+                    'balance': line['balance'],
+                    'quantity': line.get('quantity'),
+                    'price_unit': line.get('price_unit'),
+                    'price_subtotal': line.get('price_subtotal'),
+                    'price_total': line.get('price_total'),
+                    'taxes': line.get('taxes'),
+                    'tax_tags': line.get('tax_tags'),
+                    'is_tax_line': line.get('is_tax_line', False)
+                }
+                for line in detailed_line_items
+            ],
+            'line_count': len(detailed_line_items),
+            
+            # Keep the detailed journal entries for comprehensive info
+            'journal_entries_detailed': detailed_line_items
         }
+
+# ### END: COMPREHENSIVE OUTPUT RETRIEVAL ###
         
     except xmlrpc.client.Fault as e:
         return {
