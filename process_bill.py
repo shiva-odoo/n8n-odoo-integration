@@ -355,19 +355,19 @@ Still create BOTH 2202 (Input VAT) AND 2201 (Output VAT) entries as per reverse 
         return """
 **🔴 CRITICAL VAT TREATMENT FOR THIS COMPANY (NOT VAT REGISTERED):**
 ❌ Company is NOT registered for VAT
-❌ VAT is NON-RECOVERABLE - MUST use account 7906 (Non-Recoverable VAT on expenses)
+❌ VAT is NON-RECOVERABLE - MUST use account 7906 (Non Recoverable VAT on expenses)
 ❌ VAT becomes an EXPENSE, not a recoverable asset
 ❌ NEVER use account 2202 (Input VAT) for this company
 
 **Accounting Entry for Non-VAT Registered Company:**
 Debit: [Expense Account] - Net amount
-Debit: 7906 (Non-Recoverable VAT on expenses) - VAT amount (EXPENSE)
+Debit: 7906 (Non Recoverable VAT on expenses) - VAT amount (EXPENSE)
 Credit: 2100 (Accounts Payable) - Total amount
 
 **Additional Entry Structure:**
 {
   "account_code": "7906",
-  "account_name": "Non-Recoverable VAT on expenses",
+  "account_name": "Non Recoverable VAT on expenses",
   "debit_amount": [vat_amount],
   "credit_amount": 0,
   "description": "Non-recoverable VAT - company not VAT registered"
@@ -652,7 +652,7 @@ For EACH line item, you must populate the `tax_name` field. This requires carefu
 **For VAT Entries:**
 - Input VAT (2202) for recoverable VAT → tax_grid: "+4"
 - Output VAT (2201) for reverse charge → tax_grid: "-1"
-- Non-Recoverable VAT (7906) → No tax grid (expense account)
+- Non Recoverable VAT (7906) → No tax grid (expense account)
 
 **For Purchase Value Entries on Line Items (ULTIMATE CUSTOM RULE):**
 This is your most important rule for the line item tax grid. It is a specific business requirement that you must follow precisely to mean 'Total inputs excluding VAT'.
@@ -795,11 +795,11 @@ Look for these indicators:
 
 **NORMAL VENDORS (NO REVERSE CHARGE) - VAT Treatment depends on company registration:**
 {'''- IF Company is VAT Registered: Use 2202 (Input VAT - Recoverable)
-- IF Company is NOT VAT Registered: Use 7906 (Non-Recoverable VAT on expenses)''' if not company_context or company_context.get('is_vat_registered') != 'no' else '- Company NOT VAT Registered: MUST use 7906 (Non-Recoverable VAT on expenses)'}
+- IF Company is NOT VAT Registered: Use 7906 (Non Recoverable VAT on expenses)''' if not company_context or company_context.get('is_vat_registered') != 'no' else '- Company NOT VAT Registered: MUST use 7906 (Non Recoverable VAT on expenses)'}
 
 **REVERSE CHARGE VENDORS (ALL 8 CATEGORIES ABOVE) - VAT Treatment depends on company registration:**
 {'''- IF Company is VAT Registered: Create BOTH Input VAT (2202) AND Output VAT (2201) entries
-- IF Company is NOT VAT Registered: Use 7906 (Non-Recoverable VAT) instead of 2202, NO Output VAT entry''' if not company_context or company_context.get('is_vat_registered') != 'no' else '- Company NOT VAT Registered: Use 7906 (Non-Recoverable VAT) only, NO Output VAT (2201) entry'}
+- IF Company is NOT VAT Registered: Use 7906 (Non Recoverable VAT) instead of 2202, NO Output VAT entry''' if not company_context or company_context.get('is_vat_registered') != 'no' else '- Company NOT VAT Registered: Use 7906 (Non Recoverable VAT) only, NO Output VAT (2201) entry'}
 
 **MIXED LINE ITEMS HANDLING:**
 When line items map to different expense accounts:
@@ -948,9 +948,9 @@ Each additional entry in the additional_entries array must have this exact struc
 - Property Development Bill: debit_account="0060", debit_account_name="Freehold property", credit_account="2100"
 - Mixed Services Bill: debit_account="MIXED", debit_account_name="Mixed Line Items", credit_account="2100"
 - Normal Domestic Vendor with VAT (VAT Registered Company): Standard accounting + Input VAT (2202) in additional_entries with tax_grid "+4"
-- Normal Domestic Vendor with VAT (NON-VAT Registered Company): Standard accounting + Non-Recoverable VAT (7906) in additional_entries
+- Normal Domestic Vendor with VAT (NON-VAT Registered Company): Standard accounting + Non Recoverable VAT (7906) in additional_entries
 - Reverse Charge Vendor with VAT (VAT Registered): Standard accounting + BOTH Input VAT (2202) with tax_grid "+4" AND Output VAT (2201) with tax_grid "-1" in additional_entries
-- Reverse Charge Vendor with VAT (NON-VAT Registered): Standard accounting + Non-Recoverable VAT (7906) only in additional_entries
+- Reverse Charge Vendor with VAT (NON-VAT Registered): Standard accounting + Non Recoverable VAT (7906) only in additional_entries
 
 **LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
 - "Legal consultation services" → account_code="7600", account_name="Legal fees"
@@ -1168,12 +1168,12 @@ def validate_bill_data(bills, company_context=None):
                     # Non-VAT registered: MUST use 7906, NEVER 2202
                     if has_2202:
                         bill_validation["issues"].append(
-                            "Company is NOT VAT registered - CANNOT use 2202 (Input VAT). Must use 7906 (Non-Recoverable VAT)"
+                            "Company is NOT VAT registered - CANNOT use 2202 (Input VAT). Must use 7906 (Non Recoverable VAT)"
                         )
                     
                     if not has_7906:
                         bill_validation["issues"].append(
-                            "Company is NOT VAT registered - VAT must be posted to 7906 (Non-Recoverable VAT on expenses)"
+                            "Company is NOT VAT registered - VAT must be posted to 7906 (Non Recoverable VAT on expenses)"
                         )
                 
                 elif is_vat_registered == 'yes':
@@ -1302,7 +1302,7 @@ def validate_bill_data(bills, company_context=None):
                         # Non-VAT registered: should have only 7906
                         if not non_recoverable_vat_entries:
                             bill_validation["issues"].append(
-                                f"Reverse charge vendor - Company NOT VAT registered, should use 7906 (Non-Recoverable VAT)"
+                                f"Reverse charge vendor - Company NOT VAT registered, should use 7906 (Non Recoverable VAT)"
                             )
                         
                         if input_vat_entries or output_vat_entries:
@@ -1369,7 +1369,7 @@ def process_bills_with_claude(pdf_content, company_name, company_context=None):
             if is_vat_registered == 'yes':
                 vat_status_note = "\n- Company IS VAT registered: Use 2202 (Input VAT) for recoverable VAT with tax_grid '+4'"
             elif is_vat_registered == 'no':
-                vat_status_note = "\n- Company NOT VAT registered: Use 7906 (Non-Recoverable VAT) for all VAT amounts"
+                vat_status_note = "\n- Company NOT VAT registered: Use 7906 (Non Recoverable VAT) for all VAT amounts"
         
         # Send to Claude with optimized parameters for structured output
         message = anthropic_client.messages.create(
@@ -1442,8 +1442,18 @@ You must identify Cyprus domestic vendors providing construction/property servic
 
 **CRITICAL VAT ACCOUNT SELECTION:**
 - IF company is VAT registered: Use 2202 (Input VAT - recoverable asset) with tax_grid "+4"
-- IF company is NOT VAT registered: Use 7906 (Non-Recoverable VAT on expenses - expense account)
+- IF company is NOT VAT registered: Use 7906 (Non Recoverable VAT on expenses - expense account)
 - For reverse charge: VAT registered uses both 2202 (tax_grid "+4") + 2201 (tax_grid "-1"), Non-VAT registered uses only 7906
+
+**CRITICAL ODOO ACCOUNT NAME EXACTNESS:**
+Account names must EXACTLY match Odoo's account names (no hyphens unless Odoo has them):
+- ✅ CORRECT: "Non Recoverable VAT on expenses" (NO hyphen)
+- ❌ WRONG: "Non-Recoverable VAT on expenses" (has hyphen)
+- ✅ CORRECT: "Input VAT (Purchases)"
+- ✅ CORRECT: "Output VAT (Sales)"
+- ✅ CORRECT: "Accounts Payable"
+
+This is critical because account lookup in Odoo is case-sensitive and must match exactly.
 
 **BILL ACCOUNTING EXPERTISE:**
 {bill_system_logic}
@@ -1492,7 +1502,7 @@ CRITICAL REVERSE CHARGE RULES:
   - Set requires_reverse_charge: true
   - Set vat_treatment to specific category (e.g., "Construction/Property Services Reverse Charge")
   - For VAT registered companies: Create BOTH Input VAT (2202, tax_grid "+4") AND Output VAT (2201, tax_grid "-1") entries
-  - For NON-VAT registered companies: Create ONLY Non-Recoverable VAT (7906) entry
+  - For NON-VAT registered companies: Create ONLY Non Recoverable VAT (7906) entry
   - Main transaction amount should be NET only
   - Credit account 2100 with NET amount only
 
@@ -1500,7 +1510,7 @@ CRITICAL REVERSE CHARGE RULES:
   - Set requires_reverse_charge: false
   - Set vat_treatment: "Standard VAT"
   - For VAT registered: Create ONLY Input VAT (2202, tax_grid "+4") entry, credit 2100 with GROSS
-  - For NON-VAT registered: Create ONLY Non-Recoverable VAT (7906) entry, credit 2100 with GROSS
+  - For NON-VAT registered: Create ONLY Non Recoverable VAT (7906) entry, credit 2100 with GROSS
 
   **CRITICAL TAX GRID FOR LINE ITEMS:**
 - For reverse charge transactions: expense line items must include tax_grid "+7" to report purchase values
