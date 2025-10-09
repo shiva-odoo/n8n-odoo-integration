@@ -58,6 +58,8 @@ import createsharetransaction
 import process_share_documents
 import processonboardingdoc
 import update_transactions_table as transactions
+import update_bills_table as bills
+import update_invoices_table as invoices
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -2478,9 +2480,6 @@ def check_upload_ready():
 
 # Add this route to your Flask app
 
-from flask import request, jsonify
-import update_transactions_table as transactions
-
 @app.route("/api/transactions-table/update", methods=["POST"])
 def update_transactions_table():
     """
@@ -2579,6 +2578,205 @@ def update_transactions_table():
             "error": "Failed to update transactions table",
             "details": str(e)
         }), 500
+    
+@app.route("/api/bills-table/update", methods=["POST"])
+def update_bills_table():
+    """
+    Create a single bill entry in DynamoDB
+    Accepts the JSON bill data in multiple formats:
+    - Direct bill object: {bill_id: ..., bill_number: ..., ...}
+    - Wrapped in bill key: {"bill": {bill_id: ..., ...}}
+    - Wrapped in data key: {"data": {bill_id: ..., ...}}
+    """
+    try:
+        # Try multiple ways to get JSON data
+        data = None
+        try:
+            data = request.get_json()
+        except Exception:
+            try:
+                data = request.get_json(force=True)
+            except Exception as e:
+                print(f"⚠️ Failed to parse JSON: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON format"
+                }), 400
+       
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+       
+        # Handle multiple data formats
+        bill_data = None
+       
+        # Format 1: Array with single bill [bill_object]
+        if isinstance(data, list):
+            if len(data) == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Empty array provided"
+                }), 400
+            elif len(data) > 1:
+                return jsonify({
+                    "success": False,
+                    "error": f"Expected single bill, received {len(data)} bills. This endpoint processes one bill at a time."
+                }), 400
+            else:
+                # Extract the single bill from array
+                bill_data = data[0]
+        
+        # Format 2-4: Object formats
+        elif isinstance(data, dict):
+            # Format 2: Direct bill object
+            if 'bill_id' in data or 'bill_number' in data or 'total_amount' in data or 'vendor_name' in data:
+                bill_data = data
+            # Format 3: Wrapped in 'bill' key
+            elif 'bill' in data and isinstance(data['bill'], dict):
+                bill_data = data['bill']
+            # Format 4: Wrapped in 'data' key
+            elif 'data' in data and isinstance(data['data'], dict):
+                bill_data = data['data']
+            else:
+                # Try to use the data as-is
+                bill_data = data
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Expected bill data as object/dictionary or array with single bill"
+            }), 400
+       
+        # Validate we have bill data
+        if bill_data is None:
+            return jsonify({
+                "success": False,
+                "error": "Could not parse bill data. Expected bill object"
+            }), 400
+       
+        if not isinstance(bill_data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Bill data must be an object/dictionary"
+            }), 400
+       
+        # Process the bill
+        result = bills.process_bill(bill_data)
+       
+        status_code = 201 if result["success"] else 500
+        return jsonify(result), status_code
+           
+    except Exception as e:
+        print(f"❌ Bills table update error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to update bills table",
+            "details": str(e)
+        }), 500
+    
+@app.route("/api/invoices-table/update", methods=["POST"])
+def update_invoices_table():
+    """
+    Create a single invoice entry in DynamoDB
+    Accepts the JSON invoice data in multiple formats:
+    - Direct invoice object: {invoice_id: ..., invoice_number: ..., ...}
+    - Wrapped in invoice key: {"invoice": {invoice_id: ..., ...}}
+    - Wrapped in data key: {"data": {invoice_id: ..., ...}}
+    - Array with single invoice: [{invoice_id: ..., ...}]
+    """
+    try:
+        # Try multiple ways to get JSON data
+        data = None
+        try:
+            data = request.get_json()
+        except Exception:
+            try:
+                data = request.get_json(force=True)
+            except Exception as e:
+                print(f"⚠️ Failed to parse JSON: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON format"
+                }), 400
+       
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+       
+        # Handle multiple data formats
+        invoice_data = None
+       
+        # Format 1: Array with single invoice [invoice_object]
+        if isinstance(data, list):
+            if len(data) == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Empty array provided"
+                }), 400
+            elif len(data) > 1:
+                return jsonify({
+                    "success": False,
+                    "error": f"Expected single invoice, received {len(data)} invoices. This endpoint processes one invoice at a time."
+                }), 400
+            else:
+                # Extract the single invoice from array
+                invoice_data = data[0]
+        
+        # Format 2-4: Object formats
+        elif isinstance(data, dict):
+            # Format 2: Direct invoice object
+            if 'invoice_id' in data or 'invoice_number' in data or 'total_amount' in data or 'customer' in data:
+                invoice_data = data
+            # Format 3: Wrapped in 'invoice' key
+            elif 'invoice' in data and isinstance(data['invoice'], dict):
+                invoice_data = data['invoice']
+            # Format 4: Wrapped in 'data' key
+            elif 'data' in data and isinstance(data['data'], dict):
+                invoice_data = data['data']
+            else:
+                # Try to use the data as-is
+                invoice_data = data
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Expected invoice data as object/dictionary or array with single invoice"
+            }), 400
+       
+        # Validate we have invoice data
+        if invoice_data is None:
+            return jsonify({
+                "success": False,
+                "error": "Could not parse invoice data. Expected invoice object"
+            }), 400
+       
+        if not isinstance(invoice_data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Invoice data must be an object/dictionary"
+            }), 400
+       
+        # Process the invoice
+        result = invoices.process_invoice(invoice_data)
+       
+        status_code = 201 if result["success"] else 500
+        return jsonify(result), status_code
+           
+    except Exception as e:
+        print(f"❌ Invoices table update error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to update invoices table",
+            "details": str(e)
+        }), 500
+
+
 
 
 # ================================
