@@ -1,3 +1,4 @@
+
 import xmlrpc.client
 import os
 from datetime import datetime, timedelta
@@ -16,18 +17,39 @@ def get_odoo_connection():
         username = os.getenv("ODOO_USERNAME")
         password = os.getenv("ODOO_API_KEY")
 
+        # DEBUGGING: Print individual checks
+        print(f"\n🔍 Connection attempt:")
+        print(f"  URL present: {bool(url)} - Value: {url}")
+        print(f"  DB present: {bool(db)} - Value: {db}")
+        print(f"  Username present: {bool(username)} - Value: {username}")
+        print(f"  Password present: {bool(password)} - Length: {len(password) if password else 0}")
+
         if not all([url, db, username, password]):
-            raise Exception("Missing Odoo connection configuration")
+            missing = []
+            if not url: missing.append("ODOO_URL")
+            if not db: missing.append("ODOO_DB")
+            if not username: missing.append("ODOO_USERNAME")
+            if not password: missing.append("ODOO_API_KEY")
+            
+            error_msg = f"Missing Odoo connection configuration: {', '.join(missing)}"
+            print(f"❌ {error_msg}")
+            raise Exception(error_msg)
 
         # Setup connection
+        print(f"🔗 Connecting to {url}...")
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
+        
+        print(f"🔐 Authenticating as {username}...")
         uid = common.authenticate(db, username, password, {})
 
         if not uid:
+            print("❌ Authentication failed - Invalid credentials")
             raise Exception("Authentication with Odoo failed")
 
+        print(f"✅ Successfully authenticated! UID: {uid}")
         return models, uid, db, password
+        
     except Exception as e:
         logger.error(f"Connection error: {str(e)}")
         raise
