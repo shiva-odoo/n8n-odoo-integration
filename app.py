@@ -2676,7 +2676,8 @@ def update_bills_table():
             "error": "Failed to update bills table",
             "details": str(e)
         }), 500
-    
+
+#check    
 @app.route("/api/invoices-table/update", methods=["POST"])
 def update_invoices_table():
     """
