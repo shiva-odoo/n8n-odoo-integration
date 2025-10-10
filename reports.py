@@ -6,7 +6,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+#test
 def get_odoo_connection():
     """Establish connection to Odoo"""
     try:
