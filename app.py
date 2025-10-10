@@ -61,6 +61,7 @@ import update_transactions_table as transactions
 import update_bills_table as bills
 import update_invoices_table as invoices
 import reports
+import process_payroll
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -2367,6 +2368,246 @@ def process_share_document_endpoint():
             "error": "Internal server error",
             "details": "An unexpected error occurred while processing the request"
         }), 500
+    
+@app.route('/api/process-payroll-document', methods=['POST'])
+def process_payroll_document_endpoint():
+    """
+    Process payroll document into structured journal entry data
+    Extracts consolidated payroll journal entry from payroll document
+    
+    Expected JSON body:
+    {
+        "s3_key": "clients/Company Name/payroll-june-2025.pdf",
+        "company_name": "ACME Corporation Ltd",
+        "bucket_name": "company-documents-2025"  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "payroll_data": {
+            "period": "June 2025",
+            "month": "June",
+            "year": "2025",
+            "pay_date": "2025-06-30",
+            "num_employees": 3,
+            "currency_code": "EUR",
+            "description": "Payroll for June 2025 - 3 employees: Gross wages €1,050.00, Staff bonus €27.83, Net wages payable €929.77",
+            "total_gross_wages": 1050.00,
+            "total_net_wages": 929.77,
+            "total_deductions": 92.40,
+            "total_employer_contributions": 66.00,
+            "journal_entry_lines": [
+                {
+                    "account_code": "7000",
+                    "account_name": "Gross wages",
+                    "description": "Total gross salaries for June 2025",
+                    "debit_amount": 1050.00,
+                    "credit_amount": 0
+                },
+                {
+                    "account_code": "7003",
+                    "account_name": "Staff bonus",
+                    "description": "Total staff bonuses for June 2025",
+                    "debit_amount": 27.83,
+                    "credit_amount": 0
+                },
+                {
+                    "account_code": "7006",
+                    "account_name": "Employers n.i.",
+                    "description": "Employer social insurance contribution (~8.3%)",
+                    "debit_amount": 66.00,
+                    "credit_amount": 0
+                },
+                {
+                    "account_code": "2210",
+                    "account_name": "PAYE/NIC",
+                    "description": "Total social insurance payable (employee 92.40 + employer 66.00)",
+                    "debit_amount": 0,
+                    "credit_amount": 158.40
+                },
+                {
+                    "account_code": "2250",
+                    "account_name": "Net wages",
+                    "description": "Total net wages payable to all employees",
+                    "debit_amount": 0,
+                    "credit_amount": 929.77
+                }
+            ]
+        },
+        "company_validation": {
+            "expected_company": "ACME Corporation Ltd",
+            "found_company": "ACME Corporation Ltd",
+            "company_match": "exact_match",
+            "match_details": "Exact match found in payroll document header"
+        },
+        "extraction_confidence": {
+            "period_info": "high",
+            "amounts": "high",
+            "employee_count": "high",
+            "company_validation": "high"
+        },
+        "validation_summary": {
+            "debits_equal_credits": true,
+            "total_debits": 1143.83,
+            "total_credits": 1143.83,
+            "balance_difference": 0.00
+        },
+        "validation_results": {
+            "issues": [],
+            "warnings": [],
+            "data_complete": true,
+            "accounting_balanced": true
+        },
+        "processing_summary": {
+            "data_complete": true,
+            "accounting_balanced": true,
+            "issues_count": 0,
+            "warnings_count": 0,
+            "processing_success": true
+        },
+        "metadata": {
+            "company_name": "ACME Corporation Ltd",
+            "company_context_loaded": true,
+            "expected_employees": 3,
+            "payroll_frequency": "Monthly",
+            "s3_key": "clients/Company Name/payroll-june-2025.pdf",
+            "token_usage": {
+                "input_tokens": 2845,
+                "output_tokens": 1456
+            }
+        }
+    }
+    
+    Error Response:
+    {
+        "success": false,
+        "error": "Missing required fields: company_name",
+        "details": "Additional error context if available"
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body is required"
+            }), 400
+        
+        required_fields = ['s3_key', 'company_name']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        
+        if missing_fields:
+            return jsonify({
+                "success": False,
+                "error": f"Missing required fields: {', '.join(missing_fields)}",
+                "details": f"Required fields are: {', '.join(required_fields)}"
+            }), 400
+        
+        # Validate field types and values
+        if not isinstance(data['s3_key'], str) or not data['s3_key'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid s3_key",
+                "details": "s3_key must be a non-empty string"
+            }), 400
+            
+        if not isinstance(data['company_name'], str) or not data['company_name'].strip():
+            return jsonify({
+                "success": False,
+                "error": "Invalid company_name", 
+                "details": "company_name must be a non-empty string"
+            }), 400
+        
+        # Optional bucket_name validation
+        if 'bucket_name' in data and (not isinstance(data['bucket_name'], str) or not data['bucket_name'].strip()):
+            return jsonify({
+                "success": False,
+                "error": "Invalid bucket_name",
+                "details": "bucket_name must be a non-empty string if provided"
+            }), 400
+        
+        # Log processing start
+        print(f"💰 Processing payroll document for company: {data['company_name']}")
+        print(f"📄 S3 document: {data['s3_key']}")
+        
+        # Call the payroll document processing function
+        result = process_payroll.main(data)
+        
+        # Handle successful processing
+        if result["success"]:
+            # Log success metrics
+            payroll_data = result.get("payroll_data", {})
+            period = payroll_data.get("period", "Unknown")
+            num_employees = payroll_data.get("num_employees", 0)
+            total_gross = payroll_data.get("total_gross_wages", 0)
+            total_net = payroll_data.get("total_net_wages", 0)
+            
+            validation_summary = result.get("validation_summary", {})
+            accounting_balanced = validation_summary.get("debits_equal_credits", False)
+            
+            processing_summary = result.get("processing_summary", {})
+            processing_success = processing_summary.get("processing_success", False)
+            issues_count = processing_summary.get("issues_count", 0)
+            warnings_count = processing_summary.get("warnings_count", 0)
+            
+            print(f"✅ Successfully processed payroll for period: {period}")
+            print(f"👥 Employees: {num_employees}")
+            print(f"💵 Gross wages: €{total_gross:.2f}, Net wages: €{total_net:.2f}")
+            print(f"⚖️  Accounting balanced: {accounting_balanced}")
+            print(f"📊 Processing success: {processing_success}")
+            
+            if issues_count > 0:
+                print(f"⚠️  Issues found: {issues_count}")
+            if warnings_count > 0:
+                print(f"⚠️  Warnings: {warnings_count}")
+            
+            # Determine HTTP status code based on validation
+            status_code = 200 if processing_success else 207  # 207 Multi-Status for partial success
+            
+            # Return successful response
+            return jsonify(result), status_code
+        else:
+            # Log processing failure
+            error_msg = result.get("error", "Unknown error")
+            print(f"❌ Payroll processing failed: {error_msg}")
+            
+            # Return error response with appropriate status code
+            status_code = 422 if "validation" in error_msg.lower() or "parsing" in error_msg.lower() else 500
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "details": result.get("raw_response", "No additional details available")[:200] if result.get("raw_response") else None
+            }), status_code
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"❌ Process payroll document endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "An unexpected error occurred while processing the request"
+        }), 500
+
 
 
 
