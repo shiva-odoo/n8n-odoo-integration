@@ -60,6 +60,7 @@ import processonboardingdoc
 import update_transactions_table as transactions
 import update_bills_table as bills
 import update_invoices_table as invoices
+import reports
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -2776,6 +2777,203 @@ def update_invoices_table():
             "error": "Failed to update invoices table",
             "details": str(e)
         }), 500
+    
+
+# ============================================================================
+# FINANCIAL REPORTS (NEW SECTION)
+# ============================================================================
+
+@app.route('/api/reports/profit-loss', methods=['POST'])
+def get_profit_loss():
+    """Get Profit & Loss Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_profit_loss_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/balance-sheet', methods=['POST'])
+def get_balance_sheet():
+    """Get Balance Sheet Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_balance_sheet_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/cash-flow', methods=['POST'])
+def get_cash_flow():
+    """Get Cash Flow Statement"""
+    try:
+        data = request.json or {}
+        result = reports.get_cash_flow_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# ACCOUNTS REPORTS
+# ============================================================================
+
+@app.route('/api/reports/aged-payables', methods=['POST'])
+def get_aged_payables():
+    """Get Aged Payables Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_aged_payables_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/aged-receivables', methods=['POST'])
+def get_aged_receivables():
+    """Get Aged Receivables Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_aged_receivables_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/general-ledger', methods=['POST'])
+def get_general_ledger():
+    """Get General Ledger Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_general_ledger_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/trial-balance', methods=['POST'])
+def get_trial_balance():
+    """Get Trial Balance Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_trial_balance_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# TAX REPORTS
+# ============================================================================
+
+@app.route('/api/reports/tax', methods=['POST'])
+def get_tax_report():
+    """Get Tax Report (VAT/GST)"""
+    try:
+        data = request.json or {}
+        result = reports.get_tax_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# SALES & PURCHASE REPORTS
+# ============================================================================
+
+@app.route('/api/reports/sales', methods=['POST'])
+def get_sales_report():
+    """Get Sales Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_sales_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/purchases', methods=['POST'])
+def get_purchase_report():
+    """Get Purchase Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_purchase_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# BANK & PAYMENT REPORTS
+# ============================================================================
+
+@app.route('/api/reports/bank-reconciliation', methods=['POST'])
+def get_bank_reconciliation():
+    """Get Bank Reconciliation Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_bank_reconciliation_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/payments', methods=['POST'])
+def get_payment_report():
+    """Get Payment Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_payment_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# BUDGET & VARIANCE REPORTS
+# ============================================================================
+
+@app.route('/api/reports/budget-vs-actual', methods=['POST'])
+def get_budget_vs_actual():
+    """Get Budget vs Actual Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_budget_vs_actual_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# PARTNER REPORTS
+# ============================================================================
+
+@app.route('/api/reports/partner-ledger', methods=['POST'])
+def get_partner_ledger():
+    """Get Partner Ledger Report"""
+    try:
+        data = request.json or {}
+        result = reports.get_partner_ledger_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# EXECUTIVE SUMMARY
+# ============================================================================
+
+@app.route('/api/reports/executive-summary', methods=['POST'])
+def get_executive_summary():
+    """Get Executive Summary Report with key metrics"""
+    try:
+        data = request.json or {}
+        result = reports.get_executive_summary_report(data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 
