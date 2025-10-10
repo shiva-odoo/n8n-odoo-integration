@@ -34,18 +34,15 @@ def normalize_string(s):
 
 def get_vendors_for_company(models, db, uid, password, company_id=None):
     """
-    Fetch existing vendors for a specific company or all vendors if no company specified
+    Fetch existing vendors for a specific company ONLY (not shared vendors)
     """
     try:
         # Base domain for vendors
         domain = [('is_company', '=', True), ('supplier_rank', '>', 0)]
         
-        # Add company filter if specified
+        # Add company filter if specified - ONLY exact matches, no shared records
         if company_id:
-            # In Odoo multi-company setup:
-            # - Records with company_id = specific_company belong to that company
-            # - Records with company_id = False are shared across all companies
-            domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+            domain.append(('company_id', '=', company_id))
         
         vendors = models.execute_kw(
             db, uid, password,
@@ -322,13 +319,9 @@ def check_vendor_exists(models, db, uid, password, vat=None, name=None, email=No
     try:
         domain = [('is_company', '=', True), ('supplier_rank', '>', 0)]
         
-        # CRITICAL: Add company context to avoid cross-company matches
+        # ONLY check for specific company, not shared records
         if company_id:
-            # In Odoo, company_id can be False for records available to all companies
-            # So we need to check for both the specific company AND company_id=False
-            domain.append('|')  # OR condition
             domain.append(('company_id', '=', company_id))
-            domain.append(('company_id', '=', False))
         
         # Add the search criteria
         if vat:
@@ -543,9 +536,9 @@ def list_vendors(company_id=None):
         # Base domain for vendors
         domain = [('supplier_rank', '>', 0)]
         
-        # Add company filter if specified
+        # Add company filter if specified - ONLY exact matches, no shared records
         if company_id:
-            domain.extend(['|', ('company_id', '=', company_id), ('company_id', '=', False)])
+            domain.append(('company_id', '=', company_id))
         
         vendors = models.execute_kw(
             db, uid, password,
