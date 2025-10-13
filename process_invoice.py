@@ -57,6 +57,57 @@ def get_invoice_processing_prompt(company_name):
 
 {invoice_logic}
 
+**ODOO TAX NAME ASSIGNMENT RULES (CRITICAL & REFINED):**
+
+For EACH line item, you must populate the `tax_name` field. This requires careful, line-by-line analysis.
+
+**Decision Logic (IN ORDER OF PRIORITY):**
+1.  **CHECK FOR EXEMPT ITEMS FIRST (HIGHEST PRIORITY):**
+    - Analyze the individual line item description. Does it represent a service that is outside the scope of VAT?
+    - Keywords: "exempt services", "zero-rated services", "non-taxable items".
+    - **If a line is exempt, assign `0% E`. This rule OVERRIDES all other rules for this specific line item.**
+
+2.  **IF NOT EXEMPT, CHECK FOR REVERSE CHARGE:**
+    - If the overall invoice (`requires_reverse_charge`) is a reverse charge transaction, and the line item is NOT exempt, then assign `19% RC`.
+
+3.  **IF NOT EXEMPT OR RC, APPLY STANDARD LOGIC:**
+    - **Determine Customer Location:** Use `customer_data.country_code`.
+        - Domestic (Cyprus - 'CY'): Standard Cyprus VAT rules.
+        - EU Customer (e.g., 'GR', 'DE'): EU sales taxes.
+        - Outside EU (e.g., 'GB', 'US'): Outside EU export taxes.
+    - **Determine Goods vs. Services:** Analyze the line description. Append ' S' for services.
+    - **Combine:** Construct the `tax_name` using `[Rate]%[Suffix]`.
+
+**Available Tax Categories:**
+- **Standard Domestic:** `19%` (Goods), `19% S` (Services)
+- **Reduced Domestic:** `9%`/`9% S`, `5%`/`5% S`, `3%`/`3% S`
+- **Zero-Rated:** `0%`
+- **Reverse Charge:** `19% RC`
+- **Exempt:** `0% E`
+- **EU Sales:** `0% EU` (Goods), `0% EU S` (Services) - typically zero-rated for cross-border
+- **Outside EU Exports:** `0% OEU` (typically zero-rated for exports)
+
+**TAX GRID ASSIGNMENT RULES (CRITICAL - BASED ON CYPRUS VAT RETURN):**
+
+**CRITICAL UNDERSTANDING:**
+Cyprus VAT Return has these key boxes:
+- Box 1: Output VAT owed on sales
+- Box 4: Input VAT deductible on purchases  
+- Box 5: Net VAT payable/refundable (Box 1 - Box 4)
+- Box 6: Total value of outputs excluding VAT (sales base)
+- Box 7: Total value of inputs excluding VAT (purchase base)
+
+**For VAT Entries (Additional Entries):**
+- Output VAT (2201) for standard sales → tax_grid: "+1" (adds to Box 1 - Output VAT owed)
+- No VAT entries for reverse charge sales (customer self-accounts)
+
+**For Sales Value Entries on Line Items (CORRECTED RULE):**
+This is your most important rule for the line item tax grid to populate Cyprus VAT Return Box 6.
+- **All Domestic Sales (Tax Grid `+6`):** If the customer's `country_code` is `CY`, you **MUST** assign `tax_grid: "+6"` to **ALL** line items on that invoice. This applies to ALL domestic sales at any rate (19%, 9%, 5%, 3%). The goal is to capture the total value of all domestic outputs (sales base) in Box 6 of the VAT return.
+- **EU Sales:** For sales to EU customers, the `tax_grid` should be left empty `""` or you may use a separate tracking grid if needed.
+- **Export Sales:** For sales outside EU, the `tax_grid` should be left empty `""` or you may use a separate tracking grid if needed.
+- **Reverse Charge Sales:** For reverse charge transactions, the `tax_grid` should be left empty `""` as the customer accounts for VAT and these don't appear in Box 6.
+
 **LINE-LEVEL ACCOUNT ASSIGNMENT:**
 Each line item must be assigned to the most appropriate revenue account based on the service/product type:
 
@@ -78,6 +129,13 @@ Each line item must be assigned to the most appropriate revenue account based on
 - Example: IT company billing for both "Software Development" (4000) AND "Cloud Hosting" (4002)
 - Example: Service provider selling "Consulting" (4001) AND "Training" (4003)
 - Assign the most specific account code for each line item
+
+**CRITICAL VAT CALCULATION FOR ADDITIONAL ENTRIES:**
+When creating `additional_entries` for Output VAT:
+1.  **IDENTIFY THE TAXABLE BASE:** Sum the `line_total` of ONLY the line items that are subject to VAT (e.g., those with `tax_name: "19% S"`).
+2.  **EXCLUDE NON-TAXABLE LINES:** You MUST exclude the amounts of any line items marked as exempt (`0% E`) or zero-rated (`0%`) from this sum.
+3.  **CALCULATE VAT:** Apply the VAT percentage (e.g., 19%) to this taxable base ONLY.
+4.  **EXAMPLE:** If an invoice has lines for €2975 (taxable at 19% S) and €60 (exempt `0% E`), the output VAT amount is `2975 * 0.19 = 565.25`. It is NOT 19% of the total €3035.
 
 **CYPRUS VAT REVERSE CHARGE DETECTION (COMPREHENSIVE):**
 
@@ -138,7 +196,7 @@ Look for these indicators:
 - Debit: 1200 (Accounts Receivable) - Full amount including VAT
 - Credit: Revenue accounts (per line item) - Net amounts only
 - Credit: 2201 (Output VAT) - VAT amount to pay to authorities
-- Create ONE additional entry: Output VAT (2201) credit
+- Create ONE additional entry: Output VAT (2201) credit with tax_grid "-1"
 
 **REVERSE CHARGE CUSTOMERS (ALL 8 CATEGORIES ABOVE):**
 - Main transaction: NET amount only
@@ -164,7 +222,9 @@ For NORMAL customers with VAT (domestic, not in reverse charge categories):
   "account_name": "Output VAT (Sales)",
   "debit_amount": 0,
   "credit_amount": [tax_amount],
-  "description": "Output VAT on sales"
+  "description": "Output VAT on sales",
+  "tax_name": "19% S",
+  "tax_grid": "+1"
 }}
 
 For REVERSE CHARGE customers (any of the 8 categories):
@@ -273,8 +333,18 @@ Each line item in the line_items array must have this exact structure:
   "price_unit": 0,
   "line_total": 0,
   "tax_rate": 0,
+  "tax_name": "",
   "account_code": "",
-  "account_name": ""
+  "account_name": "",
+  "tax_grid": ""
+}}
+**For standard domestic sales:**
+{{
+  "description": "Software development services",
+  "tax_name": "19% S",
+  "account_code": "4000",
+  "account_name": "Sales - Software Development",
+  "tax_grid": "+6"
 }}
 
 **ADDITIONAL ENTRIES STRUCTURE (for VAT and complex transactions):**
@@ -284,21 +354,31 @@ Each additional entry in the additional_entries array must have this exact struc
   "account_name": "",
   "debit_amount": 0,
   "credit_amount": 0,
-  "description": ""
+  "description": "",
+  "tax_name": "",
+  "tax_grid": ""
 }}
+**Logic for `tax_name`:** The `tax_name` should match the tax of the source line items that generated this VAT entry. For standard domestic sales, this will be `19% S`. For reverse charge, no VAT entry is needed.
+
+**TAX GRID EXAMPLES:**
+- Output VAT on standard sales: tax_grid: "+1" (adds to Box 1 - Output VAT owed)
+- All domestic sales line items: tax_grid: "+6" (adds to Box 6 - Total outputs excluding VAT)
+- EU sales line items: tax_grid: "" (empty, typically zero-rated)
+- Export sales line items: tax_grid: "" (empty, typically zero-rated)
+- Reverse charge sales: tax_grid: "" (empty, customer accounts for VAT)
 
 **ACCOUNTING ASSIGNMENT EXAMPLES:**
 - Single Service Invoice: credit_account="4000", credit_account_name="Sales - Software Development", debit_account="1200"
 - Mixed Services Invoice: credit_account="MIXED", credit_account_name="Mixed Line Items", debit_account="1200"
-- Normal Domestic Customer with VAT: Standard accounting + Output VAT (2201) in additional_entries
+- Normal Domestic Customer with VAT: Standard accounting + Output VAT (2201) in additional_entries with tax_grid "+1"
 - Reverse Charge Customer: Standard accounting + NO VAT entries (customer accounts for VAT)
 
 **LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
-- "Software development services" → account_code="4000", account_name="Sales - Software Development"
-- "Cloud hosting monthly fee" → account_code="4002", account_name="Sales - Cloud Services"
-- "IT consulting hours" → account_code="4001", account_name="Sales - IT Consulting"
-- "Training session" → account_code="4003", account_name="Sales - Training"
-- "Technical support" → account_code="4004", account_name="Sales - Support"
+- "Software development services" → account_code="4000", account_name="Sales - Software Development", tax_grid="+6"
+- "Cloud hosting monthly fee" → account_code="4002", account_name="Sales - Cloud Services", tax_grid="+6"
+- "IT consulting hours" → account_code="4001", account_name="Sales - IT Consulting", tax_grid="+6"
+- "Training session" → account_code="4003", account_name="Sales - Training", tax_grid="+6"
+- "Technical support" → account_code="4004", account_name="Sales - Support", tax_grid="+6"
 
 **ABSOLUTE REQUIREMENTS:**
 1. Every field listed above MUST be present in every invoice object
@@ -314,19 +394,24 @@ Each additional entry in the additional_entries array must have this exact struc
 11. **LINE ITEM ACCOUNT ASSIGNMENT: MANDATORY for every line item - analyze each service individually**
 12. **MIXED INVOICES: When line items have different account codes, set credit_account="MIXED"**
 13. **REVERSE CHARGE DETECTION: Check ALL 8 categories comprehensively before determining VAT treatment**
+14. **TAX GRID ASSIGNMENT: Include appropriate tax_grid for all eligible entries based on the refined, custom rules.**
+15. **ODOO TAX NAME ASSIGNMENT: Each line item MUST have a `tax_name` assigned based on the detailed, prioritized rules provided.**
+16. **VAT CALCULATION: Always calculate VAT for `additional_entries` based ONLY on the sum of taxable line items.**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
 
 def ensure_line_item_structure(line_item):
-    """Ensure each line item has the complete required structure including account assignment"""
+    """Ensure each line item has the complete required structure including account assignment and tax grid"""
     default_line_item = {
         "description": "",
         "quantity": 0,
         "price_unit": 0,
         "line_total": 0,
         "tax_rate": 0,
+        "tax_name": "",
         "account_code": "",
-        "account_name": ""
+        "account_name": "",
+        "tax_grid": ""
     }
     
     result = {}
@@ -371,7 +456,7 @@ def validate_invoice_data(invoices):
         if not line_items:
             invoice_validation["warnings"].append("No line items found")
         else:
-            # Validate line item account assignments
+            # Validate line item account assignments and tax grids
             valid_revenue_accounts = [
                 "4000", "4001", "4002", "4003", "4004", "4005", "4006", "4007", "4008", "4009",
                 "4010", "4100", "4200", "4300", "4400", "4500"
@@ -381,6 +466,8 @@ def validate_invoice_data(invoices):
             for i, item in enumerate(line_items):
                 account_code = item.get("account_code", "")
                 account_name = item.get("account_name", "")
+                tax_grid = item.get("tax_grid", "")
+                tax_name = item.get("tax_name", "")
                 
                 if not account_code:
                     invoice_validation["issues"].append(f"Line item {i+1} missing account_code")
@@ -389,6 +476,14 @@ def validate_invoice_data(invoices):
                 
                 if not account_name:
                     invoice_validation["issues"].append(f"Line item {i+1} missing account_name")
+                
+                # Validate tax name
+                if not tax_name and item.get("tax_rate", 0) != 0:
+                    invoice_validation["warnings"].append(f"Line item {i+1} has a tax rate but is missing Odoo tax_name.")
+
+                # Validate tax grid if present
+                if tax_grid and not tax_grid.startswith(('+', '-')):
+                    invoice_validation["warnings"].append(f"Line item {i+1} has unusual tax_grid format: {tax_grid}")
                 
                 if account_code:
                     line_item_accounts.add(account_code)
@@ -418,7 +513,7 @@ def validate_invoice_data(invoices):
                     f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
-        # COMPREHENSIVE REVERSE CHARGE DETECTION - FIXED
+        # COMPREHENSIVE REVERSE CHARGE DETECTION
         accounting_assignment = invoice.get("accounting_assignment", {})
         additional_entries = accounting_assignment.get("additional_entries", [])
         requires_reverse_charge = accounting_assignment.get("requires_reverse_charge", False)
@@ -473,7 +568,7 @@ def validate_invoice_data(invoices):
             is_reverse_charge_customer = True
             detected_category = "Precious Metals Dealer Reverse Charge"
         
-        # Category 7: Check EU telecom - FIXED LOGIC
+        # Category 7: Check EU telecom
         elif customer_country in ["GR", "DE", "FR", "IT", "ES"] and \
              any(keyword in description 
                  for keyword in ["telecommunications"]):
@@ -519,6 +614,13 @@ def validate_invoice_data(invoices):
                         invoice_validation["issues"].append(
                             "Tax amount detected for normal customer but missing Output VAT (2201) entry"
                         )
+                    else:
+                        # Validate tax grid on Output VAT entry
+                        for entry in output_vat_entries:
+                            if entry.get("tax_grid") != "+1":
+                                invoice_validation["warnings"].append(
+                                    f"Output VAT (2201) should have tax_grid '+1', found: {entry.get('tax_grid', 'none')}"
+                                )
         elif tax_amount == 0 and is_reverse_charge_customer:
             # Reverse charge customer with no VAT shown - this is correct
             if not requires_reverse_charge:
@@ -576,7 +678,31 @@ def process_invoices_with_claude(pdf_content, company_name):
             model="claude-sonnet-4-20250514",
             max_tokens=18000,
             temperature=0.0,
-            system=f"""You are an expert accountant and data extraction system specialized in CUSTOMER INVOICES and REVENUE transactions with LINE-LEVEL account assignment and COMPREHENSIVE Cyprus VAT reverse charge detection. Your core behavior is to think and act like a professional accountant who understands double-entry bookkeeping for REVENUE recognition, VAT regulations including ALL reverse charge categories, and granular revenue categorization.
+            system=f"""You are an expert accountant and data extraction system specialized in CUSTOMER INVOICES and REVENUE transactions with LINE-LEVEL account assignment, TAX GRID ASSIGNMENT, ODOO TAX NAME assignment, and COMPREHENSIVE Cyprus VAT reverse charge detection.
+
+Your core behavior is to think and act like a professional accountant who understands:
+- Double-entry bookkeeping for REVENUE recognition
+- VAT regulations including ALL reverse charge categories
+- Granular revenue categorization
+- Cyprus VAT return box assignments and tax grid mapping
+- Odoo tax naming conventions for Cyprus accounting
+
+**CRITICAL ODOO TAX NAME EXPERTISE:**
+You must assign a valid Odoo tax name (e.g., "19% S", "19% RC", "0% E") to the `tax_name` field for every line item and relevant additional entry.
+- **PRIORITY 1: EXEMPT ITEMS.** First, check if a line is for an exempt service. If so, you MUST assign `0% E` to that line.
+- **PRIORITY 2: REVERSE CHARGE.** If a line is not exempt, check if the invoice is reverse charge. If so, assign `19% RC`.
+- **PRIORITY 3: STANDARD/OTHER.** If neither of the above apply, use the standard logic (Goods/Services, Domestic/EU/Export) to determine the tax name.
+
+**CRITICAL TAX GRID EXPERTISE (SALES PERSPECTIVE):**
+You must assign correct tax grids based on Cyprus VAT return requirements for sales:
+- Output VAT (2201) → `tax_grid: "+1"` (adds to Box 1 - Output VAT owed)
+- **All Domestic Sales Values (Grid `+6`):** You MUST apply `tax_grid: "+6"` to EVERY line item on any invoice to a domestic customer (where `customer_data.country_code` is `CY`). This captures total outputs excluding VAT in Box 6 of VAT return. Applies to ALL rates (19%, 9%, 5%, 3%).
+- EU sales values → `tax_grid: ""` (empty, typically zero-rated exports)
+- Export sales values (outside EU) → `tax_grid: ""` (empty, typically zero-rated exports)
+- Reverse charge sales → `tax_grid: ""` (empty, customer accounts for VAT)
+
+**CRITICAL VAT CALCULATION:**
+When creating VAT entries (e.g., Output VAT for standard sales), you MUST calculate the VAT amount based **only on the sum of taxable line items**. Explicitly EXCLUDE any line items marked as exempt (`0% E`) from the taxable base.
 
 **INVOICE ACCOUNTING EXPERTISE:**
 {invoice_system_logic}
@@ -620,17 +746,26 @@ CRITICAL REVERSE CHARGE RULES FOR INVOICES:
   - DO NOT create any VAT entries (customer accounts for VAT themselves)
   - Invoice amount should be NET only
   - Debit account 1200 with NET amount only
+  - Line items have empty tax_grid ""
   - Add note: "Reverse charge - Customer to account for VAT"
 
 • If customer is normal domestic (not in any category) with VAT:
   - Set requires_reverse_charge: false
   - Set vat_treatment: "Standard VAT"
-  - Create Output VAT (2201) entry in additional_entries
+  - Create Output VAT (2201) entry in additional_entries with tax_grid "+1"
   - Invoice amount is GROSS (net + VAT)
   - Debit account 1200 with GROSS amount
+  - ALL domestic line items (regardless of rate) get tax_grid "+6" for Box 6 reporting
+  - Add note: "Standard VAT applies"
+
+**CRITICAL ODOO ACCOUNT NAME EXACTNESS:**
+Account names must EXACTLY match Odoo's account names:
+- ✅ CORRECT: "Output VAT (Sales)"
+- ✅ CORRECT: "Accounts Receivable"
+- ✅ CORRECT: "Sales - Software Development"
 
 OUTPUT FORMAT:
-Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every revenue transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment.""",
+Respond only with valid JSON objects. Never include explanatory text, analysis, or commentary. Always include ALL required fields with their default values when data is missing. Apply your accounting expertise to assign correct debit/credit accounts for every revenue transaction AND provide granular line-level account assignments using ONLY the exact account codes provided. Thoroughly check ALL 8 reverse charge categories before determining VAT treatment. Always assign tax_name and tax_grid to line items and VAT entries.""",
             messages=[
                 {
                     "role": "user",
@@ -990,7 +1125,7 @@ def health_check():
         return {
             "healthy": True,
             "service": "claude-invoice-processing",
-            "version": "5.0",
+            "version": "6.0",
             "capabilities": [
                 "document_splitting",
                 "data_extraction", 
@@ -1003,6 +1138,9 @@ def health_check():
                 "line_level_account_assignment",
                 "mixed_service_invoice_handling",
                 "granular_revenue_categorization",
+                "tax_grid_assignment",
+                "cyprus_vat_return_compliance",
+                "odoo_tax_name_assignment",
                 "construction_customer_detection",
                 "foreign_customer_detection",
                 "gas_electricity_trader_detection",
@@ -1016,7 +1154,13 @@ def health_check():
             "aws_configured": bool(os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')),
             "s3_bucket": os.getenv('S3_BUCKET_NAME', 'company-documents-2025'),
             "odoo_accounting_logic": "integrated",
-            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories (Invoice Perspective)"
+            "vat_compliance": "Cyprus VAT Law - All 8 Reverse Charge Categories (Invoice Perspective)",
+            "new_features": [
+                "Tax grid assignment for Cyprus VAT return (sales side)",
+                "Odoo tax name assignment for each line item",
+                "VAT calculation based only on taxable line items",
+                "Enhanced validation for tax grids and tax names"
+            ]
         }
         
     except Exception as e:

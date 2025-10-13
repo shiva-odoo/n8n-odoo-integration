@@ -358,35 +358,15 @@ Before processing any transactions, you MUST determine the document type:
 • 2100 - Accounts payable
 • 2200 - VAT control account
 • 2210 - PAYE/NIC (payroll deductions)
+• 2250 - Net wages (net salary payable to employees)
 
 **Income:**
 • 4000 - Sales
 • 4906 - Bank interest received
 
 **Common Expenses:**
-• 7000 - Gross wages
-• 7100 - Rent
-• 7190 - Utilities
-• 7200 - Electricity
-• 7300 - Car fuel & oil
-• 7301 - Repairs and servicing
-• 7302 - Licenses & mot's
-• 7303 - Vehicle insurance
-• 7400 - Traveling
-• 7401 - Car hire
-• 7402 - Hotels
-• 7403 - Entertainment
-• 7500 - Printing
-• 7501 - Postage
-• 7502 - Telephone
-• 7503 - Internet
-• 7600 - Legal fees
-• 7601 - Audit and accountancy fees
-• 7602 - Consultancy fees
-• 7800 - Repairs and renewals
 • 7900 - Bank interest paid
 • 7901 - Bank charges
-• 6900 - Miscellaneous expenses
 
 ## TRANSACTION PROCESSING RULES
 
@@ -395,7 +375,7 @@ Before processing any transactions, you MUST determine the document type:
 **CRITICAL STRUCTURAL RULE FOR CREDIT CARD STATEMENTS:**
 Credit card statements have two distinct sections that determine the accounting treatment:
 
-1. **DEBIT SECTION** (reduces credit card balance/liability):
+1. **DEBIT SECTION** (reduces credit card balance):
    - **CRITICAL OVERRIDE RULE**: ALL transactions positioned in the debit section alongside other payment transactions MUST be classified as credit card payments
    - If you see one transaction labeled "DIRECT DEBIT PAYMENT" and another transaction with just a reference number (e.g., "252370212") in the same section, they are BOTH credit card payments
    - **DO NOT** let description content override structural position - a reference number in the debit section is still a payment
@@ -404,15 +384,26 @@ Credit card statements have two distinct sections that determine the accounting 
      - "Refund" or "Credit" or "Reversal" → Income/credit adjustment (DEBIT 1201 Bank, CREDIT appropriate income account)
      - "Cashback" or "Reward" → Income (DEBIT 1201 Bank, CREDIT appropriate income account)
    - ALL OTHER transactions in debit section → Credit card payment (DEBIT 1240 Credit card, CREDIT 1201 Bank)
+   - **CRITICAL**: Reference numbers, unclear descriptions, or missing keywords DO NOT matter - position determines treatment
+   - **DO NOT** use suspense account for transactions in the debit section alongside identified payments
    - For non-payment exceptions, use account 4906 Bank interest received or 8200 Other income depending on nature
 
-2. **CREDIT SECTION or Transaction List** (increases credit card balance/liability):
-   - These are merchant purchases → DEBIT expense account, CREDIT 1240 Credit card
+2. **CREDIT SECTION or Transaction List** (increases credit card balance):
+   - **CRITICAL ACCOUNTING RULE**: These are merchant purchases that create payables
+   - **DO NOT** attempt to classify expense type or guess expense accounts
+   - **CORRECT METHOD**: ALL merchant purchases post to Accounts Payable
+   - Individual purchases: DEBIT 2100 Accounts payable, CREDIT 1240 Credit card
+   - Partner: Extract merchant name from transaction description
+   - Note: A separate matching process will later match these to actual invoices/bills for proper VAT treatment and expense allocation
 
 **Individual Credit Card Purchases (merchant transactions):**
-- DEBIT: Appropriate expense account (based on merchant/description)
+- **CRITICAL**: Do NOT classify or guess expense types
+- DEBIT: 2100 Accounts payable (creates a payable for invoice matching)
 - CREDIT: 1240 Credit card
-- Partner: Extract from transaction description (merchant name)
+- Partner for 2100: Extract merchant name from transaction description
+- Partner for 1240: "{primary_bank} - Credit card"
+- Narration: Include merchant name and transaction details
+- Note: Later workflow will match to invoices and properly allocate expenses with VAT
 
 **Credit Card Payments (ANY transaction in debit section except interest):**
 - DEBIT: 1240 Credit card
@@ -455,22 +446,25 @@ Always analyze the statement structure to determine which column the transaction
 - Partner for 1201: "{primary_bank} - Current A/c"
 
 **CRITICAL: Payroll/Wage Payments (money going out to employees - DEBIT column in bank statement):**
-- DEBIT: 7000 Gross wages
+- **IMPORTANT**: Payroll payments clear the Net Wages liability created during payroll processing
+- DEBIT: 2250 Net wages (clearing the payable from payroll journal entry)
 - CREDIT: 1201 Bank
-- **PRIVACY RULE**: Remove full employee names from accounting entries
+- **PRIVACY RULE**: Remove full employee names from ALL fields (partner, narration, description)
 - Extract ONLY initials if visible in description (e.g., "John Smith" → "J.S.")
-- Partner for 7000: "Employee - [Initials]" (NOT full name)
+- Partner for 2250: "Employee - [Initials]" (NOT full name)
 - Partner for 1201: "{primary_bank} - Current A/c"
-- Narration can include more context but keep partner field anonymized
+- **Narration/Description format**: Use initials only - "J.S. wage payment" or "Net salary payment - J.S." (NOT "John Smith wage payment")
 - Indicators: "SALARY", "WAGE", "PAYROLL", employee names, regular monthly transfers
 - Use company payroll context: {company_context.get('payroll_information', {}).get('num_employees', 0)} employees, {company_context.get('payroll_information', {}).get('payroll_frequency', 'unknown')} frequency
+- **NOTE**: The gross wages expense (7000) is already recorded in the payroll journal entry; this transaction only clears the net wages payable
 
 **Payroll Tax/Social Insurance Payments (money going out - DEBIT column in bank statement):**
-- DEBIT: 2210 PAYE/NIC
+- DEBIT: 2210 PAYE/NIC (clearing the payable from payroll journal entry)
 - CREDIT: 1201 Bank
 - Indicators: "Social Insurance", "PAYE", "GHS", "National Insurance"
 - Partner for 2210: Extract from description (e.g., "Social Insurance Services")
 - Partner for 1201: "{primary_bank} - Current A/c"
+- **NOTE**: The employer contributions expense (7006) is already recorded in the payroll journal entry; this transaction only clears the tax liability
 
 **VAT Payments (money going OUT to tax authority - DEBIT column in bank statement):**
 - DEBIT: 2200 VAT control account
@@ -492,26 +486,18 @@ Always analyze the statement structure to determine which column the transaction
 - Partner for 7901: Extract from description
 - Partner for 1201: "{primary_bank} - Current A/c"
 
+**Bank Interest Paid (money going out - DEBIT column):**
+- DEBIT: 7900 Bank interest paid
+- CREDIT: 1201 Bank
+- Partner for 7900: Extract from description
+- Partner for 1201: "{primary_bank} - Current A/c"
+
 **Ambiguous/Unclear Transactions:**
 - For money OUT (DEBIT column): DEBIT 1260 Suspense account, CREDIT 1201 Bank
 - For money IN (CREDIT column): DEBIT 1201 Bank, CREDIT 1260 Suspense account
 - Partner for 1260: "Suspense - " + brief description
 - Partner for 1201: "{primary_bank} - Current A/c"
 - Use suspense account when transaction purpose is unclear or cannot be properly classified
-
-## EXPENSE ACCOUNT MAPPING GUIDE
-
-**Fuel/Petrol Stations:** 7300 Car fuel & oil
-**Restaurants/Food:** 7403 Entertainment
-**Travel/Airlines:** 7400 Traveling
-**Hotels:** 7402 Hotels
-**Car Services:** 7301 Repairs and servicing
-**Telecommunications:** 7502 Telephone or 7503 Internet
-**Office Supplies:** 7500 Printing
-**Professional Services:** 7602 Consultancy fees
-**Utilities:** 7190 Utilities or 7200 Electricity
-**DIY/Hardware Stores:** 7800 Repairs and renewals
-**Unknown/Other:** 6900 Miscellaneous expenses
 
 ## PARTNER NAME RULES
 
@@ -520,7 +506,9 @@ Always analyze the statement structure to determine which column the transaction
 - 1240 Credit card: "{primary_bank} - Credit card"
 
 **Extracted Partner Names:**
-- For all other accounts: Extract meaningful partner name from transaction description
+- For 2100 Accounts payable: Extract meaningful merchant/vendor name from transaction description
+- For 2250 Net wages: Use "Employee - [Initials]" format (e.g., "Employee - J.S.")
+- For 2210 PAYE/NIC: Extract authority name (e.g., "Social Insurance Services")
 - **CRITICAL FOR PAYROLL**: For wage payments, use "Employee - [Initials]" format (e.g., "Employee - J.S.")
 - Remove reference numbers, codes, and bank-specific formatting
 - Examples:
@@ -528,6 +516,7 @@ Always analyze the statement structure to determine which column the transaction
   - "SUPERHOME CENTER (DIY)LTD CYP" → "SUPERHOME CENTER"
   - "TAX PAYMENT" → "Tax Authority"
   - "SALARY JOHN SMITH" → "Employee - J.S." (extract initials only)
+  - "Social Insurance Services" → "Social Insurance Services"
 
 ## CRITICAL OUTPUT REQUIREMENTS
 - Return ONLY a valid JSON array
@@ -536,6 +525,9 @@ Always analyze the statement structure to determine which column the transaction
 - Start response with [ and end with ]
 - Each transaction must have "partner" field in line_items
 - Anonymize employee names in payroll transactions (use initials only)
+- For credit card purchases: Always use 2100 Accounts payable
+- For wage payments: Always use 2250 Net wages (NOT 7000 Gross wages)
+- For payroll tax payments: Always use 2210 PAYE/NIC
 
 ## Required Output Format
 For EACH transaction found, create a JSON object with this EXACT structure:
@@ -548,26 +540,26 @@ For EACH transaction found, create a JSON object with this EXACT structure:
     "narration": "string", 
     "partner": "string",
     "accounting_assignment": {{
-      "debit_account": "1201",
-      "debit_account_name": "Bank",
-      "credit_account": "1100",
-      "credit_account_name": "Accounts receivable",
-      "transaction_type": "customer_payment",
+      "debit_account": "2100",
+      "debit_account_name": "Accounts payable",
+      "credit_account": "1240",
+      "credit_account_name": "Credit card",
+      "transaction_type": "credit_card_purchase",
       "requires_vat": false,
       "additional_entries": []
     }},
     "line_items": [
       {{
-        "name": "Bank",
-        "debit": 15000.00,
+        "name": "Accounts payable",
+        "debit": 50.00,
         "credit": 0.00,
-        "partner": "{primary_bank} - Current A/c"
+        "partner": "Merchant Name"
       }},
       {{
-        "name": "Accounts receivable",
+        "name": "Credit card",
         "debit": 0.00,
-        "credit": 15000.00,
-        "partner": "Customer Name"
+        "credit": 50.00,
+        "partner": "{primary_bank} - Credit card"
       }}
     ]
   }}
@@ -577,18 +569,17 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 
 1. **customer_payment**: Payments received from customers
 2. **supplier_payment**: Payments made to vendors/suppliers
-3. **wage_payment**: Salary/wage payments to employees (REMEMBER: anonymize names)
-4. **payroll_tax_payment**: Social insurance, PAYE, GHS, and payroll-related tax payments
+3. **wage_payment**: Net salary payments to employees (clears Account 2250 Net wages payable)
+4. **payroll_tax_payment**: Social insurance, PAYE, GHS payments (clears Account 2210 PAYE/NIC)
 5. **vat_payment**: VAT payments to tax authority (net VAT payable)
 6. **vat_refund**: VAT refunds from tax authority (net VAT receivable)
-7. **bank_charges**: Bank fees and charges
-8. **credit_card_purchase**: Individual credit card transactions
-9. **credit_card_payment**: Payment from bank to credit card
-10. **interest_received**: Interest income
-11. **credit_adjustment**: Refunds, reversals, cashback, rewards received
-12. **suspense_entry**: Unclear/ambiguous transactions
-13. **other_expense**: Direct expenses
-14. **other_income**: Miscellaneous income
+7. **bank_charges**: Bank fees and charges (direct expense)
+8. **bank_interest_paid**: Bank interest expense (direct expense)
+9. **credit_card_purchase**: Individual credit card transactions (creates Account 2100 Accounts payable)
+10. **credit_card_payment**: Payment from bank to credit card
+11. **interest_received**: Interest income
+12. **credit_adjustment**: Refunds, reversals, cashback, rewards received
+13. **suspense_entry**: Unclear/ambiguous transactions
 
 ## Processing Instructions
 
@@ -596,29 +587,65 @@ For EACH transaction found, create a JSON object with this EXACT structure:
 2. **STEP 2: Determine document type** (Credit Card vs Bank Account)
 3. **STEP 3: Identify statement structure** and group related transactions
 4. **STEP 4: For CREDIT CARD statements** - Apply structural grouping rules with exceptions
-5. **STEP 5: For BANK ACCOUNT statements** - Determine money flow from columns
-6. **STEP 6: Identify payroll transactions** using company payroll context (frequency, employee count)
-7. **STEP 7: Anonymize employee names** - Extract initials only for payroll entries
-8. **STEP 8: Map to specific expense accounts** where possible
-9. **STEP 9: Use suspense account** ONLY for truly unclear bank transactions
-10. **STEP 10: Assign correct partner names** (anonymized for employees)
-11. **STEP 11: Create balanced line_items** ensuring debits = credits
-12. **STEP 12: Set company_id** to the numeric ID provided ({company_id}) for every transaction
-13. **STEP 13: Ensure all numeric values are numbers, not strings**
+5. **STEP 5: For CREDIT CARD PURCHASES** - ALWAYS use 2100 Accounts payable (do NOT classify expense types)
+6. **STEP 6: For BANK ACCOUNT statements** - Determine money flow from columns
+7. **STEP 7: Identify payroll transactions** using company payroll context (frequency, employee count)
+8. **STEP 8: For WAGE PAYMENTS** - Use 2250 Net wages (NOT 7000 Gross wages)
+9. **STEP 9: For PAYROLL TAX PAYMENTS** - Use 2210 PAYE/NIC (clearing liability)
+10. **STEP 10: Anonymize employee names** - Extract initials only for payroll entries
+11. **STEP 11: Use suspense account** ONLY for truly unclear bank transactions
+12. **STEP 12: Assign correct partner names** (merchant names for payables, anonymized for employees)
+13. **STEP 13: Create balanced line_items** ensuring debits = credits
+14. **STEP 14: Set company_id** to the numeric ID provided ({company_id}) for every transaction
+15. **STEP 15: Ensure all numeric values are numbers, not strings**
 
-## Example Payroll Transaction:
+## Example Credit Card Purchase Transaction:
 
-### Wage Payment (ANONYMIZED):
+```json
+{{
+  "company_id": {company_id},
+  "date": "2025-10-10",
+  "ref": "cc_purchase_101025",
+  "narration": "Purchase at Shell Petrol Station",
+  "partner": "Shell",
+  "accounting_assignment": {{
+    "debit_account": "2100",
+    "debit_account_name": "Accounts payable",
+    "credit_account": "1240",
+    "credit_account_name": "Credit card",
+    "transaction_type": "credit_card_purchase",
+    "requires_vat": false,
+    "additional_entries": []
+  }},
+  "line_items": [
+    {{
+      "name": "Accounts payable",
+      "debit": 50.00,
+      "credit": 0.00,
+      "partner": "Shell"
+    }},
+    {{
+      "name": "Credit card",
+      "debit": 0.00,
+      "credit": 50.00,
+      "partner": "{primary_bank} - Credit card"
+    }}
+  ]
+}}
+```
+
+## Example Wage Payment Transaction (CLEARING NET WAGES PAYABLE):
+
 ```json
 {{
   "company_id": {company_id},
   "date": "2025-06-30",
   "ref": "payroll_300625",
-  "narration": "Monthly salary payment",
+  "narration": "Net salary payment - J.S.",
   "partner": "Employee - J.S.",
   "accounting_assignment": {{
-    "debit_account": "7000",
-    "debit_account_name": "Gross wages",
+    "debit_account": "2250",
+    "debit_account_name": "Net wages",
     "credit_account": "1201",
     "credit_account_name": "Bank",
     "transaction_type": "wage_payment",
@@ -627,22 +654,57 @@ For EACH transaction found, create a JSON object with this EXACT structure:
   }},
   "line_items": [
     {{
-      "name": "Gross wages",
-      "debit": 2500.00,
+      "name": "Net wages",
+      "debit": 929.77,
       "credit": 0.00,
       "partner": "Employee - J.S."
     }},
     {{
       "name": "Bank",
       "debit": 0.00,
-      "credit": 2500.00,
+      "credit": 929.77,
       "partner": "{primary_bank} - Current A/c"
     }}
   ]
 }}
 ```
 
-**CRITICAL: Return ONLY the JSON array. No markdown formatting, no code blocks, no explanatory text. The response must start with '[' and end with ']'. Every line_item must include a "partner" field. Anonymize employee names in payroll transactions. Set company_id to {company_id} (numeric) for all transactions.**
+## Example Payroll Tax Payment Transaction (CLEARING PAYE/NIC LIABILITY):
+
+```json
+{{
+  "company_id": {company_id},
+  "date": "2025-07-15",
+  "ref": "social_insurance_150725",
+  "narration": "Social insurance payment - clearing payroll tax liability",
+  "partner": "Social Insurance Services",
+  "accounting_assignment": {{
+    "debit_account": "2210",
+    "debit_account_name": "PAYE/NIC",
+    "credit_account": "1201",
+    "credit_account_name": "Bank",
+    "transaction_type": "payroll_tax_payment",
+    "requires_vat": false,
+    "additional_entries": []
+  }},
+  "line_items": [
+    {{
+      "name": "PAYE/NIC",
+      "debit": 158.40,
+      "credit": 0.00,
+      "partner": "Social Insurance Services"
+    }},
+    {{
+      "name": "Bank",
+      "debit": 0.00,
+      "credit": 158.40,
+      "partner": "{primary_bank} - Current A/c"
+    }}
+  ]
+}}
+```
+
+**CRITICAL: Return ONLY the JSON array. No markdown formatting, no code blocks, no explanatory text. The response must start with '[' and end with ']'. Every line_item must include a "partner" field. Anonymize employee names in payroll transactions. Set company_id to {company_id} (numeric) for all transactions. For credit card purchases, ALWAYS use 2100 Accounts payable. For wage payments, ALWAYS use 2250 Net wages (this clears the payable created in payroll processing). For payroll tax payments, ALWAYS use 2210 PAYE/NIC (this clears the liability created in payroll processing).**
 """
 
 def extract_json_from_response(response_text):
@@ -891,6 +953,8 @@ def process_bank_statement_extraction(pdf_content, company_id, company_context=N
             if num_employees > 0:
                 payroll_context_note = f"\n- Company has {num_employees} employee(s), expect payroll transactions"
                 payroll_context_note += "\n- CRITICAL: Anonymize employee names - use initials only (e.g., 'Employee - J.S.')"
+                payroll_context_note += "\n- CRITICAL: Wage payments clear Account 2250 Net wages (NOT 7000 Gross wages)"
+                payroll_context_note += "\n- CRITICAL: Payroll tax payments clear Account 2210 PAYE/NIC"
         
         # Send to Claude with parameters optimized for structured output
         message = anthropic_client.messages.create(
@@ -935,49 +999,68 @@ DOCUMENT-SPECIFIC PROCESSING:
   - **CRITICAL**: Reference numbers, unclear descriptions, or missing keywords DO NOT matter - position determines treatment
   - **DO NOT** use suspense account for transactions in the debit section alongside identified payments
 • **Merchant transactions** (increases card balance):
-  - Usually appear in a separate list with merchant names and trace numbers
-  - Individual purchases: DEBIT expense account, CREDIT 1240 Credit card
+  - **CRITICAL NEW RULE**: DO NOT classify expense types or attempt to determine merchant category
+  - **CORRECT METHOD**: Post ALL merchant purchases to Accounts Payable
+  - Individual purchases: DEBIT 2100 Accounts payable, CREDIT 1240 Credit card
+  - Extract merchant name for partner field
+  - **REASON**: Direct posting causes VAT issues. A separate matching process will later match these payables to actual invoices/bills for proper expense allocation and VAT treatment
 
-**FOR BANK ACCOUNT STATEMENTS - USE COLUMN ANALYSIS:**
-• **CRITICAL**: Analyze DEBIT vs CREDIT columns to determine money flow
-• CREDIT column (money IN):
+**FOR BANK ACCOUNT STATEMENTS - CRITICAL PAYROLL RULES:**
+• **PAYROLL/WAGES (CLEARING LIABILITY CREATED IN PAYROLL PROCESSING)**:
+  - Keywords: "SALARY", "WAGE", "PAYROLL", employee names, regular scheduled transfers
+  - **CRITICAL ACCOUNT SELECTION**: DEBIT 2250 Net wages, CREDIT 1201 Bank
+  - **DO NOT USE 7000 Gross wages** - that expense is already recorded in the payroll journal entry
+  - This transaction ONLY clears the net wages payable liability
+  - **CRITICAL PRIVACY RULE - ANONYMIZE ALL FIELDS**:
+    - Partner field: "Employee - [Initials]" (e.g., "Employee - J.S.")
+    - Narration field: Use initials only - "Net salary payment - J.S." or "J.S. wage payment"
+    - Description field: Use initials only - "J.S. wage payment" (NOT "John Smith wage payment")
+    - Extract ONLY initials from full names (e.g., "John Smith" → "J.S.", "Maria Costa" → "M.C.")
+  - Use company payroll context to identify wage transactions
+• **PAYROLL TAXES (CLEARING LIABILITY CREATED IN PAYROLL PROCESSING)**:
+  - Keywords: "Social Insurance", "PAYE", "GHS", "National Insurance", "NIC"
+  - **CRITICAL ACCOUNT SELECTION**: DEBIT 2210 PAYE/NIC, CREDIT 1201 Bank
+  - **DO NOT USE 7006 Employers n.i.** - that expense is already recorded in the payroll journal entry
+  - This transaction ONLY clears the payroll tax liability
+  - Partner: Extract authority name (e.g., "Social Insurance Services")
+• **OTHER BANK TRANSACTIONS**:
   - Customer payments: DEBIT 1201 Bank, CREDIT 1100 Accounts receivable
-  - VAT refunds: DEBIT 1201 Bank, CREDIT 2200 VAT control account
-• DEBIT column (money OUT):
-  - **PAYROLL/WAGES (CRITICAL PRIVACY RULES)**:
-    - Keywords: "SALARY", "WAGE", "PAYROLL", employee names, regular scheduled transfers
-    - DEBIT 7000 Gross wages, CREDIT 1201 Bank
-    - **NEVER use full employee names in partner field**
-    - Extract ONLY initials from description (e.g., "John Smith" → "J.S.")
-    - Partner format: "Employee - [Initials]" (e.g., "Employee - J.S.")
-    - Narration can be more descriptive, but partner field MUST be anonymized
-    - Use company payroll context to identify wage transactions
-  - Payroll taxes (Social Insurance, PAYE, GHS): DEBIT 2210 PAYE/NIC, CREDIT 1201 Bank
-  - VAT payments: DEBIT 2200 VAT control account, CREDIT 1201 Bank
   - Supplier payments: DEBIT 2100 Accounts payable, CREDIT 1201 Bank
+  - VAT payments: DEBIT 2200 VAT control account, CREDIT 1201 Bank
+  - VAT refunds: DEBIT 1201 Bank, CREDIT 2200 VAT control account
   - Bank charges: DEBIT 7901 Bank charges, CREDIT 1201 Bank
+  - Bank interest paid: DEBIT 7900 Bank interest paid, CREDIT 1201 Bank
 • Use 1260 Suspense only when truly unclear
 
-EXPENSE ACCOUNT MAPPING:
-• Fuel stations → 7300 Car fuel & oil
-• Restaurants → 7403 Entertainment
-• Travel/Airlines → 7400 Traveling
-• Hotels → 7402 Hotels
-• Telecommunications → 7502 Telephone or 7503 Internet
-• Professional services → 7602 Consultancy fees
-• Unknown merchants → 6900 Miscellaneous expenses
+CRITICAL CREDIT CARD PURCHASE RULE:
+• **NEVER** classify or guess expense types for credit card purchases
+• **ALWAYS** post to 2100 Accounts payable
+• This prevents VAT issues and allows proper invoice matching downstream
+• Expense allocation happens later when matched to actual invoices/bills
+
+CRITICAL PAYROLL PAYMENT RULES:
+• **Wage payments from bank**: Use 2250 Net wages (clears payroll liability), NOT 7000 Gross wages
+• **Payroll tax payments from bank**: Use 2210 PAYE/NIC (clears tax liability), NOT 7006 Employers n.i.
+• **EMPLOYEE NAME ANONYMIZATION**: For wage payments, use ONLY initials in ALL fields:
+  - Partner: "Employee - J.S."
+  - Narration: "Net salary payment - J.S." or "J.S. wage payment"
+  - Description: "J.S. wage payment" (NOT "John Smith wage payment")
+  - Never use full employee names anywhere in wage payment transactions
+• **REASONING**: The payroll journal entry already recorded expenses (7000, 7006) and created liabilities (2250, 2210). Bank payments only clear these liabilities.
 
 TRANSACTION IDENTIFICATION KEYWORDS:
-• **Payroll/Wages**: "SALARY", "WAGE", "PAYROLL", employee names, scheduled monthly transfers → Use 7000 Gross wages (ANONYMIZE NAMES)
-• **Payroll taxes**: "Social Insurance", "PAYE", "GHS", "National Insurance", "NIC" → Use 2210 PAYE/NIC
-• **VAT payments/refunds**: "TAX PAYMENT" with "VAT" context → Use 2200 VAT control account (check money flow direction)
-• **Regular supplier payments**: Everything else with vendor names → Use 2100 Accounts payable
+• **Payroll/Wages**: "SALARY", "WAGE", "PAYROLL", employee names → Use 2250 Net wages (ANONYMIZE ALL FIELDS - use initials only)
+• **Payroll taxes**: "Social Insurance", "PAYE", "GHS", "NIC" → Use 2210 PAYE/NIC
+• **VAT payments/refunds**: "TAX PAYMENT" with "VAT" context → Use 2200 VAT control account
+• **Credit card purchases**: ANY merchant transaction → Use 2100 Accounts payable
+• **Supplier payments**: Vendor names in bank statement → Use 2100 Accounts payable
 
 PARTNER NAME ASSIGNMENT:
 • 1201 Bank: Always use company's primary bank name + "- Current A/c"
 • 1240 Credit card: Always use company's primary bank name + "- Credit card"
-• **CRITICAL FOR PAYROLL**: Format as "Employee - [Initials]" (e.g., "Employee - J.S.", "Employee - M.A.")
-• Other accounts: Extract from transaction description, clean format
+• 2100 Accounts payable: Extract merchant/vendor name from transaction description
+• 2250 Net wages: Format as "Employee - [Initials]" (e.g., "Employee - J.S.")
+• 2210 PAYE/NIC: Extract authority name (e.g., "Social Insurance Services")
 
 OUTPUT REQUIREMENTS:
 • Return ONLY valid JSON array
@@ -985,6 +1068,9 @@ OUTPUT REQUIREMENTS:
 • Ensure proper double-entry balancing
 • Use exact account codes and names from chart of accounts
 • Apply appropriate transaction types
+• **CRITICAL FOR CREDIT CARDS**: Use 2100 Accounts payable for ALL merchant purchases
+• **CRITICAL FOR PAYROLL**: Use 2250 Net wages for wage payments (NOT 7000)
+• **CRITICAL FOR PAYROLL TAXES**: Use 2210 PAYE/NIC for tax payments (NOT 7006)
 • **CRITICAL**: Anonymize all employee names in payroll transactions""",
             messages=[
                 {
