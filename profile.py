@@ -30,12 +30,7 @@ def convert_decimal(obj):
 def get_company_profile(company_id, username):
     """Get company profile information"""
     try:
-        # Try to get from company_profiles table
-        profile_response = profiles_table.get_item(
-            Key={'company_id': company_id}
-        )
-        
-        # Also get user data for basic info
+        # Get user data for basic info
         user_response = users_table.get_item(
             Key={'username': username}
         )
@@ -45,6 +40,18 @@ def get_company_profile(company_id, username):
                 "success": False,
                 "error": "User not found"
             }
+        
+        # Try to get from company_profiles table (may not exist yet)
+        try:
+            profile_response = profiles_table.get_item(
+                Key={'company_id': company_id}
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                # Table doesn't exist yet, use user data only
+                profile_response = {'Item': None}
+            else:
+                raise
         
         user = convert_decimal(user_response['Item'])
         
@@ -134,12 +141,20 @@ def update_company_profile(company_id, username, profile_data):
         }
         
         # If this is the first time creating the profile, set created_at
-        existing_profile = profiles_table.get_item(Key={'company_id': company_id})
-        if 'Item' not in existing_profile:
-            profile_item['created_at'] = datetime.utcnow().isoformat()
-        
-        # Save to DynamoDB
-        profiles_table.put_item(Item=profile_item)
+        try:
+            existing_profile = profiles_table.get_item(Key={'company_id': company_id})
+            if 'Item' not in existing_profile:
+                profile_item['created_at'] = datetime.utcnow().isoformat()
+            
+            # Save to DynamoDB
+            profiles_table.put_item(Item=profile_item)
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                # Table doesn't exist yet, skip saving to profiles table
+                print(f"⚠️ company_profiles table not found, skipping profile save")
+                # Still update users table below
+            else:
+                raise
         
         # Also update relevant fields in users table
         users_table.update_item(

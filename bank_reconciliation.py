@@ -109,14 +109,21 @@ def get_bank_transactions(company_id, bank_account_id=None, date_from=None, date
 def get_bank_accounts(company_id):
     """Get all bank accounts for a company"""
     try:
-        response = bank_accounts_table.scan(
-            FilterExpression='company_id = :company_id',
-            ExpressionAttributeValues={
-                ':company_id': company_id
-            }
-        )
-        
-        accounts = convert_decimal(response.get('Items', []))
+        try:
+            response = bank_accounts_table.scan(
+                FilterExpression='company_id = :company_id',
+                ExpressionAttributeValues={
+                    ':company_id': company_id
+                }
+            )
+            accounts = convert_decimal(response.get('Items', []))
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                # Table doesn't exist yet, return empty list
+                print(f"⚠️ bank_accounts table not found, returning empty list")
+                accounts = []
+            else:
+                raise
         
         # Format accounts for frontend
         formatted_accounts = []

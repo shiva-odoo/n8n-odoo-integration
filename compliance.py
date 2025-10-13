@@ -38,19 +38,26 @@ def get_compliance_items(company_id, status=None):
             expression_values[':status'] = status
         
         # Scan compliance items table
-        if status:
-            response = compliance_table.scan(
-                FilterExpression=filter_expression,
-                ExpressionAttributeValues=expression_values,
-                ExpressionAttributeNames={'#status': 'status'}
-            )
-        else:
-            response = compliance_table.scan(
-                FilterExpression=filter_expression,
-                ExpressionAttributeValues=expression_values
-            )
-        
-        items = convert_decimal(response.get('Items', []))
+        try:
+            if status:
+                response = compliance_table.scan(
+                    FilterExpression=filter_expression,
+                    ExpressionAttributeValues=expression_values,
+                    ExpressionAttributeNames={'#status': 'status'}
+                )
+            else:
+                response = compliance_table.scan(
+                    FilterExpression=filter_expression,
+                    ExpressionAttributeValues=expression_values
+                )
+            items = convert_decimal(response.get('Items', []))
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                # Table doesn't exist yet, return empty list
+                print(f"⚠️ compliance_items table not found, returning empty list")
+                items = []
+            else:
+                raise
         
         # Sort by priority and due date
         priority_order = {'high': 0, 'medium': 1, 'low': 2}

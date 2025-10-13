@@ -10,7 +10,7 @@ AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
 
 # DynamoDB setup
 dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
-batches_table = dynamodb.Table('processing_batches')
+batches_table = dynamodb.Table('batch_processing')
 users_table = dynamodb.Table('users')
 
 def convert_decimal(obj):
