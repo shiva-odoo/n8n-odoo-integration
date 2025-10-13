@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 import os
 import json
 from flask_cors import CORS
@@ -62,6 +62,10 @@ import update_bills_table as bills
 import update_invoices_table as invoices
 import reports
 import process_payroll
+import dashboard
+import profile
+import bank_reconciliation
+import compliance
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -78,11 +82,37 @@ CORS(app, resources={
 @app.route('/')
 def home():
     endpoints = {
-        "message": "Complete Business Management API",
-        "version": "4.0",
-        "total_endpoints": 35,
+        "message": "Complete Business Management API with Portal Features",
+        "version": "5.0",
+        "total_endpoints": 50,
         "available_endpoints": {
-            "PDF Extraction (NEW - 4 endpoints)": {
+            "Authentication (4 endpoints)": {
+                "/api/auth/login": "POST - User login with JWT",
+                "/api/auth/refresh": "POST - Refresh JWT token",
+                "/api/auth/logout": "POST - User logout",
+                "/api/auth/me": "GET - Get current user info"
+            },
+            "Dashboard (3 endpoints)": {
+                "/api/dashboard/metrics": "GET - Dashboard metrics (documents, revenue, compliance)",
+                "/api/dashboard/recent-documents": "GET - Recent documents list",
+                "/api/dashboard/compliance-items": "GET - Compliance items for dashboard"
+            },
+            "Company Profile (2 endpoints)": {
+                "/api/company/profile": "GET - Get company profile",
+                "/api/company/profile": "PUT/POST - Update company profile"
+            },
+            "Bank Reconciliation (3 endpoints)": {
+                "/api/bank/transactions": "GET - Bank transactions for reconciliation",
+                "/api/bank/accounts": "GET - Bank accounts list",
+                "/api/bank/reconcile": "POST - Reconcile a transaction"
+            },
+            "Compliance Center (4 endpoints)": {
+                "/api/compliance/items": "GET - Get compliance items",
+                "/api/compliance/items": "POST - Create compliance item",
+                "/api/compliance/items/<id>": "PUT - Update compliance item",
+                "/api/compliance/items/<id>": "DELETE - Delete compliance item"
+            },
+            "PDF Extraction (4 endpoints)": {
                 "/api/extract-pdf-data": "POST - Extract structured data from PDF files",
                 "/api/process-document": "POST - Complete document processing (extract + create records)",
                 "/api/extract-from-url": "POST - Extract from file URL",
@@ -1068,6 +1098,419 @@ def get_current_user_info():
         return jsonify({
             "success": False,
             "error": "Failed to get user information"
+        }), 500
+
+# ================================
+# DASHBOARD ROUTES (Protected)
+# ================================
+
+@app.route("/api/dashboard/metrics", methods=["GET"])
+@jwt_required
+def get_dashboard_metrics():
+    """Get dashboard metrics for the current user's company"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        result = dashboard.get_dashboard_metrics(company_id, username)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Dashboard metrics error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get dashboard metrics"
+        }), 500
+
+@app.route("/api/dashboard/recent-documents", methods=["GET"])
+@jwt_required
+def get_recent_documents():
+    """Get recent documents for the current user's company"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        # Get limit from query params (default 10)
+        limit = request.args.get('limit', 10, type=int)
+        
+        result = dashboard.get_recent_documents(company_id, limit)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Recent documents error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get recent documents"
+        }), 500
+
+@app.route("/api/dashboard/compliance-items", methods=["GET"])
+@jwt_required
+def get_dashboard_compliance_items():
+    """Get compliance items for dashboard"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        result = dashboard.get_compliance_items(company_id)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Dashboard compliance items error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get compliance items"
+        }), 500
+
+# ================================
+# COMPANY PROFILE ROUTES (Protected)
+# ================================
+
+@app.route("/api/company/profile", methods=["GET"])
+@jwt_required
+def get_company_profile():
+    """Get company profile for the current user"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        result = profile.get_company_profile(company_id, username)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Get company profile error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get company profile"
+        }), 500
+
+@app.route("/api/company/profile", methods=["PUT", "POST"])
+@jwt_required
+def update_company_profile():
+    """Update company profile for the current user"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        profile_data = request.get_json()
+        
+        if not profile_data:
+            return jsonify({
+                "success": False,
+                "error": "Profile data is required"
+            }), 400
+        
+        result = profile.update_company_profile(company_id, username, profile_data)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Update company profile error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update company profile"
+        }), 500
+
+# ================================
+# BANK RECONCILIATION ROUTES (Protected)
+# ================================
+
+@app.route("/api/bank/transactions", methods=["GET"])
+@jwt_required
+def get_bank_transactions():
+    """Get bank transactions for reconciliation"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        # Get query parameters
+        bank_account_id = request.args.get('bank_account_id')
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        status = request.args.get('status')
+        
+        result = bank_reconciliation.get_bank_transactions(
+            company_id, 
+            bank_account_id, 
+            date_from, 
+            date_to, 
+            status
+        )
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Get bank transactions error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get bank transactions"
+        }), 500
+
+@app.route("/api/bank/accounts", methods=["GET"])
+@jwt_required
+def get_bank_accounts():
+    """Get bank accounts for the current user's company"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        result = bank_reconciliation.get_bank_accounts(company_id)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Get bank accounts error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get bank accounts"
+        }), 500
+
+@app.route("/api/bank/reconcile", methods=["POST"])
+@jwt_required
+def reconcile_transaction():
+    """Reconcile a bank transaction"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        data = request.get_json()
+        
+        if not data or not data.get('transaction_id'):
+            return jsonify({
+                "success": False,
+                "error": "Transaction ID is required"
+            }), 400
+        
+        result = bank_reconciliation.reconcile_transaction(
+            data['transaction_id'],
+            company_id,
+            data.get('matched_record_type'),
+            data.get('matched_record_id'),
+            username
+        )
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Reconcile transaction error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to reconcile transaction"
+        }), 500
+
+# ================================
+# COMPLIANCE CENTER ROUTES (Protected)
+# ================================
+
+@app.route("/api/compliance/items", methods=["GET"])
+@jwt_required
+def get_compliance_items():
+    """Get compliance items for the current user's company"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        status = request.args.get('status')
+        
+        result = compliance.get_compliance_items(company_id, status)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        print(f"❌ Get compliance items error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to get compliance items"
+        }), 500
+
+@app.route("/api/compliance/items", methods=["POST"])
+@jwt_required
+def create_compliance_item():
+    """Create a new compliance item"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        item_data = request.get_json()
+        
+        if not item_data:
+            return jsonify({
+                "success": False,
+                "error": "Item data is required"
+            }), 400
+        
+        result = compliance.create_compliance_item(company_id, item_data, username)
+        
+        if result["success"]:
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Create compliance item error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to create compliance item"
+        }), 500
+
+@app.route("/api/compliance/items/<compliance_id>", methods=["PUT"])
+@jwt_required
+def update_compliance_item(compliance_id):
+    """Update a compliance item"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        update_data = request.get_json()
+        
+        if not update_data:
+            return jsonify({
+                "success": False,
+                "error": "Update data is required"
+            }), 400
+        
+        result = compliance.update_compliance_item(compliance_id, company_id, update_data, username)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Update compliance item error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to update compliance item"
+        }), 500
+
+@app.route("/api/compliance/items/<compliance_id>", methods=["DELETE"])
+@jwt_required
+def delete_compliance_item(compliance_id):
+    """Delete a compliance item"""
+    try:
+        current_user = get_current_user()
+        company_id = current_user.get('company_id')
+        
+        if not company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID not found for user"
+            }), 400
+        
+        result = compliance.delete_compliance_item(compliance_id, company_id)
+        
+        if result["success"]:
+            return jsonify(result), 200
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        print(f"❌ Delete compliance item error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Failed to delete compliance item"
         }), 500
 
 # ================================
@@ -3217,6 +3660,293 @@ def get_executive_summary():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ============================================================================
+# REPORT DOWNLOAD ENDPOINTS
+# ============================================================================
+
+@app.route('/api/reports/download/profit-loss', methods=['POST'])
+def download_profit_loss():
+    """Download Profit & Loss Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_profit_loss_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/balance-sheet', methods=['POST'])
+def download_balance_sheet():
+    """Download Balance Sheet Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_balance_sheet_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/cash-flow', methods=['POST'])
+def download_cash_flow():
+    """Download Cash Flow Statement as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_cash_flow_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/trial-balance', methods=['POST'])
+def download_trial_balance():
+    """Download Trial Balance Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_trial_balance_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/general-ledger', methods=['POST'])
+def download_general_ledger():
+    """Download General Ledger Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_general_ledger_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/aged-receivables', methods=['POST'])
+def download_aged_receivables():
+    """Download Aged Receivables Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_aged_receivables_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/aged-payables', methods=['POST'])
+def download_aged_payables():
+    """Download Aged Payables Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_aged_payables_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/tax', methods=['POST'])
+def download_tax_report():
+    """Download Tax Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_tax_report_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/sales', methods=['POST'])
+def download_sales_report():
+    """Download Sales Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_sales_report_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/purchases', methods=['POST'])
+def download_purchase_report():
+    """Download Purchase Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_purchase_report_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/payments', methods=['POST'])
+def download_payment_report():
+    """Download Payment Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_payment_report_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/bank-reconciliation', methods=['POST'])
+def download_bank_reconciliation():
+    """Download Bank Reconciliation Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_bank_reconciliation_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/budget-vs-actual', methods=['POST'])
+def download_budget_vs_actual():
+    """Download Budget vs Actual Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_budget_vs_actual_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/partner-ledger', methods=['POST'])
+def download_partner_ledger():
+    """Download Partner Ledger Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_partner_ledger_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/download/executive-summary', methods=['POST'])
+def download_executive_summary():
+    """Download Executive Summary Report as CSV"""
+    try:
+        data = request.json or {}
+        csv_content, filename = reports.download_executive_summary_csv(data)
+        
+        if csv_content is None:
+            return jsonify(filename), 400
+        
+        response = make_response(csv_content)
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ================================

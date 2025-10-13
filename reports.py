@@ -7,7 +7,62 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 #test
+def resolve_company_id(company_id_input):
+    """
+    Resolve company_id to integer ID
+    Accepts: integer, string number, or company name/code
+    Returns: integer company ID or None
+    """
+    if not company_id_input:
+        return None
+    
+    # If it's already an integer, return it
+    if isinstance(company_id_input, int):
+        return company_id_input
+    
+    # If it's a string that can be converted to int
+    if isinstance(company_id_input, str):
+        # Try converting to int first
+        try:
+            return int(company_id_input)
+        except ValueError:
+            # It's a string like "admin" - need to query Odoo
+            try:
+                models, uid, db, password = get_odoo_connection()
+                
+                # Try to find company by name or reference
+                companies = models.execute_kw(
+                    db, uid, password,
+                    'res.company', 'search_read',
+                    [[('name', 'ilike', company_id_input)]],
+                    {'fields': ['id', 'name'], 'limit': 1}
+                )
+                
+                if companies:
+                    logger.info(f"Resolved company '{company_id_input}' to ID {companies[0]['id']}")
+                    return companies[0]['id']
+                
+                # If not found, get the user's default company
+                logger.warning(f"Company '{company_id_input}' not found, using user's default company")
+                user_data = models.execute_kw(
+                    db, uid, password,
+                    'res.users', 'read',
+                    [uid],
+                    {'fields': ['company_id']}
+                )
+                
+                if user_data and user_data[0].get('company_id'):
+                    return user_data[0]['company_id'][0]
+                    
+            except Exception as e:
+                logger.error(f"Error resolving company_id: {str(e)}")
+                return None
+    
+    return None
+
+
 def get_odoo_connection():
     """Establish connection to Odoo"""
     try:
@@ -61,12 +116,17 @@ def get_odoo_connection():
 def get_profit_loss_report(data: Dict) -> Dict:
     """Get Profit & Loss (Income Statement) report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        # Resolve company_id (handles both int and string)
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -183,11 +243,15 @@ def get_profit_loss_report(data: Dict) -> Dict:
 def get_balance_sheet_report(data: Dict) -> Dict:
     """Get Balance Sheet report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -260,12 +324,16 @@ def get_balance_sheet_report(data: Dict) -> Dict:
 def get_cash_flow_report(data: Dict) -> Dict:
     """Get Cash Flow Statement"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -362,11 +430,15 @@ def get_cash_flow_report(data: Dict) -> Dict:
 def get_aged_payables_report(data: Dict) -> Dict:
     """Get Aged Payables (Accounts Payable) report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         as_of_date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -453,11 +525,15 @@ def get_aged_payables_report(data: Dict) -> Dict:
 def get_aged_receivables_report(data: Dict) -> Dict:
     """Get Aged Receivables (Accounts Receivable) report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         as_of_date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -544,13 +620,17 @@ def get_aged_receivables_report(data: Dict) -> Dict:
 def get_general_ledger_report(data: Dict) -> Dict:
     """Get General Ledger report for all accounts"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         account_id = data.get('account_id')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -622,12 +702,16 @@ def get_general_ledger_report(data: Dict) -> Dict:
 def get_trial_balance_report(data: Dict) -> Dict:
     """Get Trial Balance report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -703,12 +787,16 @@ def get_trial_balance_report(data: Dict) -> Dict:
 def get_tax_report(data: Dict) -> Dict:
     """Get Tax Report (VAT/GST)"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -776,13 +864,17 @@ def get_tax_report(data: Dict) -> Dict:
 def get_sales_report(data: Dict) -> Dict:
     """Get Sales Report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         group_by = data.get('group_by', 'customer')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -892,13 +984,17 @@ def get_sales_report(data: Dict) -> Dict:
 def get_purchase_report(data: Dict) -> Dict:
     """Get Purchase Report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         group_by = data.get('group_by', 'vendor')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -996,14 +1092,18 @@ def get_purchase_report(data: Dict) -> Dict:
 def get_bank_reconciliation_report(data: Dict) -> Dict:
     """Get Bank Reconciliation Report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         journal_id = data.get('journal_id')
         date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
         if not journal_id:
             return {'success': False, 'error': 'journal_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -1070,13 +1170,17 @@ def get_bank_reconciliation_report(data: Dict) -> Dict:
 def get_payment_report(data: Dict) -> Dict:
     """Get Payment Report (both received and made)"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         payment_type = data.get('payment_type', 'all')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -1144,12 +1248,16 @@ def get_payment_report(data: Dict) -> Dict:
 def get_budget_vs_actual_report(data: Dict) -> Dict:
     """Get Budget vs Actual Report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -1215,14 +1323,18 @@ def get_budget_vs_actual_report(data: Dict) -> Dict:
 def get_partner_ledger_report(data: Dict) -> Dict:
     """Get Partner Ledger Report"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         partner_id = data.get('partner_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         partner_type = data.get('partner_type', 'all')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
         
@@ -1318,12 +1430,16 @@ def get_partner_ledger_report(data: Dict) -> Dict:
 def get_executive_summary_report(data: Dict) -> Dict:
     """Get Executive Summary with key metrics"""
     try:
-        company_id = data.get('company_id')
+        company_id_input = data.get('company_id')
         date_from = data.get('date_from')
         date_to = data.get('date_to')
         
-        if not company_id:
+        if not company_id_input:
             return {'success': False, 'error': 'company_id is required'}
+        
+        company_id = resolve_company_id(company_id_input)
+        if not company_id:
+            return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         # Get multiple reports
         pl_data = get_profit_loss_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
@@ -1357,3 +1473,718 @@ def get_executive_summary_report(data: Dict) -> Dict:
     except Exception as e:
         logger.error(f"Error generating executive summary: {str(e)}")
         return {'success': False, 'error': str(e)}
+
+
+# ============================================================================
+# DOWNLOAD FUNCTIONS (CSV Export)
+# ============================================================================
+
+def download_profit_loss_csv(data: Dict) -> tuple:
+    """Generate Profit & Loss Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_profit_loss_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        # Create CSV
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow(['Profit & Loss Statement'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow([])
+        
+        # Revenue section
+        writer.writerow(['REVENUE'])
+        writer.writerow(['Account Code', 'Account Name', 'Amount'])
+        for acc in result['data']['revenue']['accounts']:
+            writer.writerow([acc['account_code'], acc['account_name'], acc['amount']])
+        writer.writerow(['Total Revenue', '', result['data']['revenue']['total']])
+        writer.writerow([])
+        
+        # Expenses section
+        writer.writerow(['EXPENSES'])
+        writer.writerow(['Account Code', 'Account Name', 'Amount'])
+        for acc in result['data']['expenses']['accounts']:
+            writer.writerow([acc['account_code'], acc['account_name'], acc['amount']])
+        writer.writerow(['Total Expenses', '', result['data']['expenses']['total']])
+        writer.writerow([])
+        
+        # Net profit
+        writer.writerow(['NET PROFIT', '', result['data']['net_profit']])
+        
+        filename = f'profit_loss_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating P&L CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_balance_sheet_csv(data: Dict) -> tuple:
+    """Generate Balance Sheet Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_balance_sheet_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Balance Sheet'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['As of Date:', result['date']])
+        writer.writerow([])
+        
+        # Assets
+        writer.writerow(['ASSETS'])
+        writer.writerow(['Account Code', 'Account Name', 'Type', 'Balance'])
+        for acc in result['data']['assets']['accounts']:
+            writer.writerow([acc['account_code'], acc['account_name'], acc['account_type'], acc['balance']])
+        writer.writerow(['Total Assets', '', '', result['data']['assets']['total']])
+        writer.writerow([])
+        
+        # Liabilities
+        writer.writerow(['LIABILITIES'])
+        writer.writerow(['Account Code', 'Account Name', 'Type', 'Balance'])
+        for acc in result['data']['liabilities']['accounts']:
+            writer.writerow([acc['account_code'], acc['account_name'], acc['account_type'], acc['balance']])
+        writer.writerow(['Total Liabilities', '', '', result['data']['liabilities']['total']])
+        writer.writerow([])
+        
+        # Equity
+        writer.writerow(['EQUITY'])
+        writer.writerow(['Account Code', 'Account Name', 'Type', 'Balance'])
+        for acc in result['data']['equity']['accounts']:
+            writer.writerow([acc['account_code'], acc['account_name'], acc['account_type'], acc['balance']])
+        writer.writerow(['Total Equity', '', '', result['data']['equity']['total']])
+        
+        filename = f'balance_sheet_{result["date"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Balance Sheet CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_cash_flow_csv(data: Dict) -> tuple:
+    """Generate Cash Flow Statement as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_cash_flow_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Cash Flow Statement'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow([])
+        
+        writer.writerow(['Opening Balance:', result['data']['opening_balance']])
+        writer.writerow([])
+        
+        writer.writerow(['Account Code', 'Account Name', 'Opening', 'Inflows', 'Outflows', 'Net Movement', 'Closing'])
+        for acc in result['data']['accounts']:
+            writer.writerow([
+                acc['account_code'], 
+                acc['account_name'], 
+                acc['opening_balance'],
+                acc['inflows'],
+                acc['outflows'],
+                acc['net_movement'],
+                acc['closing_balance']
+            ])
+        
+        writer.writerow([])
+        writer.writerow(['Closing Balance:', result['data']['closing_balance']])
+        writer.writerow(['Net Change:', result['data']['net_change']])
+        
+        filename = f'cash_flow_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Cash Flow CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_trial_balance_csv(data: Dict) -> tuple:
+    """Generate Trial Balance Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_trial_balance_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Trial Balance'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result.get('date_from', '')} to {result.get('date_to', '')}"])
+        writer.writerow([])
+        
+        writer.writerow(['Account Code', 'Account Name', 'Account Type', 'Debit', 'Credit', 'Balance'])
+        for acc in result['data']:
+            writer.writerow([
+                acc['account_code'],
+                acc['account_name'],
+                acc['account_type'],
+                acc['debit'],
+                acc['credit'],
+                acc['balance']
+            ])
+        
+        writer.writerow([])
+        writer.writerow(['TOTALS', '', '', result['totals']['debit'], result['totals']['credit'], result['totals']['difference']])
+        
+        filename = f'trial_balance_{result.get("date_to", "")}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Trial Balance CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_general_ledger_csv(data: Dict) -> tuple:
+    """Generate General Ledger Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_general_ledger_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['General Ledger'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result.get('date_from', '')} to {result.get('date_to', '')}"])
+        writer.writerow([])
+        
+        for account in result['data']:
+            writer.writerow([f"Account: {account['account_code']} - {account['account_name']}"])
+            writer.writerow(['Date', 'Description', 'Reference', 'Partner', 'Debit', 'Credit', 'Balance'])
+            
+            for txn in account['transactions']:
+                writer.writerow([
+                    txn['date'],
+                    txn['description'],
+                    txn['reference'],
+                    txn['partner'],
+                    txn['debit'],
+                    txn['credit'],
+                    txn['balance']
+                ])
+            
+            writer.writerow(['TOTAL', '', '', '', account['total_debit'], account['total_credit'], account['balance']])
+            writer.writerow([])
+        
+        filename = f'general_ledger_{result.get("date_to", "")}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating General Ledger CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_aged_receivables_csv(data: Dict) -> tuple:
+    """Generate Aged Receivables Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_aged_receivables_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Aged Receivables Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['As of Date:', result['as_of_date']])
+        writer.writerow([])
+        
+        categories = ['current', '1-30', '31-60', '61-90', 'over_90']
+        category_names = ['Current', '1-30 Days', '31-60 Days', '61-90 Days', 'Over 90 Days']
+        
+        for cat, cat_name in zip(categories, category_names):
+            writer.writerow([f'{cat_name} (Total: {result["totals"][cat]})'])
+            if result['data'][cat]:
+                writer.writerow(['Invoice #', 'Customer', 'Invoice Date', 'Due Date', 'Days Overdue', 'Amount'])
+                for inv in result['data'][cat]:
+                    writer.writerow([
+                        inv['invoice_number'],
+                        inv['customer'],
+                        inv['invoice_date'],
+                        inv.get('due_date', ''),
+                        inv['days_overdue'],
+                        inv['amount']
+                    ])
+            writer.writerow([])
+        
+        writer.writerow(['GRAND TOTAL', '', '', '', '', result['grand_total']])
+        
+        filename = f'aged_receivables_{result["as_of_date"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Aged Receivables CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_aged_payables_csv(data: Dict) -> tuple:
+    """Generate Aged Payables Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_aged_payables_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Aged Payables Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['As of Date:', result['as_of_date']])
+        writer.writerow([])
+        
+        categories = ['current', '1-30', '31-60', '61-90', 'over_90']
+        category_names = ['Current', '1-30 Days', '31-60 Days', '61-90 Days', 'Over 90 Days']
+        
+        for cat, cat_name in zip(categories, category_names):
+            writer.writerow([f'{cat_name} (Total: {result["totals"][cat]})'])
+            if result['data'][cat]:
+                writer.writerow(['Bill #', 'Vendor', 'Invoice Date', 'Due Date', 'Days Overdue', 'Amount'])
+                for bill in result['data'][cat]:
+                    writer.writerow([
+                        bill['bill_number'],
+                        bill['vendor'],
+                        bill['invoice_date'],
+                        bill.get('due_date', ''),
+                        bill['days_overdue'],
+                        bill['amount']
+                    ])
+            writer.writerow([])
+        
+        writer.writerow(['GRAND TOTAL', '', '', '', '', result['grand_total']])
+        
+        filename = f'aged_payables_{result["as_of_date"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Aged Payables CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_tax_report_csv(data: Dict) -> tuple:
+    """Generate Tax Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_tax_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Tax Report (VAT/GST)'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow([])
+        
+        for tax_item in result['data']:
+            writer.writerow([f"Tax: {tax_item['tax_name']}"])
+            writer.writerow(['Date', 'Description', 'Partner', 'Tax Amount'])
+            
+            for txn in tax_item['transactions']:
+                writer.writerow([
+                    txn['date'],
+                    txn['description'],
+                    txn['partner'],
+                    txn['tax_amount']
+                ])
+            
+            writer.writerow(['Subtotal', '', '', tax_item['tax_amount']])
+            writer.writerow([])
+        
+        writer.writerow(['TOTAL TAX', '', '', result['total_tax']])
+        
+        filename = f'tax_report_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Tax Report CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_sales_report_csv(data: Dict) -> tuple:
+    """Generate Sales Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_sales_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Sales Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow(['Grouped By:', result['group_by']])
+        writer.writerow([])
+        
+        if result['group_by'] == 'customer':
+            writer.writerow(['Customer Name', 'Invoice Count', 'Total Untaxed', 'Total Tax', 'Total'])
+            for item in result['data']:
+                writer.writerow([
+                    item['customer_name'],
+                    item['invoice_count'],
+                    item['total_untaxed'],
+                    item['total_tax'],
+                    item['total']
+                ])
+        elif result['group_by'] == 'product':
+            writer.writerow(['Product Name', 'Quantity Sold', 'Total Sales'])
+            for item in result['data']:
+                writer.writerow([
+                    item['product_name'],
+                    item['quantity_sold'],
+                    item['total_sales']
+                ])
+        else:
+            writer.writerow(['Salesperson', 'Invoice Count', 'Total Sales'])
+            for item in result['data']:
+                writer.writerow([
+                    item['salesperson'],
+                    item['invoice_count'],
+                    item['total_sales']
+                ])
+        
+        writer.writerow([])
+        writer.writerow(['Summary'])
+        writer.writerow(['Total Invoices:', result['summary']['total_invoices']])
+        writer.writerow(['Total Amount:', result['summary']['total_amount']])
+        
+        filename = f'sales_report_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Sales Report CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_purchase_report_csv(data: Dict) -> tuple:
+    """Generate Purchase Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_purchase_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Purchase Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow(['Grouped By:', result['group_by']])
+        writer.writerow([])
+        
+        if result['group_by'] == 'vendor':
+            writer.writerow(['Vendor Name', 'Bill Count', 'Total Untaxed', 'Total Tax', 'Total'])
+            for item in result['data']:
+                writer.writerow([
+                    item['vendor_name'],
+                    item['bill_count'],
+                    item['total_untaxed'],
+                    item['total_tax'],
+                    item['total']
+                ])
+        else:
+            writer.writerow(['Product Name', 'Quantity Purchased', 'Total Cost'])
+            for item in result['data']:
+                writer.writerow([
+                    item['product_name'],
+                    item['quantity_purchased'],
+                    item['total_cost']
+                ])
+        
+        writer.writerow([])
+        writer.writerow(['Summary'])
+        writer.writerow(['Total Bills:', result['summary']['total_bills']])
+        writer.writerow(['Total Amount:', result['summary']['total_amount']])
+        
+        filename = f'purchase_report_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Purchase Report CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_payment_report_csv(data: Dict) -> tuple:
+    """Generate Payment Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_payment_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Payment Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow(['Payment Type:', result['payment_type']])
+        writer.writerow([])
+        
+        writer.writerow(['Payment #', 'Date', 'Partner', 'Type', 'Partner Type', 'Amount', 'Reference', 'Journal'])
+        for payment in result['data']:
+            writer.writerow([
+                payment['payment_number'],
+                payment['date'],
+                payment['partner'],
+                payment['payment_type'],
+                payment['partner_type'],
+                payment['amount'],
+                payment['reference'],
+                payment['journal']
+            ])
+        
+        writer.writerow([])
+        writer.writerow(['Summary'])
+        writer.writerow(['Total Payments:', result['summary']['total_payments']])
+        writer.writerow(['Inbound Total:', result['summary']['inbound_total']])
+        writer.writerow(['Outbound Total:', result['summary']['outbound_total']])
+        writer.writerow(['Net:', result['summary']['net']])
+        
+        filename = f'payment_report_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Payment Report CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_bank_reconciliation_csv(data: Dict) -> tuple:
+    """Generate Bank Reconciliation Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_bank_reconciliation_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Bank Reconciliation Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Journal:', result['journal_name']])
+        writer.writerow(['As of Date:', result['as_of_date']])
+        writer.writerow([])
+        
+        writer.writerow(['Book Balance:', result['data']['book_balance']])
+        writer.writerow(['Reconciled Count:', result['data']['reconciled_count']])
+        writer.writerow(['Unreconciled Count:', result['data']['unreconciled_count']])
+        writer.writerow(['Unreconciled Amount:', result['data']['unreconciled_amount']])
+        writer.writerow([])
+        
+        writer.writerow(['Unreconciled Transactions'])
+        writer.writerow(['Date', 'Description', 'Reference', 'Debit', 'Credit', 'Balance'])
+        for txn in result['data']['unreconciled_transactions']:
+            writer.writerow([
+                txn['date'],
+                txn['description'],
+                txn['reference'],
+                txn['debit'],
+                txn['credit'],
+                txn['balance']
+            ])
+        
+        filename = f'bank_reconciliation_{result["as_of_date"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Bank Reconciliation CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_budget_vs_actual_csv(data: Dict) -> tuple:
+    """Generate Budget vs Actual Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_budget_vs_actual_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Budget vs Actual Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result.get('date_from', '')} to {result.get('date_to', '')}"])
+        writer.writerow([])
+        
+        for budget in result['data']:
+            writer.writerow([f"Budget: {budget['budget_name']}"])
+            writer.writerow(['Period:', f"{budget['date_from']} to {budget['date_to']}"])
+            writer.writerow(['Status:', budget['status']])
+            writer.writerow([])
+            
+            writer.writerow(['Budget Position', 'Analytic Account', 'Planned', 'Actual', 'Variance', 'Percentage'])
+            for line in budget['lines']:
+                writer.writerow([
+                    line['budget_position'],
+                    line['analytic_account'],
+                    line['planned'],
+                    line['actual'],
+                    line['variance'],
+                    f"{line['percentage']}%"
+                ])
+            writer.writerow([])
+        
+        filename = f'budget_vs_actual_{result.get("date_to", "")}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Budget vs Actual CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_partner_ledger_csv(data: Dict) -> tuple:
+    """Generate Partner Ledger Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_partner_ledger_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Partner Ledger Report'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result.get('date_from', '')} to {result.get('date_to', '')}"])
+        writer.writerow(['Partner Type:', result['partner_type']])
+        writer.writerow([])
+        
+        for partner in result['data']:
+            writer.writerow([f"Partner: {partner['partner_name']}"])
+            writer.writerow(['Total Debit:', partner['total_debit']])
+            writer.writerow(['Total Credit:', partner['total_credit']])
+            writer.writerow(['Balance:', partner['balance']])
+            writer.writerow([])
+            
+            writer.writerow(['Date', 'Description', 'Reference', 'Debit', 'Credit', 'Balance'])
+            for txn in partner['transactions']:
+                writer.writerow([
+                    txn['date'],
+                    txn['description'],
+                    txn['reference'],
+                    txn['debit'],
+                    txn['credit'],
+                    txn['balance']
+                ])
+            writer.writerow([])
+        
+        filename = f'partner_ledger_{result.get("date_to", "")}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Partner Ledger CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
+
+
+def download_executive_summary_csv(data: Dict) -> tuple:
+    """Generate Executive Summary Report as CSV"""
+    try:
+        from io import StringIO
+        import csv
+        
+        result = get_executive_summary_report(data)
+        
+        if not result.get('success'):
+            return None, result
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['Executive Summary'])
+        writer.writerow(['Company ID:', result['company_id']])
+        writer.writerow(['Period:', f"{result['date_from']} to {result['date_to']}"])
+        writer.writerow([])
+        
+        writer.writerow(['Key Metrics', 'Value'])
+        writer.writerow(['Revenue', result['data']['revenue']])
+        writer.writerow(['Expenses', result['data']['expenses']])
+        writer.writerow(['Net Profit', result['data']['net_profit']])
+        writer.writerow(['Profit Margin (%)', f"{result['data']['profit_margin']:.2f}%"])
+        writer.writerow([])
+        
+        writer.writerow(['Balance Sheet'])
+        writer.writerow(['Total Assets', result['data']['total_assets']])
+        writer.writerow(['Total Liabilities', result['data']['total_liabilities']])
+        writer.writerow(['Equity', result['data']['equity']])
+        writer.writerow([])
+        
+        writer.writerow(['Cash & Operations'])
+        writer.writerow(['Cash Position', result['data']['cash_position']])
+        writer.writerow(['Sales Count', result['data']['sales_count']])
+        writer.writerow(['Purchase Count', result['data']['purchase_count']])
+        
+        filename = f'executive_summary_{result["date_from"]}_{result["date_to"]}.csv'
+        return output.getvalue(), filename
+        
+    except Exception as e:
+        logger.error(f"Error generating Executive Summary CSV: {str(e)}")
+        return None, {'success': False, 'error': str(e)}
