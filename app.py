@@ -1149,8 +1149,9 @@ def get_recent_documents():
         
         # Get limit from query params (default 10)
         limit = request.args.get('limit', 10, type=int)
+        username = current_user.get('username')
         
-        result = dashboard.get_recent_documents(company_id, limit)
+        result = dashboard.get_recent_documents(company_id, username, limit)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1171,6 +1172,7 @@ def get_dashboard_compliance_items():
     try:
         current_user = get_current_user()
         company_id = current_user.get('company_id')
+        username = current_user.get('username')
         
         if not company_id:
             return jsonify({
@@ -1178,7 +1180,7 @@ def get_dashboard_compliance_items():
                 "error": "Company ID not found for user"
             }), 400
         
-        result = dashboard.get_compliance_items(company_id)
+        result = dashboard.get_compliance_items(company_id, username)
         
         if result["success"]:
             return jsonify(result), 200
