@@ -15,7 +15,7 @@ def get_classification_prompt(company_name):
 
 **CRITICAL OUTPUT REQUIREMENT:**
 Your response must contain ONLY valid JSON. No explanations, comments, or markdown.
-Start directly with {{{{ and end with }}}}.
+Start directly with {{ and end with }}.
 
 **USER'S COMPANY:** "{company_name}"
 
@@ -348,14 +348,14 @@ Before generating JSON, verify:
 - "illegible_document": Cannot determine
 
 **REQUIRED JSON OUTPUT:**
-{{{{
+{{
   "document_type": "payroll|invoice|bill|bank_statement|share_document|null",
   "category": "money_coming_in|money_going_out|bank_statement|illegible_document",
   "company_name": "{company_name}",
   "total_amount": 1250.00,
   "confidence_score": 0.95,
   "reasoning": "Brief explanation"
-}}}}
+}}
 
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -629,7 +629,8 @@ def main(data):
         if result["success"]:
             try:
                 # Parse Claude's JSON response
-                classification_data = json.loads(result["classification"])
+                cleaned_response = result["classification"].replace("{{", "{").replace("}}", "}")
+                classification_data = json.loads(cleaned_response)
                 
                 # CRITICAL: Post-processing validation and auto-correction
                 validation_result = validate_and_correct_classification(
