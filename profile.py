@@ -11,7 +11,6 @@ AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
 # DynamoDB setup
 dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
 users_table = dynamodb.Table('users')
-profiles_table = dynamodb.Table('company_profiles')
 
 def convert_decimal(obj):
     """Convert DynamoDB Decimal objects to regular Python numbers"""
@@ -28,9 +27,9 @@ def convert_decimal(obj):
         return obj
 
 def get_company_profile(company_id, username):
-    """Get company profile information"""
+    """Get company profile information from users table"""
     try:
-        # Get user data for basic info
+        # Get user data which contains all company profile information
         user_response = users_table.get_item(
             Key={'username': username}
         )
@@ -41,42 +40,36 @@ def get_company_profile(company_id, username):
                 "error": "User not found"
             }
         
-        # Try to get from company_profiles table (may not exist yet)
-        try:
-            profile_response = profiles_table.get_item(
-                Key={'company_id': company_id}
-            )
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                # Table doesn't exist yet, use user data only
-                profile_response = {'Item': None}
-            else:
-                raise
-        
         user = convert_decimal(user_response['Item'])
         
-        # If profile exists, merge with user data
-        if 'Item' in profile_response:
-            profile = convert_decimal(profile_response['Item'])
-        else:
-            # Create default profile from user data
-            profile = {
-                'company_id': company_id,
-                'company_name': user.get('company_name', ''),
-                'email': user.get('email', ''),
-                'trading_name': user.get('trading_name', ''),
-                'registration_no': user.get('registration_no', ''),
-                'tax_registration_no': user.get('tax_registration_no', ''),
-                'business_address': user.get('business_address', ''),
-                'is_vat_registered': user.get('is_vat_registered', ''),
-                'vat_no': user.get('vat_no', ''),
-                'primary_industry': user.get('primary_industry', ''),
-                'business_description': user.get('business_description', ''),
-                'main_products': user.get('main_products', ''),
-                'business_model': user.get('business_model', ''),
-                'created_at': user.get('created_at', ''),
-                'updated_at': datetime.utcnow().isoformat()
-            }
+        # Build profile from user data (users table has all the fields)
+        profile = {
+            'company_id': user.get('company_id', company_id),
+            'company_name': user.get('company_name', ''),
+            'trading_name': user.get('trading_name', ''),
+            'registration_no': user.get('registration_no', ''),
+            'tax_registration_no': user.get('tax_registration_no', ''),
+            'business_address': user.get('business_address', ''),
+            'phone': user.get('phone', ''),
+            'email': user.get('email', ''),
+            'website': user.get('website', ''),
+            'is_vat_registered': user.get('is_vat_registered', ''),
+            'vat_no': user.get('vat_no', ''),
+            'primary_industry': user.get('primary_industry', ''),
+            'business_description': user.get('business_description', ''),
+            'main_products': user.get('main_products', ''),
+            'business_model': user.get('business_model', ''),
+            'business_company_id': user.get('business_company_id', ''),
+            'banking_information': user.get('banking_information', {}),
+            'payroll_information': user.get('payroll_information', {}),
+            'business_operations': user.get('business_operations', {}),
+            'tax_information': user.get('tax_information', {}),
+            'special_circumstances': user.get('special_circumstances', {}),
+            'created_at': user.get('created_at', ''),
+            'last_login': user.get('last_login', ''),
+            'profile_completed_at': user.get('profile_completed_at'),
+            'profile_last_updated': user.get('profile_last_updated')
+        }
         
         return {
             "success": True,
@@ -97,7 +90,7 @@ def get_company_profile(company_id, username):
         }
 
 def update_company_profile(company_id, username, profile_data):
-    """Update company profile information"""
+    """Update company profile information in users table"""
     try:
         # Validate that user has permission to update this company
         user_response = users_table.get_item(
@@ -119,61 +112,66 @@ def update_company_profile(company_id, username, profile_data):
                 "error": "Unauthorized to update this profile"
             }
         
-        # Prepare profile item
-        profile_item = {
-            'company_id': company_id,
-            'company_name': profile_data.get('company_name', user.get('company_name', '')),
-            'trading_name': profile_data.get('trading_name', ''),
-            'registration_no': profile_data.get('registration_no', ''),
-            'tax_registration_no': profile_data.get('tax_registration_no', ''),
-            'business_address': profile_data.get('business_address', ''),
-            'phone': profile_data.get('phone', ''),
-            'email': profile_data.get('email', user.get('email', '')),
-            'website': profile_data.get('website', ''),
-            'is_vat_registered': profile_data.get('is_vat_registered', ''),
-            'vat_no': profile_data.get('vat_no', ''),
-            'primary_industry': profile_data.get('primary_industry', ''),
-            'business_description': profile_data.get('business_description', ''),
-            'main_products': profile_data.get('main_products', ''),
-            'business_model': profile_data.get('business_model', ''),
-            'updated_at': datetime.utcnow().isoformat(),
-            'updated_by': username
+        # Build update expression dynamically based on provided fields
+        update_expressions = []
+        expression_values = {}
+        
+        # Map of profile fields to update
+        field_mapping = {
+            'company_name': 'company_name',
+            'trading_name': 'trading_name',
+            'registration_no': 'registration_no',
+            'tax_registration_no': 'tax_registration_no',
+            'business_address': 'business_address',
+            'phone': 'phone',
+            'website': 'website',
+            'is_vat_registered': 'is_vat_registered',
+            'vat_no': 'vat_no',
+            'primary_industry': 'primary_industry',
+            'business_description': 'business_description',
+            'main_products': 'main_products',
+            'business_model': 'business_model',
+            'banking_information': 'banking_information',
+            'payroll_information': 'payroll_information',
+            'business_operations': 'business_operations',
+            'tax_information': 'tax_information',
+            'special_circumstances': 'special_circumstances'
         }
         
-        # If this is the first time creating the profile, set created_at
-        try:
-            existing_profile = profiles_table.get_item(Key={'company_id': company_id})
-            if 'Item' not in existing_profile:
-                profile_item['created_at'] = datetime.utcnow().isoformat()
-            
-            # Save to DynamoDB
-            profiles_table.put_item(Item=profile_item)
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                # Table doesn't exist yet, skip saving to profiles table
-                print(f"⚠️ company_profiles table not found, skipping profile save")
-                # Still update users table below
-            else:
-                raise
+        # Build update expression for provided fields
+        for field, attr_name in field_mapping.items():
+            if field in profile_data:
+                update_expressions.append(f"{attr_name} = :{attr_name}")
+                expression_values[f":{attr_name}"] = profile_data[field]
         
-        # Also update relevant fields in users table
+        # Always update profile_last_updated
+        update_expressions.append("profile_last_updated = :profile_last_updated")
+        expression_values[':profile_last_updated'] = datetime.utcnow().isoformat()
+        
+        if not update_expressions:
+            return {
+                "success": False,
+                "error": "No fields to update"
+            }
+        
+        # Update users table
+        update_expression = "SET " + ", ".join(update_expressions)
+        
         users_table.update_item(
             Key={'username': username},
-            UpdateExpression='SET company_name = :company_name, trading_name = :trading_name, is_vat_registered = :is_vat_registered, vat_no = :vat_no',
-            ExpressionAttributeValues={
-                ':company_name': profile_data.get('company_name', user.get('company_name', '')),
-                ':trading_name': profile_data.get('trading_name', ''),
-                ':is_vat_registered': profile_data.get('is_vat_registered', ''),
-                ':vat_no': profile_data.get('vat_no', '')
-            }
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_values
         )
         
-        print(f"Company profile updated for {company_id} by {username}")
+        print(f"✅ Company profile updated for {company_id} by {username}")
+        
+        # Get updated profile
+        updated_result = get_company_profile(company_id, username)
         
         return {
             "success": True,
             "message": "Company profile updated successfully",
-            "profile": convert_decimal(profile_item)
+            "profile": updated_result.get('profile', {})
         }
         
     except ClientError as e:
