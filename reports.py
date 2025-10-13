@@ -132,7 +132,6 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         # Get revenue accounts
         revenue_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', ['income', 'income_other'])
         ]
         revenue_accounts = models.execute_kw(
@@ -144,7 +143,6 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         # Get expense accounts
         expense_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', ['expense', 'expense_depreciation', 'expense_direct_cost'])
         ]
         expense_accounts = models.execute_kw(
@@ -266,7 +264,6 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         
         for category, types in account_types.items():
             accounts_domain = [
-                ('company_id', '=', company_id),
                 ('account_type', 'in', types)
             ]
             accounts = models.execute_kw(
@@ -339,7 +336,6 @@ def get_cash_flow_report(data: Dict) -> Dict:
         
         # Get cash and bank accounts
         cash_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', ['asset_cash', 'liability_credit_card'])
         ]
         cash_accounts = models.execute_kw(
@@ -635,7 +631,7 @@ def get_general_ledger_report(data: Dict) -> Dict:
         models, uid, db, password = get_odoo_connection()
         
         # Get accounts
-        account_domain = [('company_id', '=', company_id)]
+        account_domain = []
         if account_id:
             account_domain.append(('id', '=', account_id))
         
@@ -719,7 +715,7 @@ def get_trial_balance_report(data: Dict) -> Dict:
         accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [[('company_id', '=', company_id)]],
+            [[]],
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
@@ -1205,7 +1201,7 @@ def get_payment_report(data: Dict) -> Dict:
             'account.payment', 'search_read',
             [payment_domain],
             {'fields': ['name', 'date', 'partner_id', 'amount', 'payment_type', 
-                       'partner_type', 'ref', 'journal_id']}
+                       'partner_type', 'communication', 'journal_id']}
         )
         
         inbound_total = sum(p['amount'] for p in payments if p['payment_type'] == 'inbound')
@@ -1225,7 +1221,7 @@ def get_payment_report(data: Dict) -> Dict:
                 'payment_type': p['payment_type'],
                 'partner_type': p['partner_type'],
                 'amount': p['amount'],
-                'reference': p.get('ref', ''),
+                'reference': p.get('communication', ''),
                 'journal': p['journal_id'][1] if p.get('journal_id') else ''
             } for p in payments],
             'summary': {
@@ -1346,7 +1342,6 @@ def get_partner_ledger_report(data: Dict) -> Dict:
             account_types.append('liability_payable')
         
         account_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', account_types)
         ]
         
