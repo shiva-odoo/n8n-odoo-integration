@@ -264,66 +264,187 @@ def find_account_by_name(models, db, uid, password, account_name, company_id, ac
     
 def find_suspense_account(models, db, uid, password, company_id):
     """
-    Find suspense account for auto-balancing entries
+    Find suspense account (code 1260) for auto-balancing entries
+    MUST belong to the specific company to avoid Odoo company mismatch errors
     
-    Searches for:
-    1. Account with code 1260 (Cyprus standard suspense account)
-    2. Account with exact name "Suspense account" (case-sensitive)
+    Searches with strict company filtering:
+    1. Account with code 1260 belonging to the specific company
+    2. Account with exact name "Suspense account" belonging to the specific company
     """
     try:
-        # PRIORITY 1: Try code 1260 (Cyprus standard)
+        print(f"🔍 Searching for suspense account (code 1260) for company_id: {company_id}")
+        
+        # Get company name for better logging
         try:
-            account = models.execute_kw(
+            company_data = models.execute_kw(
+                db, uid, password,
+                'res.company', 'search_read',
+                [[('id', '=', company_id)]], 
+                {'fields': ['name'], 'limit': 1}
+            )
+            company_name = company_data[0]['name'] if company_data else f"ID {company_id}"
+            print(f"   Company: {company_name}")
+        except Exception as e:
+            company_name = f"ID {company_id}"
+            print(f"   Company: {company_name} (could not fetch name: {e})")
+        
+        # STRATEGY 1: Direct search with company_id filter (most reliable)
+        print(f"   Strategy 1: Direct search with company_id filter...")
+        
+        try:
+            # Try searching by code 1260 with company filter
+            accounts = models.execute_kw(
                 db, uid, password,
                 'account.account', 'search_read',
                 [[('code', '=', '1260'), ('active', '=', True), ('company_id', '=', company_id)]],
-                {'fields': ['id', 'name', 'code'], 'limit': 1}
+                {'fields': ['id', 'name', 'code', 'company_id'], 'limit': 1}
             )
-            if account:
-                print(f"✓ Found suspense account by code 1260: {account[0]['name']}")
-                return account[0]['id']
-        except:
-            # Try without company filter
-            account = models.execute_kw(
-                db, uid, password,
-                'account.account', 'search_read',
-                [[('code', '=', '1260'), ('active', '=', True)]],
-                {'fields': ['id', 'name', 'code'], 'limit': 1}
-            )
-            if account:
-                print(f"✓ Found suspense account by code 1260: {account[0]['name']}")
-                return account[0]['id']
+            
+            if accounts:
+                account = accounts[0]
+                print(f"   ✅ Found suspense account by code 1260")
+                print(f"      Name: {account['name']}")
+                print(f"      Code: {account['code']}")
+                print(f"      Company ID: {account.get('company_id')}")
+                return account['id']
+            else:
+                print(f"   ⚠️  No account with code 1260 found for company {company_name}")
+                
+        except Exception as e:
+            print(f"   ⚠️  Direct search by code failed: {str(e)}")
         
-        # PRIORITY 2: Try exact name "Suspense account" (case-sensitive)
+        # Try searching by exact name with company filter
         try:
-            account = models.execute_kw(
+            accounts = models.execute_kw(
                 db, uid, password,
                 'account.account', 'search_read',
                 [[('name', '=', 'Suspense account'), ('active', '=', True), ('company_id', '=', company_id)]],
-                {'fields': ['id', 'name', 'code'], 'limit': 1}
+                {'fields': ['id', 'name', 'code', 'company_id'], 'limit': 1}
             )
-            if account:
-                print(f"✓ Found suspense account by exact name: {account[0]['name']} (code: {account[0].get('code')})")
-                return account[0]['id']
-        except:
-            # Try without company filter
-            account = models.execute_kw(
+            
+            if accounts:
+                account = accounts[0]
+                print(f"   ✅ Found suspense account by name 'Suspense account'")
+                print(f"      Name: {account['name']}")
+                print(f"      Code: {account.get('code')}")
+                print(f"      Company ID: {account.get('company_id')}")
+                return account['id']
+            else:
+                print(f"   ⚠️  No account named 'Suspense account' found for company {company_name}")
+                
+        except Exception as e:
+            print(f"   ⚠️  Direct search by name failed: {str(e)}")
+        
+        # STRATEGY 2: Indirect search via company's journals (fallback for shared account models)
+        print(f"   Strategy 2: Indirect search via company journals...")
+        
+        try:
+            # Get all journals for this company
+            company_journals = models.execute_kw(
+                db, uid, password,
+                'account.journal', 'search_read',
+                [[('company_id', '=', company_id)]], 
+                {'fields': ['id', 'name'], 'limit': 100}
+            )
+            
+            if not company_journals:
+                print(f"   ⚠️  No journals found for company {company_name}")
+            else:
+                journal_ids = [j['id'] for j in company_journals]
+                print(f"   Found {len(journal_ids)} journals for company {company_name}")
+                
+                # Get account move lines from these journals to find which accounts this company uses
+                account_moves = models.execute_kw(
+                    db, uid, password,
+                    'account.move.line', 'search_read',
+                    [[('journal_id', 'in', journal_ids)]], 
+                    {'fields': ['account_id'], 'limit': 5000}
+                )
+                
+                if account_moves:
+                    # Get unique account IDs
+                    account_ids = list(set([
+                        move['account_id'][0] if isinstance(move['account_id'], list) else move['account_id']
+                        for move in account_moves 
+                        if move.get('account_id')
+                    ]))
+                    
+                    print(f"   Found {len(account_ids)} unique accounts used by company")
+                    
+                    # Get account details for these IDs
+                    if account_ids:
+                        accounts = models.execute_kw(
+                            db, uid, password,
+                            'account.account', 'search_read',
+                            [[('id', 'in', account_ids), ('active', '=', True)]],
+                            {'fields': ['id', 'code', 'name', 'account_type']}
+                        )
+                        
+                        # Search for code 1260 in these accounts
+                        for account in accounts:
+                            if account.get('code') == '1260':
+                                print(f"   ✅ Found suspense account by code 1260 (indirect method)")
+                                print(f"      Name: {account['name']}")
+                                print(f"      Code: {account['code']}")
+                                return account['id']
+                        
+                        # Search for exact name "Suspense account"
+                        for account in accounts:
+                            if account.get('name') == 'Suspense account':
+                                print(f"   ✅ Found suspense account by name (indirect method)")
+                                print(f"      Name: {account['name']}")
+                                print(f"      Code: {account.get('code')}")
+                                return account['id']
+                        
+                        print(f"   ⚠️  Code 1260 or 'Suspense account' not found in company's accounts")
+                else:
+                    print(f"   ⚠️  No account move lines found for company journals")
+                    
+        except Exception as e:
+            print(f"   ⚠️  Indirect search strategy failed: {str(e)}")
+        
+        # FINAL: Account not found - provide diagnostic info
+        print(f"   ❌ Suspense account NOT found for company {company_name}")
+        print(f"   ")
+        print(f"   📋 Diagnostic Information:")
+        
+        # Check if account 1260 exists for OTHER companies
+        try:
+            other_accounts = models.execute_kw(
                 db, uid, password,
                 'account.account', 'search_read',
-                [[('name', '=', 'Suspense account'), ('active', '=', True)]],
-                {'fields': ['id', 'name', 'code'], 'limit': 1}
+                [[('code', '=', '1260'), ('active', '=', True)]],
+                {'fields': ['id', 'name', 'code', 'company_id'], 'limit': 10}
             )
-            if account:
-                print(f"✓ Found suspense account by exact name: {account[0]['name']} (code: {account[0].get('code')})")
-                return account[0]['id']
+            
+            if other_accounts:
+                print(f"   ℹ️  Found {len(other_accounts)} account(s) with code 1260 in OTHER companies:")
+                for acc in other_accounts:
+                    other_company_id = acc['company_id'][0] if isinstance(acc['company_id'], list) else acc['company_id']
+                    if other_company_id != company_id:
+                        print(f"      - '{acc['name']}' (Company ID: {other_company_id}) ❌ Wrong company")
+                    else:
+                        print(f"      - '{acc['name']}' (Company ID: {other_company_id}) ✓ Correct company (but not found earlier?)")
+            else:
+                print(f"   ℹ️  No accounts with code 1260 found in ANY company")
+                
+        except Exception as e:
+            print(f"   ⚠️  Could not check for accounts in other companies: {e}")
         
-        print("⚠️  No suspense account found - cannot auto-balance")
-        print("   Searched for: code 1260, exact name 'Suspense account'")
-        print("   Please ensure account 1260 'Suspense account' exists in Odoo")
+        print(f"   ")
+        print(f"   💡 SOLUTION:")
+        print(f"   Please verify in Odoo that account code 1260 'Suspense account' exists for:")
+        print(f"   Company: {company_name} (ID: {company_id})")
+        print(f"   ")
+        print(f"   If it exists but not found:")
+        print(f"   1. Check if account is active (not archived)")
+        print(f"   2. Check if account is assigned to the correct company")
+        print(f"   3. Try creating a journal entry manually with this account to verify access")
+        
         return None
         
     except Exception as e:
-        print(f"❌ Error finding suspense account: {str(e)}")
+        print(f"❌ Critical error in find_suspense_account: {str(e)}")
         import traceback
         traceback.print_exc()
         return None
