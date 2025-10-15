@@ -213,21 +213,28 @@ def main(data):
         else:
             print("Chart of Accounts is ready!")
 
-        custom_accounts_result = create_custom_accounts(models, db, uid, password, company_id)
-        if custom_accounts_result['success']:
-            print(f"Successfully created {len(custom_accounts_result['accounts'])} custom accounts")
-        else:
-            print(f"Custom accounts creation issue: {custom_accounts_result.get('error', 'Unknown error')}")
+        # ===== MOVED: Wait extra time for CoA to create journals =====
+        print("Waiting for Chart of Accounts journals to be created...")
+        time.sleep(10)
 
+        # ===== MOVED: Disable aliases AFTER CoA creates journals =====
         disable_result = disable_all_journal_aliases(models, db, uid, password, company_id)
         if disable_result['success']:
             print(f"Disabled aliases on {disable_result['count']} journals")
         else:
             print(f"Warning: Could not disable journal aliases: {disable_result.get('error')}")
 
+        custom_accounts_result = create_custom_accounts(models, db, uid, password, company_id)
+        if custom_accounts_result['success']:
+            print(f"Successfully created {len(custom_accounts_result['accounts'])} custom accounts")
+        else:
+            print(f"Custom accounts creation issue: {custom_accounts_result.get('error', 'Unknown error')}")
+
         journals_result = create_essential_journals(models, db, uid, password, company_id, currency_id)
         if journals_result['success']:
             print(f"Successfully created {len(journals_result['journals'])} journals")
+            if journals_result.get('existing_count', 0) > 0:
+                print(f"Found {journals_result['existing_count']} existing journals")
         else:
             print(f"Journal creation issue: {journals_result.get('error', 'Unknown error')}")
 
@@ -290,6 +297,8 @@ def main(data):
         if journals_result['success']:
             response['journals_created'] = journals_result['journals']
             response['message'] += f' and {len(journals_result["journals"])} essential journals'
+            if journals_result.get('existing_count', 0) > 0:
+                response['message'] += f' ({journals_result["existing_count"]} existing)'
         else:
             response['journal_warning'] = journals_result['error']
         
@@ -713,9 +722,23 @@ def wait_for_chart_of_accounts(models, db, uid, password, company_id, max_wait_t
 def create_essential_journals(models, db, uid, password, company_id, currency_id=None):
     """
     Create essential journals for a new company
+    Only creates journals that don't already exist by type
     """
     try:
         created_journals = []
+        
+        # First, get all existing journals for this company
+        existing_journals = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'search_read',
+            [[('company_id', '=', company_id)]],
+            {'fields': ['id', 'name', 'code', 'type']}
+        )
+        
+        existing_types = {j['type']: j for j in existing_journals}
+        existing_codes = {j['code']: j for j in existing_journals}
+        journal_list = [f"{j['name']} ({j['type']}, {j['code']})" for j in existing_journals]
+        print(f"Found existing journals: {journal_list}")
         
         # Note: Sales and Purchases journals are automatically created by Chart of Accounts
         # We only create Bank, Cash, and Journal Voucher journals
@@ -754,14 +777,27 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
         
         for journal_data in journals_to_create:
             try:
-                existing = models.execute_kw(
+                # Skip if this TYPE already exists (CoA might have created it)
+                if journal_data['type'] in existing_types:
+                    existing = existing_types[journal_data['type']]
+                    print(f"✓ Journal type '{journal_data['type']}' already exists: {existing['name']} ({existing['code']})")
+                    continue
+                
+                # Also check by code to be extra safe
+                if journal_data['code'] in existing_codes:
+                    existing = existing_codes[journal_data['code']]
+                    print(f"✓ Journal code '{journal_data['code']}' already exists: {existing['name']} (type: {existing['type']})")
+                    continue
+                
+                # Double-check with database query
+                db_existing = models.execute_kw(
                     db, uid, password,
                     'account.journal', 'search_count',
                     [[('code', '=', journal_data['code']), ('company_id', '=', company_id)]]
                 )
                 
-                if existing:
-                    print(f"Journal {journal_data['code']} ({journal_data['name']}) already exists for company {company_id}")
+                if db_existing:
+                    print(f"✓ Journal {journal_data['code']} ({journal_data['name']}) already exists in database")
                     continue
                 
                 create_data = {k: v for k, v in journal_data.items() if k != 'purpose'}
@@ -784,19 +820,16 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
                     
             except Exception as journal_error:
                 print(f"✗ Failed to create journal {journal_data['name']}: {str(journal_error)}")
+                # Don't return error, just continue - this journal might already exist
                 continue
         
-        if created_journals:
-            return {
-                'success': True,
-                'journals': created_journals,
-                'message': f'Created {len(created_journals)} essential journals'
-            }
-        else:
-            return {
-                'success': False,
-                'error': 'No journals were created - they may already exist'
-            }
+        # Return success even if no journals were created (they might all exist)
+        return {
+            'success': True,
+            'journals': created_journals,
+            'existing_count': len(existing_journals),
+            'message': f'Created {len(created_journals)} new journals, {len(existing_journals)} already existed'
+        }
             
     except Exception as e:
         return {
