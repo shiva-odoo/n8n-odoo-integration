@@ -60,12 +60,14 @@ import processonboardingdoc
 import update_transactions_table as transactions
 import update_bills_table as bills
 import update_invoices_table as invoices
+import update_share_transactions_table as share_transactions
 import reports
 import process_payroll
 import dashboard
-import profile
+import company_profile
 import bank_reconciliation
 import compliance
+import create_payroll_transaction as createpayrolltransaction
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -1213,7 +1215,7 @@ def get_company_profile():
                 "error": "Company ID not found for user"
             }), 400
         
-        result = profile.get_company_profile(company_id, username)
+        result = company_profile.get_company_profile(company_id, username)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1250,7 +1252,7 @@ def update_company_profile():
                 "error": "Profile data is required"
             }), 400
         
-        result = profile.update_company_profile(company_id, username, profile_data)
+        result = company_profile.update_company_profile(company_id, username, profile_data)
         
         if result["success"]:
             return jsonify(result), 200
@@ -3079,6 +3081,283 @@ def create_share_capital_endpoint():
         return jsonify(result)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/api/create/payroll-transaction', methods=['POST'])
+def create_payroll_transaction_endpoint():
+    """
+    Create payroll journal entry from processed payroll data
+    
+    Expected JSON body (output from /api/process-payroll-document):
+    {
+        "payroll_data": {
+            "period": "202506 - JUNE",
+            "year": "2025",
+            "month": "June",
+            "pay_date": "2025-06-30" or null,
+            "currency_code": "EUR",
+            "description": "Payroll for June 2025...",
+            "journal_entry_lines": [
+                {
+                    "account_code": "7000",
+                    "account_name": "Gross wages",
+                    "description": "Total gross salaries",
+                    "debit_amount": 1050.00,
+                    "credit_amount": 0
+                },
+                ...
+            ]
+        },
+        "matched_company": {
+            "id": 124,
+            "name": "ENAMI Limited"
+        },
+        "journal_id": 801
+    }
+    
+    Or can accept array format (will use first element):
+    [
+        {
+            "payroll_data": {...},
+            "matched_company": {...},
+            "journal_id": 801
+        }
+    ]
+    
+    Returns:
+    Success Response (Created):
+    {
+        "success": true,
+        "exists": false,
+        "entry_id": 12345,
+        "entry_number": "SAL/2025/06/0001",
+        "company_name": "ENAMI Limited",
+        "period": "202506 - JUNE",
+        "year": "2025",
+        "transaction_date": "2025-06-30",
+        "state": "posted",
+        "journal_name": "Salary Journal",
+        "journal_code": "SAL",
+        "total_debits": 1200.68,
+        "total_credits": 1200.68,
+        "line_items": [
+            {
+                "id": 67890,
+                "name": "Total gross salaries for June 2025",
+                "debit": 1050.00,
+                "credit": 0.0,
+                "account_id": [123, "7000 Gross wages"]
+            },
+            ...
+        ],
+        "line_count": 7,
+        "missing_accounts": null,
+        "message": "Payroll journal entry created and posted successfully"
+    }
+    
+    Success Response (Already Exists):
+    {
+        "success": true,
+        "exists": true,
+        "entry_id": 12340,
+        "entry_number": "SAL/2025/06/0001",
+        "date": "2025-06-30",
+        "state": "posted",
+        "ref": "Payroll - 202506 - JUNE 2025",
+        "line_items": [...],
+        "message": "Payroll entry for this period already exists - no duplicate created"
+    }
+    
+    Error Response:
+    {
+        "success": false,
+        "error": "Journal entry is not balanced. Debits: 1200.68, Credits: 1130.67, Difference: 70.01",
+        "details": {
+            "total_debits": 1200.68,
+            "total_credits": 1130.67,
+            "balance_difference": 70.01
+        }
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body is required"
+            }), 400
+        
+        # Handle array input (extract first element)
+        if isinstance(data, list):
+            if not data:
+                return jsonify({
+                    "success": False,
+                    "error": "Empty data array provided",
+                    "details": "Array must contain at least one element"
+                }), 400
+            data = data[0]
+        
+        # Validate nested structure
+        if not isinstance(data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Invalid data format",
+                "details": "Data must be a JSON object or array containing objects"
+            }), 400
+        
+        # Check for required top-level fields
+        required_fields = ['payroll_data', 'matched_company', 'journal_id']
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            return jsonify({
+                "success": False,
+                "error": f"Missing required fields: {', '.join(missing_fields)}",
+                "details": f"Required fields are: {', '.join(required_fields)}"
+            }), 400
+        
+        # Validate matched_company structure
+        matched_company = data.get('matched_company', {})
+        if not isinstance(matched_company, dict) or not matched_company.get('id'):
+            return jsonify({
+                "success": False,
+                "error": "Invalid matched_company",
+                "details": "matched_company must contain an 'id' field"
+            }), 400
+        
+        # Validate journal_id
+        journal_id = data.get('journal_id')
+        if not isinstance(journal_id, int) or journal_id <= 0:
+            return jsonify({
+                "success": False,
+                "error": "Invalid journal_id",
+                "details": "journal_id must be a positive integer"
+            }), 400
+        
+        # Validate payroll_data structure
+        payroll_data = data.get('payroll_data', {})
+        if not isinstance(payroll_data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Invalid payroll_data",
+                "details": "payroll_data must be a JSON object"
+            }), 400
+        
+        # Validate journal_entry_lines
+        journal_entry_lines = payroll_data.get('journal_entry_lines', [])
+        if not isinstance(journal_entry_lines, list) or not journal_entry_lines:
+            return jsonify({
+                "success": False,
+                "error": "Invalid or missing journal_entry_lines",
+                "details": "payroll_data must contain a non-empty journal_entry_lines array"
+            }), 400
+        
+        # Log processing start
+        company_name = matched_company.get('name', 'Unknown')
+        company_id = matched_company.get('id')
+        period = payroll_data.get('period', payroll_data.get('month', 'Unknown'))
+        
+        print(f"💰 Creating payroll transaction for company: {company_name} (ID: {company_id})")
+        print(f"📅 Period: {period}")
+        print(f"📊 Journal lines: {len(journal_entry_lines)}")
+        
+        # Call the payroll transaction creation function
+        result = createpayrolltransaction.main(data)
+        
+        # Handle successful creation
+        if result.get("success"):
+            exists = result.get("exists", False)
+            entry_number = result.get("entry_number", "Unknown")
+            
+            if exists:
+                # Entry already existed
+                print(f"ℹ️  Payroll entry already exists: {entry_number}")
+                print(f"📅 Date: {result.get('date')}")
+                
+                return jsonify(result), 200
+            else:
+                # New entry created
+                total_debits = result.get("total_debits", 0)
+                total_credits = result.get("total_credits", 0)
+                line_count = result.get("line_count", 0)
+                state = result.get("state", "unknown")
+                
+                print(f"✅ Payroll entry created successfully: {entry_number}")
+                print(f"⚖️  Debits: €{total_debits:.2f}, Credits: €{total_credits:.2f}")
+                print(f"📝 Lines created: {line_count}")
+                print(f"📌 Status: {state}")
+                
+                # Warn about missing accounts if any
+                missing_accounts = result.get("missing_accounts")
+                if missing_accounts:
+                    print(f"⚠️  Warning: Some accounts were not found: {missing_accounts}")
+                
+                return jsonify(result), 201  # 201 Created
+        else:
+            # Handle creation failure
+            error_msg = result.get("error", "Unknown error")
+            print(f"❌ Payroll transaction creation failed: {error_msg}")
+            
+            # Determine appropriate status code
+            error_lower = error_msg.lower()
+            
+            if "not found" in error_lower or "does not exist" in error_lower:
+                status_code = 404
+            elif "not balanced" in error_lower or "difference" in error_lower:
+                status_code = 422  # Unprocessable Entity
+            elif "already exists" in error_lower or "duplicate" in error_lower:
+                status_code = 409  # Conflict
+            elif "authentication" in error_lower or "odoo_" in error_lower:
+                status_code = 503  # Service Unavailable
+            else:
+                status_code = 500  # Internal Server Error
+            
+            return jsonify(result), status_code
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+        
+    except KeyError as e:
+        print(f"❌ Missing key error: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Missing required field: {str(e)}",
+            "details": "Check that all required fields are present in the request"
+        }), 400
+        
+    except ValueError as e:
+        print(f"❌ Value error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid data value",
+            "details": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"❌ Create payroll transaction endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "An unexpected error occurred while creating the payroll transaction"
+        }), 500
+
 
 # ============================================
 # FINANCIAL PROFILE ROUTES (NEW)
@@ -3463,6 +3742,109 @@ def update_invoices_table():
             "error": "Failed to update invoices table",
             "details": str(e)
         }), 500
+    
+@app.route("/api/update/share-transactions-table", methods=["POST"])
+def update_share_transactions_table():
+    """
+    Create a single share transaction entry in DynamoDB
+    Accepts the JSON share transaction data in multiple formats:
+    - Direct transaction object: {transaction_id: ..., entry_number: ..., ...}
+    - Wrapped in transaction key: {"transaction": {transaction_id: ..., ...}}
+    - Wrapped in data key: {"data": {transaction_id: ..., ...}}
+    - Wrapped in share_transaction key: {"share_transaction": {transaction_id: ..., ...}}
+    """
+    try:
+        # Try multiple ways to get JSON data
+        data = None
+        try:
+            data = request.get_json()
+        except Exception:
+            try:
+                data = request.get_json(force=True)
+            except Exception as e:
+                print(f"⚠️ Failed to parse JSON: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON format"
+                }), 400
+       
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+       
+        # Handle multiple data formats
+        transaction_data = None
+       
+        # Format 1: Array with single transaction [transaction_object]
+        if isinstance(data, list):
+            if len(data) == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Empty array provided"
+                }), 400
+            elif len(data) > 1:
+                return jsonify({
+                    "success": False,
+                    "error": f"Expected single share transaction, received {len(data)} transactions. This endpoint processes one transaction at a time."
+                }), 400
+            else:
+                # Extract the single transaction from array
+                transaction_data = data[0]
+        
+        # Format 2-5: Object formats
+        elif isinstance(data, dict):
+            # Format 2: Direct transaction object
+            if 'transaction_id' in data or 'entry_number' in data or 'total_amount' in data or 'partner' in data or 'move_type' in data:
+                transaction_data = data
+            # Format 3: Wrapped in 'transaction' key
+            elif 'transaction' in data and isinstance(data['transaction'], dict):
+                transaction_data = data['transaction']
+            # Format 4: Wrapped in 'share_transaction' key
+            elif 'share_transaction' in data and isinstance(data['share_transaction'], dict):
+                transaction_data = data['share_transaction']
+            # Format 5: Wrapped in 'data' key
+            elif 'data' in data and isinstance(data['data'], dict):
+                transaction_data = data['data']
+            else:
+                # Try to use the data as-is
+                transaction_data = data
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Expected share transaction data as object/dictionary or array with single transaction"
+            }), 400
+       
+        # Validate we have transaction data
+        if transaction_data is None:
+            return jsonify({
+                "success": False,
+                "error": "Could not parse share transaction data. Expected transaction object"
+            }), 400
+       
+        if not isinstance(transaction_data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Share transaction data must be an object/dictionary"
+            }), 400
+       
+        # Process the share transaction
+        result = share_transactions.process_share_transaction(transaction_data)
+       
+        status_code = 201 if result["success"] else 500
+        return jsonify(result), status_code
+           
+    except Exception as e:
+        print(f"❌ Share transactions table update error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to update share transactions table",
+            "details": str(e)
+        }), 500
+
     
 
 # ============================================================================

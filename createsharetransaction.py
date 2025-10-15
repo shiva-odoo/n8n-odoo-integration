@@ -1,6 +1,7 @@
 import xmlrpc.client
 from datetime import datetime
 import os
+import time
 
 # Load .env only in development (when .env file exists)
 if os.path.exists('.env'):
@@ -708,24 +709,25 @@ def main(data):
         
         # POST THE JOURNAL ENTRY - Move from draft to posted state
         try:
-            post_result = models.execute_kw(
+            models.execute_kw(
                 db, uid, password,
                 'account.move', 'action_post',
                 [[move_id]]
             )
             
             # Verify the entry was posted successfully
-            move_state = models.execute_kw(
+            move_state_data = models.execute_kw(
                 db, uid, password,
                 'account.move', 'read',
                 [[move_id]], 
                 {'fields': ['state']}
-            )[0]['state']
+            )
             
-            if move_state != 'posted':
+            if not move_state_data or move_state_data[0]['state'] != 'posted':
+                state = move_state_data[0]['state'] if move_state_data else 'unknown'
                 return {
                     'success': False,
-                    'error': f'Share capital transaction was created but failed to post. Current state: {move_state}'
+                    'error': f'Share capital transaction was created but failed to post. Current state: {state}'
                 }
                 
         except xmlrpc.client.Fault as e:
@@ -734,37 +736,300 @@ def main(data):
                 'error': f'Share capital transaction created but failed to post: {str(e)}'
             }
         
-        # Get final transaction information after posting including line items
-        move_info = models.execute_kw(
-            db, uid, password,
-            'account.move', 'read',
-            [[move_id]], 
-            {'fields': ['name', 'state', 'date', 'ref', 'journal_id']}
-        )[0]
-        
-        # Get line items
-        line_items = models.execute_kw(
+        # ### START: COMPREHENSIVE OUTPUT RETRIEVAL (matching createbill.py) ###
+
+        print("Waiting for 2 seconds for database commit after posting...")
+        time.sleep(2)
+
+        # Step 1: DIRECTLY search for all move lines belonging to this journal entry
+        print(f"Searching for all lines with move_id = {move_id}")
+        all_move_lines = models.execute_kw(
             db, uid, password,
             'account.move.line', 'search_read',
-            [[('move_id', '=', move_id)]], 
-            {'fields': ['id', 'name', 'debit', 'credit', 'account_id']}
+            [[('move_id', '=', move_id)]],
+            {
+                'fields': [
+                    'id', 'move_id', 'name', 'account_id', 'partner_id',
+                    'debit', 'credit', 'balance',
+                    'quantity', 'price_unit', 'price_subtotal', 'price_total',
+                    'tax_ids', 'tax_tag_ids', 'tax_line_id',
+                    'display_type', 'sequence',
+                    'date', 'date_maturity',
+                    'currency_id', 'amount_currency'
+                ],
+                'context': context
+            }
         )
-        
+
+        print(f"Found {len(all_move_lines)} total lines for move_id {move_id}")
+
+        # Debug: print all lines found
+        for idx, line in enumerate(all_move_lines):
+            print(f"Line {idx + 1}: ID={line['id']}, Name={line.get('name')}, Debit={line.get('debit')}, Credit={line.get('credit')}, Display Type={line.get('display_type')}")
+
+        # Step 2: Read the journal entry header information
+        posted_entries = models.execute_kw(
+            db, uid, password,
+            'account.move', 'search_read',
+            [[('id', '=', move_id)]],
+            {
+                'fields': [
+                    'name', 'state', 'move_type', 'partner_id', 'company_id',
+                    'date', 'ref', 'narration',
+                    'amount_total', 'currency_id', 'journal_id'
+                ],
+                'context': context,
+                'limit': 1
+            }
+        )
+
+        if not posted_entries:
+            return {
+                'success': False,
+                'error': f'Could not read back the created journal entry (ID: {move_id}) after posting.',
+                'transaction_id': move_id
+            }
+
+        entry_info = posted_entries[0]
+        print(f"Journal entry info retrieved: {entry_info.get('name')}")
+
+        # Step 3: Get detailed partner information (if exists)
+        partner_details = None
+        if entry_info.get('partner_id'):
+            partner_id_value = entry_info['partner_id'][0] if isinstance(entry_info['partner_id'], list) else entry_info['partner_id']
+            partner_details = models.execute_kw(
+                db, uid, password,
+                'res.partner', 'read',
+                [[partner_id_value]],
+                {'fields': ['id', 'name', 'email', 'phone', 'vat', 'street', 'city', 'country_id']}
+            )[0]
+
+        # Step 4: Get company information
+        company_id_from_entry = entry_info['company_id'][0] if isinstance(entry_info['company_id'], list) else entry_info['company_id']
+        company_details = models.execute_kw(
+            db, uid, password,
+            'res.company', 'read',
+            [[company_id_from_entry]],
+            {'fields': ['id', 'name', 'currency_id', 'country_id']}
+        )[0]
+
+        # Step 5: Get journal information (already have it, but get full details)
+        journal_id_value = entry_info['journal_id'][0] if isinstance(entry_info['journal_id'], list) else entry_info['journal_id']
+        journal_details = models.execute_kw(
+            db, uid, password,
+            'account.journal', 'read',
+            [[journal_id_value]],
+            {'fields': ['id', 'name', 'code', 'type']}
+        )[0]
+
+        # Step 6: Process and enrich the lines we found
+        detailed_line_items = []
+
+        print(f"\n=== Processing {len(all_move_lines)} lines ===")
+
+        for line in all_move_lines:
+            # For journal entries, include all lines except display-only types
+            display_type = line.get('display_type')
+            
+            if display_type in ['payment_term', 'line_section', 'line_note']:
+                print(f"⏭️  Skipping non-journal line: {line.get('name')} (type: {display_type})")
+                continue
+            
+            # Include all other lines (standard journal entry lines)
+            print(f"✅ Processing line: {line.get('name')} - Debit: {line.get('debit')}, Credit: {line.get('credit')}, Type: {display_type}")
+            
+            # Build enriched line
+            enriched_line = {
+                'id': line['id'],
+                'name': line.get('name'),
+                'display_type': display_type,
+                'debit': line.get('debit', 0.0),
+                'credit': line.get('credit', 0.0),
+                'balance': line.get('balance', 0.0),
+                'quantity': line.get('quantity'),
+                'price_unit': line.get('price_unit'),
+                'price_subtotal': line.get('price_subtotal'),
+                'price_total': line.get('price_total'),
+            }
+            
+            # Get account details
+            if line.get('account_id'):
+                account_id_value = line['account_id'][0] if isinstance(line['account_id'], list) else line['account_id']
+                try:
+                    account_details = models.execute_kw(
+                        db, uid, password,
+                        'account.account', 'read',
+                        [[account_id_value]],
+                        {'fields': ['id', 'code', 'name', 'account_type']}
+                    )[0]
+                    enriched_line['account'] = {
+                        'id': account_details['id'],
+                        'code': account_details['code'],
+                        'name': account_details['name'],
+                        'type': account_details['account_type']
+                    }
+                    print(f"   Account: {account_details.get('code')} - {account_details['name']}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch account details: {e}")
+            
+            # Get partner details for this line if exists
+            if line.get('partner_id'):
+                partner_id_value = line['partner_id'][0] if isinstance(line['partner_id'], list) else line['partner_id']
+                try:
+                    partner_line_details = models.execute_kw(
+                        db, uid, password,
+                        'res.partner', 'read',
+                        [[partner_id_value]],
+                        {'fields': ['id', 'name']}
+                    )[0]
+                    enriched_line['partner'] = {
+                        'id': partner_line_details['id'],
+                        'name': partner_line_details['name']
+                    }
+                    print(f"   Partner: {partner_line_details['name']}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch partner details: {e}")
+            
+            # Get tax details if taxes are applied
+            if line.get('tax_ids'):
+                tax_ids_list = line['tax_ids'] if isinstance(line['tax_ids'], list) else [line['tax_ids']]
+                if tax_ids_list:
+                    try:
+                        tax_details = models.execute_kw(
+                            db, uid, password,
+                            'account.tax', 'read',
+                            [tax_ids_list],
+                            {'fields': ['id', 'name', 'amount', 'amount_type', 'type_tax_use']}
+                        )
+                        enriched_line['taxes'] = tax_details
+                        print(f"   Taxes: {[t['name'] for t in tax_details]}")
+                    except Exception as e:
+                        print(f"   ⚠️  Could not fetch tax details: {e}")
+            
+            # Get tax tag details if tax tags are applied
+            if line.get('tax_tag_ids'):
+                tax_tag_ids_list = line['tax_tag_ids'] if isinstance(line['tax_tag_ids'], list) else [line['tax_tag_ids']]
+                if tax_tag_ids_list:
+                    try:
+                        tax_tag_details = models.execute_kw(
+                            db, uid, password,
+                            'account.account.tag', 'read',
+                            [tax_tag_ids_list],
+                            {'fields': ['id', 'name', 'applicability', 'country_id']}
+                        )
+                        enriched_line['tax_tags'] = tax_tag_details
+                        print(f"   Tax Tags: {[t['name'] for t in tax_tag_details]}")
+                    except Exception as e:
+                        print(f"   ⚠️  Could not fetch tax tag details: {e}")
+            
+            # Check if this is a tax line
+            if line.get('tax_line_id'):
+                enriched_line['is_tax_line'] = True
+                tax_id_value = line['tax_line_id'][0] if isinstance(line['tax_line_id'], list) else line['tax_line_id']
+                try:
+                    tax_info = models.execute_kw(
+                        db, uid, password,
+                        'account.tax', 'read',
+                        [[tax_id_value]],
+                        {'fields': ['id', 'name', 'amount']}
+                    )[0]
+                    enriched_line['tax_line_info'] = tax_info
+                    print(f"   Tax Line: {tax_info['name']}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not fetch tax line info: {e}")
+            else:
+                enriched_line['is_tax_line'] = False
+            
+            detailed_line_items.append(enriched_line)
+
+        print(f"\n=== Final Result: {len(detailed_line_items)} line items after filtering ===")
+
+        # Construct the comprehensive success response (matching createbill.py format)
         return {
             'success': True,
             'exists': False,
+            'message': 'Share capital transaction created and posted successfully',
+            
+            # Transaction header information
             'transaction_id': move_id,
-            'entry_number': move_info.get('name'),
-            'partner_name': partner_info['name'] if partner_info else None,
+            'entry_number': entry_info.get('name'),
+            'state': entry_info.get('state'),
+            'move_type': entry_info.get('move_type'),
+            
+            # Dates
+            'transaction_date': entry_info.get('date'),
+            'date': entry_info.get('date'),
+            
+            # References
+            'customer_ref': entry_info.get('ref'),
+            'reference': entry_info.get('ref'),
+            'narration': entry_info.get('narration'),
+            
+            # Amounts
             'transaction_amount': transaction_amount,
-            'state': move_info.get('state'),
-            'transaction_date': transaction_date,
-            'journal_name': journal_info['name'],
-            'journal_code': journal_info['code'],
-            'payment_reference': payment_reference if payment_reference not in ['', 'none', None] else None,
-            'line_items': line_items,
-            'message': 'Share capital transaction created and posted successfully'
+            'total_amount': entry_info.get('amount_total', transaction_amount),
+            'currency': entry_info.get('currency_id'),
+            
+            # Partner information (if exists)
+            'partner': {
+                'id': partner_details['id'],
+                'name': partner_details['name'],
+                'email': partner_details.get('email'),
+                'phone': partner_details.get('phone'),
+                'vat': partner_details.get('vat'),
+                'address': {
+                    'street': partner_details.get('street'),
+                    'city': partner_details.get('city'),
+                    'country': partner_details.get('country_id')
+                }
+            } if partner_details else None,
+            
+            # Company information
+            'company': {
+                'id': company_details['id'],
+                'name': company_details['name'],
+                'currency': company_details.get('currency_id'),
+                'country': company_details.get('country_id')
+            },
+            
+            # Journal information
+            'journal': {
+                'id': journal_details['id'],
+                'name': journal_details['name'],
+                'code': journal_details['code'],
+                'type': journal_details['type']
+            },
+            
+            # Detailed line items (matching createbill.py transaction script format)
+            'line_items': [
+                {
+                    'id': line['id'],
+                    'label': line['name'],
+                    'display_type': line.get('display_type'),
+                    'account_code': line['account']['code'] if line.get('account') else None,
+                    'account_name': line['account']['name'] if line.get('account') else None,
+                    'account_type': line['account']['type'] if line.get('account') else None,
+                    'partner': line['partner']['name'] if line.get('partner') else None,
+                    'debit': line['debit'],
+                    'credit': line['credit'],
+                    'balance': line['balance'],
+                    'quantity': line.get('quantity'),
+                    'price_unit': line.get('price_unit'),
+                    'price_subtotal': line.get('price_subtotal'),
+                    'price_total': line.get('price_total'),
+                    'taxes': line.get('taxes'),
+                    'tax_tags': line.get('tax_tags'),
+                    'is_tax_line': line.get('is_tax_line', False)
+                }
+                for line in detailed_line_items
+            ],
+            'line_count': len(detailed_line_items),
+            
+            # Keep the detailed journal entries for comprehensive info
+            'journal_entries_detailed': detailed_line_items
         }
+
+        # ### END: COMPREHENSIVE OUTPUT RETRIEVAL ###
         
     except xmlrpc.client.Fault as e:
         return {
@@ -772,6 +1037,8 @@ def main(data):
             'error': f'Odoo API error: {str(e)}'
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             'success': False,
             'error': f'Unexpected error: {str(e)}'
