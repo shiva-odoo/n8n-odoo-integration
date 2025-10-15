@@ -804,7 +804,7 @@ def validate_transaction_json(transactions):
         # Validate account codes - Updated with new accounts
         valid_accounts = [
             "1201", "1240", "1100", "1260",  # Assets
-            "2100", "2200", "2210",          # Liabilities  
+            "2100", "2200", "2210", "2250",         # Liabilities  
             "4000", "4906",                  # Income
             "7000", "7100", "7190", "7200", "7300", "7301", "7302", "7303",  # Expenses
             "7400", "7401", "7402", "7403", "7500", "7501", "7502", "7503",
