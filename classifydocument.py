@@ -19,19 +19,21 @@ Start directly with {{ and end with }}.
 
 **USER'S COMPANY:** "{company_name}"
 
+🚨🚨🚨 **PERSPECTIVE RULE - READ THIS FIRST** 🚨🚨🚨
+
+ALL classifications MUST be from {company_name}'s perspective ONLY.
+NEVER classify from the document issuer's perspective.
+NEVER classify from a third-party perspective.
+
+If the document was sent TO {company_name} → They must pay → BILL
+If the document was sent BY {company_name} → They will be paid → INVOICE
+
 **COMPANY NAME MATCHING:**
-Match ANY of these variations:
+Match ANY of these variations (case-insensitive):
 {company_variations}
 
 ═══════════════════════════════════════════════════════════════════════════════
-**D. INVOICE / BILL DETERMINATION**
-═══════════════════════════════════════════════════════════════════════════════
-
-If the document is NOT payroll, share document, or bank statement, then it's either an INVOICE or BILL.
-The distinction depends on WHO issued it and WHO must pay.
-
-**STEP D1: EXTRACT DOCUMENT STRUCTURE**
-CLASSIFICATION ALGORITHM - FOLLOW EXACTLY IN THIS ORDER
+**CLASSIFICATION ALGORITHM - FOLLOW EXACTLY IN THIS ORDER**
 ═══════════════════════════════════════════════════════════════════════════════
 
 **STEP 1: DOCUMENT TYPE IDENTIFICATION**
@@ -190,292 +192,332 @@ A document is BANK_STATEMENT if it shows banking transactions for an account.
 - If 4+ indicators match → document_type = "bank_statement", category = "bank_statement"
 - If fewer indicators → Continue to check invoice/bill characteristics
 
-You MUST identify these fields from the document:
+═══════════════════════════════════════════════════════════════════════════════
+**D. INVOICE / BILL DETERMINATION**
+═══════════════════════════════════════════════════════════════════════════════
 
-A. **DOCUMENT ISSUER** (Who created/sent this document?)
-   Look at the TOP/HEADER area for:
-   - Company name in largest text at top
-   - Logo position (top left/center)
-   - Fields: "FROM:", "VENDOR:", "SELLER:", "ISSUED BY:"
-   - GST/Tax number in header area
-   - Contact details at top (phone/email/address)
-   
-   Write down: **ISSUER = [Company Name]**
+If the document is NOT payroll, share document, or bank statement, then it's either an INVOICE or BILL.
+The distinction depends on WHO issued it and WHO must pay FROM {company_name}'S PERSPECTIVE.
 
-B. **DOCUMENT RECIPIENT** (Who receives/must pay this document?)
-   Look in the BODY/MIDDLE area for:
-   - Fields: "TO:", "BILL TO:", "CUSTOMER:", "CLIENT:", "BUYER:", "RECEIVER:", "SOLD TO:"
-   - Company name appearing AFTER header section
-   - Labeled as purchaser/client/customer
-   
-   Write down: **RECIPIENT = [Company Name]**
-
-C. **BANK ACCOUNT OWNER** (Whose account for payment?)
-   Look at BOTTOM area for:
-   - "Pay to:", "Remit to:", "Bank details:", "Account holder:"
-   - Bank account name
-   
-   Write down: **BANK ACCOUNT BELONGS TO = [Company Name]**
+🚨🚨🚨 **ABSOLUTE CLASSIFICATION RULES - FOLLOW IN EXACT ORDER** 🚨🚨🚨
 
 ═══════════════════════════════════════════════════════════════════════════════
 
-**STEP D2: APPLY THE ABSOLUTE CLASSIFICATION RULES**
+**RULE 1: CHECK "TO:" / "BILL TO:" / "CUSTOMER:" FIELD FIRST**
 
-🚨🚨🚨 **THE FUNDAMENTAL RULE - READ THIS CAREFULLY** 🚨🚨🚨
-
-**FROM THE USER'S COMPANY PERSPECTIVE:**
-
-A document is an **INVOICE** when:
-- The user's company ({company_name}) ISSUED/CREATED the document
-- The user's company is REQUESTING payment FROM a customer
-- The user's company will RECEIVE money
-- The user's company appears as the SELLER/VENDOR/SERVICE PROVIDER
-
-A document is a **BILL** when:
-- Another company ISSUED/CREATED the document
-- The user's company RECEIVED the document
-- The user's company must PAY money TO the vendor
-- The user's company appears as the BUYER/CUSTOMER/CLIENT
-
-**SIMPLE TEST:** "Who issued this document?"
-- {company_name} issued it → INVOICE (money_coming_in)
-- Another company issued it → BILL (money_going_out)
-
-═══════════════════════════════════════════════════════════════════════════════
-
-🚨 **RULE A: WHO IS THE CUSTOMER/RECIPIENT? (CHECK THIS FIRST)**
-
-Is "{company_name}" mentioned in ANY of these fields?
+Look for these exact fields in the document:
 - "TO:", "BILL TO:", "CUSTOMER:", "CLIENT:", "BUYER:", "RECEIVER:", "SOLD TO:", "SHIP TO:"
 
-✓ **YES** → {company_name} is the CUSTOMER receiving the document
-   → Another company issued this document TO {company_name}
-   → From {company_name}'s perspective: This is a BILL they must pay
+**Question: Does {company_name} (or its variations) appear in ANY of these fields?**
+
+✅ **YES** → {company_name} is in the TO/BILL TO/CUSTOMER field
+   
+   **ABSOLUTE RULE:** 
+   - {company_name} is the RECIPIENT/CUSTOMER
+   - {company_name} MUST PAY this document
+   - Another company issued this TO {company_name}
    
    **MANDATORY OUTPUT:**
-   - document_type = "bill"
-   - category = "money_going_out"
-   - reasoning = "{company_name} appears in CUSTOMER/RECEIVER/TO field. They are receiving this document from a vendor and must pay. This is a BILL from their perspective."
+   ```json
+   {{
+     "document_type": "bill",
+     "category": "money_going_out",
+     "reasoning": "{company_name} appears in [TO/BILL TO/CUSTOMER] field. They are the recipient and must pay. This is a BILL."
+   }}
+   ```
    
-   **STOP HERE. DO NOT CONTINUE TO OTHER RULES.**
+   **⛔ STOP HERE. DO NOT CHECK OTHER RULES. OUTPUT IMMEDIATELY.**
 
-✗ **NO** → Continue to Rule B
-
----
-
-🚨 **RULE B: WHO IS THE ISSUER/VENDOR? (CHECK THIS SECOND)**
-
-Is "{company_name}" in the HEADER/TOP section AS THE ISSUER?
-- Company name at top of page (largest text)
-- Next to logo in header
-- In "FROM:", "VENDOR:", "SELLER:" fields
-- GST/Tax number at top belongs to them
-
-✓ **YES** → {company_name} is the ISSUER of this document
-   → AND another company appears in TO:/CUSTOMER: field?
-   → From {company_name}'s perspective: This is an INVOICE they issued to collect payment
-   
-   **MANDATORY OUTPUT:**
-   - document_type = "invoice"
-   - category = "money_coming_in"
-   - reasoning = "{company_name} issued this document to [customer name]. They are requesting payment. This is an INVOICE from their perspective."
-   
-   **STOP HERE.**
-
-✗ **NO** → Continue to Rule C
-
----
-
-🚨 **RULE C: BANK ACCOUNT RULE**
-
-Whose bank account is listed for payment?
-
-✓ Bank account belongs to "{company_name}"
-   → Output: document_type = "invoice", category = "money_coming_in"
-   
-✓ Bank account belongs to ANOTHER company
-   → Output: document_type = "bill", category = "money_going_out"
-
-✗ No clear bank account or unclear → Continue to Rule D
-
----
-
-🚨 **RULE D: PAYMENT LOGIC TEST**
-
-Based on ALL the information, answer this question:
-**"In this transaction, will {company_name} SEND money or RECEIVE money?"**
-
-- If {company_name} will **SEND/PAY** money → document_type = "bill", category = "money_going_out"
-- If {company_name} will **RECEIVE/GET PAID** money → document_type = "invoice", category = "money_coming_in"
-- Cannot determine → document_type = null, category = "illegible_document"
+❌ **NO** → {company_name} is NOT in the TO/BILL TO/CUSTOMER field
+   → Continue to Rule 2
 
 ═══════════════════════════════════════════════════════════════════════════════
 
-**STEP 2: CRITICAL VALIDATION BEFORE OUTPUT**
+**RULE 2: CHECK DOCUMENT HEADER/ISSUER**
 
-Before generating JSON, verify:
+Look at the TOP/HEADER section of the document for:
+- Company name in largest font at top
+- Company logo position (top left/center)
+- Fields: "FROM:", "VENDOR:", "SELLER:", "SERVICE PROVIDER:"
+- Company's tax/registration numbers in header
+- Company's address/contact info at top
 
-✓ If payroll indicators present (4+) → MUST be payroll + money_going_out
-✓ If "{company_name}" is in TO:/CUSTOMER:/RECEIVER: field → MUST be bill + money_going_out
-✓ If "{company_name}" is in FROM:/VENDOR:/header → MUST be invoice + money_coming_in
-✓ Document type and category must match:
-  - payroll → money_going_out
-  - invoice → money_coming_in
-  - bill → money_going_out
-  - share_document → money_coming_in
+**Question: Does {company_name} (or its variations) appear as the ISSUER/HEADER?**
 
-❌ **FORBIDDEN COMBINATIONS:**
-- "{company_name}" in CUSTOMER field + document_type="invoice" → WRONG! Must be "bill"
-- "{company_name}" in CUSTOMER field + category="money_coming_in" → WRONG! Must be "money_going_out"
-- document_type="bill" + category="money_coming_in" → WRONG!
-- document_type="invoice" + category="money_going_out" → WRONG!
-- document_type="payroll" + category="money_coming_in" → WRONG!
+✅ **YES** → {company_name} is in the header as issuer
+   
+   **AND verify:** Is there ANOTHER company name in the TO:/CUSTOMER: field?
+   
+   ✅ **YES** → Different company in customer field
+      
+      **ABSOLUTE RULE:**
+      - {company_name} ISSUED this document
+      - {company_name} is REQUESTING payment
+      - {company_name} will RECEIVE money
+      
+      **MANDATORY OUTPUT:**
+      ```json
+      {{
+        "document_type": "invoice",
+        "category": "money_coming_in",
+        "reasoning": "{company_name} issued this document to [customer name]. They are requesting payment. This is an INVOICE."
+      }}
+      ```
+      
+      **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
+   
+   ❌ **NO** → No other company in customer field or unclear
+      → Continue to Rule 3
+
+❌ **NO** → {company_name} is NOT the issuer
+   → Continue to Rule 3
+
+═══════════════════════════════════════════════════════════════════════════════
+
+**RULE 3: CHECK BANK ACCOUNT OWNERSHIP**
+
+Look at the PAYMENT DETAILS section (usually at bottom):
+- "Pay to:", "Remit to:", "Payment details:", "Bank details:"
+- Bank account holder name
+- IBAN, Account number
+
+**Question: Whose bank account is listed for payment?**
+
+✅ **Bank account belongs to {company_name}**
+   → {company_name} will RECEIVE the payment
+   
+   **MANDATORY OUTPUT:**
+   ```json
+   {{
+     "document_type": "invoice",
+     "category": "money_coming_in",
+     "reasoning": "Payment details show {company_name}'s bank account. They will receive payment. This is an INVOICE."
+   }}
+   ```
+   
+   **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
+
+✅ **Bank account belongs to ANOTHER company** (not {company_name})
+   → {company_name} must PAY to that account
+   
+   **MANDATORY OUTPUT:**
+   ```json
+   {{
+     "document_type": "bill",
+     "category": "money_going_out",
+     "reasoning": "Payment details show [vendor name]'s bank account. {company_name} must pay to this account. This is a BILL."
+   }}
+   ```
+   
+   **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
+
+❌ **NO clear bank account or unclear**
+   → Continue to Rule 4
+
+═══════════════════════════════════════════════════════════════════════════════
+
+**RULE 4: FINAL PAYMENT DIRECTION TEST**
+
+Based on ALL available information, answer this question:
+
+**"Will {company_name} SEND money or RECEIVE money in this transaction?"**
+
+Analyze:
+- Document layout and structure
+- Company positions in the document
+- Payment terms and conditions
+- Any contextual clues
+
+✅ **{company_name} will SEND/PAY money**
+   ```json
+   {{
+     "document_type": "bill",
+     "category": "money_going_out",
+     "reasoning": "Based on document structure, {company_name} must pay. This is a BILL."
+   }}
+   ```
+
+✅ **{company_name} will RECEIVE/GET PAID money**
+   ```json
+   {{
+     "document_type": "invoice",
+     "category": "money_coming_in",
+     "reasoning": "Based on document structure, {company_name} will receive payment. This is an INVOICE."
+   }}
+   ```
+
+❌ **Cannot determine payment direction**
+   ```json
+   {{
+     "document_type": null,
+     "category": "illegible_document",
+     "reasoning": "Cannot determine payment direction or document structure unclear."
+   }}
+   ```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚨 **CRITICAL VALIDATION BEFORE OUTPUT** 🚨
+
+Before generating final JSON, verify these ABSOLUTE RULES:
+
+**FORBIDDEN COMBINATIONS - THESE ARE ALWAYS WRONG:**
+
+❌ {company_name} in "BILL TO:" field + document_type = "invoice" → **WRONG!** Must be "bill"
+❌ {company_name} in "BILL TO:" field + category = "money_coming_in" → **WRONG!** Must be "money_going_out"
+❌ {company_name} in "CUSTOMER:" field + document_type = "invoice" → **WRONG!** Must be "bill"
+❌ document_type = "bill" + category = "money_coming_in" → **WRONG!** Must be "money_going_out"
+❌ document_type = "invoice" + category = "money_going_out" → **WRONG!** Must be "money_coming_in"
+❌ document_type = "payroll" + category = "money_coming_in" → **WRONG!** Must be "money_going_out"
+❌ document_type = "share_document" + category = "money_going_out" → **WRONG!** Must be "money_coming_in"
+
+**REQUIRED COMBINATIONS - THESE ARE ALWAYS CORRECT:**
+
+✅ document_type = "payroll" → category MUST BE "money_going_out"
+✅ document_type = "invoice" → category MUST BE "money_coming_in"
+✅ document_type = "bill" → category MUST BE "money_going_out"
+✅ document_type = "share_document" → category MUST BE "money_coming_in"
+✅ {company_name} in "BILL TO:" field → MUST BE document_type = "bill" + category = "money_going_out"
+✅ {company_name} as issuer + other company in "BILL TO:" → MUST BE document_type = "invoice" + category = "money_coming_in"
+
+═══════════════════════════════════════════════════════════════════════════════
+
+**CLASSIFICATION EXAMPLES - STUDY THESE CAREFULLY**
+
+═══════════════════════════════════════════════════════════════════════════════
+
+**Example 1: Clear BILL case**
+```
+Document header: "ABC Consulting Services Ltd"
+BILL TO: Kyrastel Enterprises Limited
+Amount: $500
+Payment to: ABC Consulting's bank account
+```
+
+**Analysis:**
+- Kyrastel appears in "BILL TO:" field → **Rule 1 triggers**
+- Kyrastel is the CUSTOMER/RECIPIENT
+- Kyrastel must PAY ABC Consulting
+
+**Output:**
+```json
+{{
+  "document_type": "bill",
+  "category": "money_going_out",
+  "company_name": "Kyrastel Enterprises Limited",
+  "reasoning": "Kyrastel Enterprises Limited appears in BILL TO field. They are receiving this document from ABC Consulting and must pay. This is a BILL."
+}}
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+**Example 2: Clear INVOICE case**
+```
+Document header: "Kyrastel Enterprises Limited"
+BILL TO: XYZ Corporation
+Amount: $1000
+Payment to: Kyrastel's bank account
+```
+
+**Analysis:**
+- Kyrastel in header as issuer → **Rule 2 checks**
+- XYZ Corporation in "BILL TO:" field (different company)
+- Kyrastel's bank account for payment
+- Kyrastel will RECEIVE money
+
+**Output:**
+```json
+{{
+  "document_type": "invoice",
+  "category": "money_coming_in",
+  "company_name": "Kyrastel Enterprises Limited",
+  "reasoning": "Kyrastel Enterprises Limited issued this document to XYZ Corporation. Payment goes to Kyrastel's bank account. They will receive payment. This is an INVOICE."
+}}
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+**Example 3: Vendor invoice (BILL) case**
+```
+Document header: "N.A MechEnergy Consulting Engineer"
+BILL TO: Kyrastel Enterprises ltd
+Services: Engineering consultation
+Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
+```
+
+**Analysis:**
+- Kyrastel in "BILL TO:" field → **Rule 1 IMMEDIATELY triggers**
+- N.A MechEnergy is the issuer/vendor
+- Payment goes to N.A MechEnergy's account
+- Kyrastel must PAY
+
+**Output:**
+```json
+{{
+  "document_type": "bill",
+  "category": "money_going_out",
+  "company_name": "Kyrastel Enterprises Limited",
+  "reasoning": "Kyrastel Enterprises ltd appears in BILL TO field. N.A MechEnergy issued this to Kyrastel. Payment goes to N.A MechEnergy's bank account. Kyrastel must pay. This is a BILL."
+}}
+```
+
+**⚠️ WRONG Classification Example:**
+```json
+{{
+  "document_type": "invoice",
+  "category": "money_coming_in",
+  "reasoning": "...from the issuer's perspective, this is an invoice..."
+}}
+```
+**Why this is WRONG:**
+- ❌ Used issuer's perspective instead of {company_name}'s perspective
+- ❌ Ignored Rule 1: {company_name} in BILL TO field
+- ❌ Forbidden combination: company in BILL TO + invoice type
 
 ═══════════════════════════════════════════════════════════════════════════════
 
 **DOCUMENT TYPES:**
-- "payroll": Payroll report with 2+ employees (money_going_out)
-- "share_document": Share/stock/equity docs (always money_coming_in)
-- "invoice": User issued it, requesting payment (money_coming_in)
-- "bill": User received it, must pay vendor (money_going_out)
-- "bank_statement": Bank statement
-- null: Illegible only
+- "payroll": Payroll report with employee salary information → money_going_out
+- "share_document": Share/stock/equity documents → money_coming_in
+- "invoice": {company_name} issued it, requesting payment → money_coming_in
+- "bill": {company_name} received it, must pay vendor → money_going_out
+- "bank_statement": Bank statement → bank_statement
+- null: Illegible/cannot determine
 
 **CATEGORIES:**
-- "money_coming_in": User receives money
-- "money_going_out": User pays money (bills, payroll, expenses)
+- "money_coming_in": {company_name} receives money (invoice, share_document)
+- "money_going_out": {company_name} pays money (bill, payroll)
 - "bank_statement": Bank statement
 - "illegible_document": Cannot determine
 
-**REQUIRED JSON OUTPUT:**
+═══════════════════════════════════════════════════════════════════════════════
+
+**REQUIRED JSON OUTPUT FORMAT:**
+```json
 {{
   "document_type": "payroll|invoice|bill|bank_statement|share_document|null",
   "category": "money_coming_in|money_going_out|bank_statement|illegible_document",
   "company_name": "{company_name}",
   "total_amount": 1250.00,
   "confidence_score": 0.95,
-  "reasoning": "Brief explanation"
+  "reasoning": "Clear explanation from {company_name}'s perspective"
 }}
+```
 
 ═══════════════════════════════════════════════════════════════════════════════
 
-**FINAL DECISION TREE (USE THIS):**
+**FINAL REMINDERS:**
 
-Start here and follow exactly:
-
-1. **Does document have 5+ payroll indicators?**
-   - Title says PAYROLL/PAYSLIP/SALARY REGISTER?
-   - Shows employee ID, salary breakdown, deductions?
-   - Period/month specified?
-   - Internal document FOR {company_name} (not FROM a vendor)?
-   YES → payroll + money_going_out | NO → Go to 2
-
-2. **Does document have 3+ share document indicators?**
-   - Share certificate, equity allocation, ESOP, dividend?
-   YES → share_document + money_coming_in | NO → Go to 3
-
-3. **Does document have 4+ bank statement indicators?**
-   - Bank logo, account number, transaction list, statement period?
-   YES → bank_statement + bank_statement | NO → Go to 4
-
-4. **Does "{company_name}" appear in TO:/CUSTOMER:/RECEIVER:/BILL TO:/CLIENT: field?**
-   YES → {company_name} is RECEIVING the document from a vendor
-         → bill + money_going_out
-         → STOP
-   NO → Go to 5
-
-5. **Does "{company_name}" appear in FROM:/VENDOR:/HEADER (as issuer) AND another company in TO:/CUSTOMER: field?**
-   YES → {company_name} is ISSUING the document to a customer
-         → invoice + money_coming_in
-         → STOP
-   NO → Go to 6
-
-6. **Does the bank account for payment belong to "{company_name}"?**
-   YES → {company_name} receives payment
-         → invoice + money_coming_in
-         → STOP
-   NO → Go to 7
-
-7. **Does the bank account for payment belong to another company?**
-   YES → {company_name} must pay to that account
-         → bill + money_going_out
-         → STOP
-   NO → Go to 8
-
-8. **Cannot determine who issued the document or payment direction?**
-   YES → null + illegible_document
-
-═══════════════════════════════════════════════════════════════════════════════
-
-⚠️ **PAYROLL CLASSIFICATION EXAMPLES:**
-
-**Example 1: Multi-Employee Payroll Report (PAYROLL)**
-Document: "PAYROLL ANALYSIS REPORT FOR COMPANY"
-Header: "ENAMI LIMITED"
-Template: "10U8 - ENAMI LTD"
-Period: "202506 - JUNE"
-Content: Table with employees U8003, U8004, U8005
-Columns: SALARY, DEDUCTIONS, CONTRIBUTIONS, Total Earnings
-Company Cost: 1,211.70
-
-Classification:
-- document_type = "payroll"
-- category = "money_going_out"
-- reasoning = "Payroll report for ENAMI LIMITED showing employee salaries for June 2025. Contains multiple employees (U8003, U8004, U8005) with salary breakdown, deductions, and company cost. This represents money going out to pay employees."
-
----
-
-**Example 2: Single Employee Payslip (PAYROLL)**
-Document: "PAYSLIP"
-Header: "ENAMI LIMITED"
-Employee: "John Doe (U8003)"
-Period: "JUNE 2025"
-Content: Salary: 750.00, Deductions: 85.68, Net Pay: 664.32
-Columns: EARNINGS, DEDUCTIONS, NET PAY
-
-Classification:
-- document_type = "payroll"
-- category = "money_going_out"
-- reasoning = "Individual employee payslip for John Doe issued by ENAMI LIMITED for June 2025. Shows salary breakdown with earnings, deductions, and net pay. This represents money going out to pay the employee."
-
----
-
-**Example 3: HR Vendor Invoice (BILL, not payroll)**
-Document: "INVOICE from ABC HR Services"
-FROM: ABC HR Services Pvt Ltd
-TO: ENAMI LIMITED
-For: Payroll processing services
-Amount: $500
-
-Classification:
-- document_type = "bill"
-- category = "money_going_out"
-- reasoning = "ENAMI LIMITED is in the TO/CUSTOMER field. This is a vendor invoice for HR services, not an internal payroll report. ENAMI must pay ABC HR Services. Does not have payroll characteristics (no employee salary breakdown, no period, issued by external vendor)."
-
----
-
-**Example 4: Contractor Payment Invoice (BILL, not payroll)**
-Document: "INVOICE"
-FROM: Freelance Consultant Ltd
-TO: ENAMI LIMITED
-For: Consulting services rendered
-Amount: $2,000
-
-Classification:
-- document_type = "bill"
-- category = "money_going_out"
-- reasoning = "ENAMI LIMITED is in the TO/CUSTOMER field. This is payment to an external contractor/vendor, not an employee. Does not have payroll characteristics (no employee ID, no salary structure, no deductions like PF/ESI, no payroll period)."
-
-═══════════════════════════════════════════════════════════════════════════════
-
-⚠️ **REMEMBER:** 
-- **Payroll = Employee salary documents (single OR multiple employees)** with salary structure, deductions, period → (payroll + money_going_out)
-- **Vendor invoice = External party billing for services** → (bill + money_going_out)
-- **If {company_name} is in CUSTOMER/TO/RECEIVER field** → They RECEIVED the document → bill + money_going_out
-- **If {company_name} is in FROM/VENDOR/HEADER field** → They ISSUED the document → invoice + money_coming_in
-- **Payroll reports are always money_going_out** (company paying employees)
-- **Check ALL document type indicators first** before defaulting to invoice/bill classification
-- **Document title alone is NOT reliable** - verify with structure and content"""
+1. ✅ ALWAYS classify from {company_name}'s perspective
+2. ✅ Follow rules in EXACT order (Rule 1 → Rule 2 → Rule 3 → Rule 4)
+3. ✅ STOP immediately when a rule gives a definitive answer
+4. ✅ If {company_name} in "BILL TO:" field → ALWAYS bill + money_going_out
+5. ✅ Check forbidden combinations before outputting
+6. ✅ Payroll → always money_going_out
+7. ✅ Invoice → always money_coming_in
+8. ✅ Bill → always money_going_out
+9. ❌ NEVER use issuer's perspective
+10. ❌ NEVER output explanatory text, only JSON"""
 
 def generate_company_variations(company_name):
     """Generate common variations of company name for better matching"""
