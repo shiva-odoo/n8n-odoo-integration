@@ -510,33 +510,9 @@ def main(data):
     """
     Create vendor bill from HTTP request data
     
-    Expected data format can be either:
-    1. Single bill object: {...}
-    2. Array with single bill: [{...}]
-    
-    Bill object format with new 'tax_grid' field:
-    {
-        "vendor_id": 123,
-        "vendor_name": "ABC Supplies Ltd",
-        "company_id": 1,
-        "company_vat_status": "yes",  // NEW: "yes" or "no"
-        "invoice_date": "2025-01-15",
-        "line_items": [
-            {
-                "account_code": "7503",
-                "account_name": "Internet",
-                "description": "Internet services",
-                "price_unit": 6.85,
-                "quantity": 1,
-                "tax_rate": 19,
-                "tax_name": "19% Standard",
-                "tax_grid": "+7"
-            }
-        ],
-        "accounting_assignment": { ... }
-    }
-    
-    Note: Either vendor_id OR vendor_name is required (not both)
+    UPDATED: For non-VAT registered companies (company_vat_status='no'):
+    - If tax_name is provided on line items, apply the tax (which auto-handles non-recoverable VAT and tax grids)
+    - Only fall back to additional_entries if tax_name is empty/not provided
     """
     
     # Handle both single object and array input
@@ -777,20 +753,25 @@ def main(data):
                         'error': f'Could not find expense account "{account_info}" for line item "{item["description"]}" in company {company_id}. Please check the account name or code.'
                     }
                 
-                # --- START: NEW TAX LOGIC using tax_name ---
-                # Only apply tax if company is VAT registered
-                if item.get('tax_name') and company_vat_status == 'yes':
+                # --- UPDATED TAX LOGIC ---
+                # Apply tax for BOTH VAT and non-VAT registered companies if tax_name is provided
+                # For non-VAT companies, the tax configuration in Odoo will handle non-recoverable VAT automatically
+                if item.get('tax_name'):
                     tax_id = find_tax_by_name(models, db, uid, password, item['tax_name'], company_id)
                     if tax_id:
                         line_item['tax_ids'] = [(6, 0, [tax_id])]
-                        print(f"Applied tax '{item['tax_name']}' (ID: {tax_id}) using name lookup.")
+                        if company_vat_status == 'yes':
+                            print(f"✅ Applied tax '{item['tax_name']}' (ID: {tax_id}) - VAT registered company")
+                        else:
+                            print(f"✅ Applied tax '{item['tax_name']}' (ID: {tax_id}) - Non-VAT company (tax config handles non-recoverable VAT)")
                     else:
-                        print(f"Warning: Tax with name '{item['tax_name']}' not found. No tax will be applied to this line.")
-                elif item.get('tax_name') and company_vat_status == 'no':
-                    print(f"Skipping tax '{item['tax_name']}' application - company not VAT registered (company_vat_status=no)")
-                # --- END: NEW TAX LOGIC ---
+                        print(f"⚠️  Warning: Tax with name '{item['tax_name']}' not found. No tax will be applied to this line.")
+                else:
+                    if company_vat_status == 'no':
+                        print(f"ℹ️  No tax_name provided for line item - will use additional_entries for non-recoverable VAT")
+                # --- END UPDATED TAX LOGIC ---
 
-                # --- START: TAX GRID LOGIC (Maintained) ---
+                # Tax grid logic (maintained for manual tagging if needed)
                 if item.get('tax_grid'):
                     tax_tag_id = find_tax_tag_by_name(models, db, uid, password, item['tax_grid'], company_id)
                     if tax_tag_id:
@@ -798,56 +779,62 @@ def main(data):
                         print(f"Applied tax tag '{item['tax_grid']}' (ID: {tax_tag_id}) to line item")
                     else:
                         print(f"Warning: Tax tag '{item['tax_grid']}' not found")
-                # --- END: TAX GRID LOGIC ---
                 
                 invoice_line_ids.append((0, 0, line_item))
             
-            # --- START: ADD NON-RECOVERABLE VAT LINE ITEMS ---
-            # If company is not VAT registered, add non-recoverable VAT entries as line items
+            # --- UPDATED NON-RECOVERABLE VAT HANDLING ---
+            # Only process additional_entries for non-VAT companies if tax_name was NOT provided on line items
             if company_vat_status == 'no':
-                accounting_assignment = data.get('accounting_assignment', {})
-                additional_entries = accounting_assignment.get('additional_entries', [])
+                # Check if any line items have tax_name
+                has_tax_name_on_items = any(item.get('tax_name') for item in data.get('line_items', []))
                 
-                if additional_entries:
-                    print(f"⚙️  Company not VAT registered (company_vat_status=no) - adding {len(additional_entries)} non-recoverable VAT entries as line items.")
+                if not has_tax_name_on_items:
+                    # Fall back to additional_entries for non-recoverable VAT
+                    accounting_assignment = data.get('accounting_assignment', {})
+                    additional_entries = accounting_assignment.get('additional_entries', [])
                     
-                    for entry in additional_entries:
-                        # Find account for the non-recoverable VAT
-                        account_id = None
-                        if entry.get('account_name'):
-                            account_id = find_account_by_name(
-                                models, db, uid, password, 
-                                entry['account_name'], 
-                                company_id, 
-                                entry.get('account_code')
-                            )
-                        elif entry.get('account_code'):
-                            account_id = find_account_by_code(models, db, uid, password, entry['account_code'], company_id)
+                    if additional_entries:
+                        print(f"⚙️  No tax_name on line items - adding {len(additional_entries)} non-recoverable VAT entries from additional_entries.")
                         
-                        if account_id:
-                            # Calculate the amount (use debit_amount as the expense amount)
-                            amount = float(entry.get('debit_amount', 0.0))
+                        for entry in additional_entries:
+                            # Find account for the non-recoverable VAT
+                            account_id = None
+                            if entry.get('account_name'):
+                                account_id = find_account_by_name(
+                                    models, db, uid, password, 
+                                    entry['account_name'], 
+                                    company_id, 
+                                    entry.get('account_code')
+                                )
+                            elif entry.get('account_code'):
+                                account_id = find_account_by_code(models, db, uid, password, entry['account_code'], company_id)
                             
-                            non_recoverable_line = {
-                                'name': entry.get('description', 'Non-recoverable VAT'),
-                                'quantity': 1.0,
-                                'price_unit': amount,
-                                'account_id': account_id,
-                            }
-                            
-                            # Add tax grid if provided
-                            if entry.get('tax_grid'):
-                                tax_tag_id = find_tax_tag_by_name(models, db, uid, password, entry['tax_grid'], company_id)
-                                if tax_tag_id:
-                                    non_recoverable_line['tax_tag_ids'] = [(6, 0, [tax_tag_id])]
-                                    print(f"Applied tax tag '{entry['tax_grid']}' (ID: {tax_tag_id}) to non-recoverable VAT line")
-                            
-                            invoice_line_ids.append((0, 0, non_recoverable_line))
-                            print(f"✅ Added non-recoverable VAT line item: {entry.get('account_name')} - Amount: {amount}")
-                        else:
-                            account_identifier = entry.get('account_name', entry.get('account_code', 'Unknown'))
-                            print(f"⚠️  Warning: Account '{account_identifier}' not found for non-recoverable VAT entry")
-            # --- END: ADD NON-RECOVERABLE VAT LINE ITEMS ---
+                            if account_id:
+                                # Calculate the amount (use debit_amount as the expense amount)
+                                amount = float(entry.get('debit_amount', 0.0))
+                                
+                                non_recoverable_line = {
+                                    'name': entry.get('description', 'Non-recoverable VAT'),
+                                    'quantity': 1.0,
+                                    'price_unit': amount,
+                                    'account_id': account_id,
+                                }
+                                
+                                # Add tax grid if provided
+                                if entry.get('tax_grid'):
+                                    tax_tag_id = find_tax_tag_by_name(models, db, uid, password, entry['tax_grid'], company_id)
+                                    if tax_tag_id:
+                                        non_recoverable_line['tax_tag_ids'] = [(6, 0, [tax_tag_id])]
+                                        print(f"Applied tax tag '{entry['tax_grid']}' (ID: {tax_tag_id}) to non-recoverable VAT line")
+                                
+                                invoice_line_ids.append((0, 0, non_recoverable_line))
+                                print(f"✅ Added non-recoverable VAT line item: {entry.get('account_name')} - Amount: {amount}")
+                            else:
+                                account_identifier = entry.get('account_name', entry.get('account_code', 'Unknown'))
+                                print(f"⚠️  Warning: Account '{account_identifier}' not found for non-recoverable VAT entry")
+                else:
+                    print(f"ℹ️  tax_name provided on line items - skipping additional_entries (tax config handles non-recoverable VAT automatically)")
+            # --- END UPDATED NON-RECOVERABLE VAT HANDLING ---
         
         elif data.get('description') and data.get('amount'):
             # Single line item (backward compatibility) - use global debit account
@@ -918,72 +905,78 @@ def main(data):
                 'error': 'Failed to create bill in Odoo'
             }
         
-        # CRITICAL FIX: For non-VAT companies, manually fix the accounts payable line
+        # CRITICAL FIX: For non-VAT companies WITHOUT tax_name, manually fix the accounts payable line
         # This prevents Odoo from using the wrong receivable account (1150)
+        # Only do this if we used additional_entries (i.e., no tax_name was provided)
         if company_vat_status == 'no':
-            print(f"🔧 Fixing accounts payable line for non-VAT registered company...")
+            has_tax_name_on_items = any(item.get('tax_name') for item in data.get('line_items', []))
             
-            # Get the credit account from accounting_assignment
-            accounting_assignment = data.get('accounting_assignment', {})
-            credit_account_code = accounting_assignment.get('credit_account')
-            credit_account_name = accounting_assignment.get('credit_account_name')
-            
-            if credit_account_code or credit_account_name:
-                # Find the correct payable account
-                correct_payable_account_id = None
-                if credit_account_name:
-                    correct_payable_account_id = find_account_by_name(
-                        models, db, uid, password,
-                        credit_account_name,
-                        company_id,
-                        credit_account_code
-                    )
-                elif credit_account_code:
-                    correct_payable_account_id = find_account_by_code(
-                        models, db, uid, password,
-                        credit_account_code,
-                        company_id
-                    )
+            if not has_tax_name_on_items:
+                print(f"🔧 Fixing accounts payable line for non-VAT registered company (no tax_name provided)...")
                 
-                if correct_payable_account_id:
-                    print(f"Found correct payable account: {correct_payable_account_id}")
+                # Get the credit account from accounting_assignment
+                accounting_assignment = data.get('accounting_assignment', {})
+                credit_account_code = accounting_assignment.get('credit_account')
+                credit_account_name = accounting_assignment.get('credit_account_name')
+                
+                if credit_account_code or credit_account_name:
+                    # Find the correct payable account
+                    correct_payable_account_id = None
+                    if credit_account_name:
+                        correct_payable_account_id = find_account_by_name(
+                            models, db, uid, password,
+                            credit_account_name,
+                            company_id,
+                            credit_account_code
+                        )
+                    elif credit_account_code:
+                        correct_payable_account_id = find_account_by_code(
+                            models, db, uid, password,
+                            credit_account_code,
+                            company_id
+                        )
                     
-                    # Get all lines for this bill
-                    all_lines = models.execute_kw(
-                        db, uid, password,
-                        'account.move.line', 'search_read',
-                        [[('move_id', '=', bill_id)]],
-                        {'fields': ['id', 'account_id', 'debit', 'credit', 'name']}
-                    )
-                    
-                    # Find the payable line (should have credit > 0 and be the counterpart)
-                    for line in all_lines:
-                        # The payable line is typically the one with the largest credit
-                        if line.get('credit', 0) > 0 and line.get('debit', 0) == 0:
-                            print(f"Found payable line: {line['id']} with credit {line['credit']}")
-                            
-                            # Update this line to use the correct account
-                            try:
-                                models.execute_kw(
-                                    db, uid, password,
-                                    'account.move.line', 'write',
-                                    [[line['id']], {'account_id': correct_payable_account_id}]
-                                )
-                                print(f"✅ Updated payable line to use account {correct_payable_account_id}")
-                            except Exception as e:
-                                print(f"❌ Failed to update payable line: {e}")
-                                return {
-                                    'success': False,
-                                    'error': f'Could not fix payable account: {str(e)}'
-                                }
-                else:
-                    print(f"⚠️  Could not find correct payable account")
+                    if correct_payable_account_id:
+                        print(f"Found correct payable account: {correct_payable_account_id}")
+                        
+                        # Get all lines for this bill
+                        all_lines = models.execute_kw(
+                            db, uid, password,
+                            'account.move.line', 'search_read',
+                            [[('move_id', '=', bill_id)]],
+                            {'fields': ['id', 'account_id', 'debit', 'credit', 'name']}
+                        )
+                        
+                        # Find the payable line (should have credit > 0 and be the counterpart)
+                        for line in all_lines:
+                            # The payable line is typically the one with the largest credit
+                            if line.get('credit', 0) > 0 and line.get('debit', 0) == 0:
+                                print(f"Found payable line: {line['id']} with credit {line['credit']}")
+                                
+                                # Update this line to use the correct account
+                                try:
+                                    models.execute_kw(
+                                        db, uid, password,
+                                        'account.move.line', 'write',
+                                        [[line['id']], {'account_id': correct_payable_account_id}]
+                                    )
+                                    print(f"✅ Updated payable line to use account {correct_payable_account_id}")
+                                except Exception as e:
+                                    print(f"❌ Failed to update payable line: {e}")
+                                    return {
+                                        'success': False,
+                                        'error': f'Could not fix payable account: {str(e)}'
+                                    }
+                    else:
+                        print(f"⚠️  Could not find correct payable account")
+            else:
+                print(f"ℹ️  tax_name provided - skipping manual payable account fix (Odoo tax config handles it)")
         
         # Determine VAT treatment type
         accounting_assignment = data.get('accounting_assignment', {})
         additional_entries = accounting_assignment.get('additional_entries', [])
 
-        # --- UPDATED LOGIC START ---
+        # --- UPDATED ADDITIONAL ENTRIES PROCESSING ---
         # Check if tax_name is being used on line items
         has_tax_name_on_items = any(item.get('tax_name') for item in data.get('line_items', []))
         
@@ -1033,7 +1026,7 @@ def main(data):
                                 'partner_id': vendor_id,
                             }
 
-                            # --- START: TAX GRID LOGIC (Maintained) ---
+                            # Tax grid logic (maintained)
                             if entry.get('tax_grid'):
                                 tax_tag_id = find_tax_tag_by_name(models, db, uid, password, entry['tax_grid'], company_id)
                                 if tax_tag_id:
@@ -1041,7 +1034,6 @@ def main(data):
                                     print(f"Applied tax tag '{entry['tax_grid']}' (ID: {tax_tag_id}) to additional entry")
                                 else:
                                     print(f"Warning: Tax tag '{entry['tax_grid']}' not found")
-                            # --- END: TAX GRID LOGIC ---
 
                             additional_lines.append((0, 0, line_data))
                             
@@ -1099,9 +1091,12 @@ def main(data):
                     import traceback
                     traceback.print_exc()
         elif additional_entries and company_vat_status == 'no':
-            # Already handled as line items above, so just log
-            print(f"ℹ️  Non-recoverable VAT entries already added as line items (company_vat_status=no)")
-        # --- UPDATED LOGIC END ---
+            # For non-VAT companies, additional_entries are only used if no tax_name was provided
+            if has_tax_name_on_items:
+                print(f"ℹ️  tax_name provided - additional_entries ignored (tax config handles non-recoverable VAT)")
+            else:
+                print(f"ℹ️  Non-recoverable VAT entries already added as line items (no tax_name provided)")
+        # --- END UPDATED ADDITIONAL ENTRIES PROCESSING ---
 
         # Update with explicit amounts if provided
         # NOTE: Skip explicit amount updates when company_vat_status='no' because
