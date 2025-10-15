@@ -27,15 +27,22 @@ def convert_decimal(obj):
     else:
         return obj
 
-def get_dashboard_metrics(company_id, username):
+def get_dashboard_metrics(company_id, username, company_name=None):
     """Get dashboard metrics for a specific company"""
     try:
-        # Get company's processing batches by username
+        # Get company's processing batches by username AND company_name
+        # This ensures we only get data for this specific company
+        filter_expression = 'username = :username'
+        expression_values = {':username': username}
+        
+        # Add company_name filter if provided for extra safety
+        if company_name:
+            filter_expression += ' AND company_name = :company_name'
+            expression_values[':company_name'] = company_name
+        
         response = batches_table.scan(
-            FilterExpression='username = :username',
-            ExpressionAttributeValues={
-                ':username': username
-            }
+            FilterExpression=filter_expression,
+            ExpressionAttributeValues=expression_values
         )
         
         batches = convert_decimal(response.get('Items', []))
@@ -106,15 +113,22 @@ def get_dashboard_metrics(company_id, username):
             "error": str(e)
         }
 
-def get_recent_documents(company_id, username, limit=10):
+def get_recent_documents(company_id, username, company_name=None, limit=10):
     """Get recent documents for a specific company"""
     try:
-        # Get company's processing batches by username
+        # Get company's processing batches by username AND company_name
+        # This ensures we only get data for this specific company
+        filter_expression = 'username = :username'
+        expression_values = {':username': username}
+        
+        # Add company_name filter if provided for extra safety
+        if company_name:
+            filter_expression += ' AND company_name = :company_name'
+            expression_values[':company_name'] = company_name
+        
         response = batches_table.scan(
-            FilterExpression='username = :username',
-            ExpressionAttributeValues={
-                ':username': username
-            }
+            FilterExpression=filter_expression,
+            ExpressionAttributeValues=expression_values
         )
         
         batches = convert_decimal(response.get('Items', []))
@@ -167,15 +181,22 @@ def get_recent_documents(company_id, username, limit=10):
             "error": str(e)
         }
 
-def get_compliance_items(company_id, username):
+def get_compliance_items(company_id, username, company_name=None):
     """Get compliance items/tasks for a specific company"""
     try:
-        # Get pending/incomplete batches by username
+        # Get pending/incomplete batches by username AND company_name
+        # This ensures we only get data for this specific company
+        filter_expression = 'username = :username'
+        expression_values = {':username': username}
+        
+        # Add company_name filter if provided for extra safety
+        if company_name:
+            filter_expression += ' AND company_name = :company_name'
+            expression_values[':company_name'] = company_name
+        
         response = batches_table.scan(
-            FilterExpression='username = :username',
-            ExpressionAttributeValues={
-                ':username': username
-            }
+            FilterExpression=filter_expression,
+            ExpressionAttributeValues=expression_values
         )
         
         batches = convert_decimal(response.get('Items', []))

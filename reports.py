@@ -130,8 +130,9 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get revenue accounts
+        # Get revenue accounts - FILTER BY COMPANY_ID
         revenue_domain = [
+            ('company_id', '=', company_id),
             ('account_type', 'in', ['income', 'income_other'])
         ]
         revenue_accounts = models.execute_kw(
@@ -141,8 +142,9 @@ def get_profit_loss_report(data: Dict) -> Dict:
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
-        # Get expense accounts
+        # Get expense accounts - FILTER BY COMPANY_ID
         expense_domain = [
+            ('company_id', '=', company_id),
             ('account_type', 'in', ['expense', 'expense_depreciation', 'expense_direct_cost'])
         ]
         expense_accounts = models.execute_kw(
@@ -158,6 +160,7 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         for account in revenue_accounts:
             line_domain = [
+                ('company_id', '=', company_id),
                 ('account_id', '=', account['id']),
                 ('parent_state', '=', 'posted')
             ]
@@ -188,6 +191,7 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         for account in expense_accounts:
             line_domain = [
+                ('company_id', '=', company_id),
                 ('account_id', '=', account['id']),
                 ('parent_state', '=', 'posted')
             ]
@@ -264,6 +268,7 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         
         for category, types in account_types.items():
             accounts_domain = [
+                ('company_id', '=', company_id),
                 ('account_type', 'in', types)
             ]
             accounts = models.execute_kw(
@@ -278,6 +283,7 @@ def get_balance_sheet_report(data: Dict) -> Dict:
             
             for account in accounts:
                 line_domain = [
+                    ('company_id', '=', company_id),
                     ('account_id', '=', account['id']),
                     ('parent_state', '=', 'posted'),
                     ('date', '<=', date)
@@ -334,8 +340,9 @@ def get_cash_flow_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get cash and bank accounts
+        # Get cash and bank accounts - FILTER BY COMPANY_ID
         cash_domain = [
+            ('company_id', '=', company_id),
             ('account_type', 'in', ['asset_cash', 'liability_credit_card'])
         ]
         cash_accounts = models.execute_kw(
@@ -350,8 +357,9 @@ def get_cash_flow_report(data: Dict) -> Dict:
         closing_balance = 0
         
         for account in cash_accounts:
-            # Opening balance
+            # Opening balance - FILTER BY COMPANY_ID
             opening_domain = [
+                ('company_id', '=', company_id),
                 ('account_id', '=', account['id']),
                 ('parent_state', '=', 'posted')
             ]
@@ -366,8 +374,9 @@ def get_cash_flow_report(data: Dict) -> Dict:
             )
             account_opening = sum(line['balance'] for line in opening_lines)
             
-            # Period movements
+            # Period movements - FILTER BY COMPANY_ID
             period_domain = [
+                ('company_id', '=', company_id),
                 ('account_id', '=', account['id']),
                 ('parent_state', '=', 'posted')
             ]
@@ -630,8 +639,8 @@ def get_general_ledger_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get accounts
-        account_domain = []
+        # Get accounts - FILTER BY COMPANY_ID
+        account_domain = [('company_id', '=', company_id)]
         if account_id:
             account_domain.append(('id', '=', account_id))
         
@@ -645,8 +654,9 @@ def get_general_ledger_report(data: Dict) -> Dict:
         ledger_data = []
         
         for account in accounts:
-            # Get move lines
+            # Get move lines - FILTER BY COMPANY_ID
             line_domain = [
+                ('company_id', '=', company_id),
                 ('account_id', '=', account['id']),
                 ('parent_state', '=', 'posted')
             ]
@@ -711,11 +721,11 @@ def get_trial_balance_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get all accounts
+        # Get all accounts - FILTER BY COMPANY_ID
         accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [[]],
+            [[('company_id', '=', company_id)]],
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
@@ -725,6 +735,7 @@ def get_trial_balance_report(data: Dict) -> Dict:
         
         for account in accounts:
             line_domain = [
+                ('company_id', '=', company_id),
                 ('account_id', '=', account['id']),
                 ('parent_state', '=', 'posted')
             ]
@@ -1116,8 +1127,9 @@ def get_bank_reconciliation_report(data: Dict) -> Dict:
         
         account_id = journal[0]['default_account_id'][0]
         
-        # Get all bank statement lines
+        # Get all bank statement lines - FILTER BY COMPANY_ID
         line_domain = [
+            ('company_id', '=', company_id),
             ('account_id', '=', account_id),
             ('date', '<=', date)
         ]
@@ -1342,6 +1354,7 @@ def get_partner_ledger_report(data: Dict) -> Dict:
             account_types.append('liability_payable')
         
         account_domain = [
+            ('company_id', '=', company_id),
             ('account_type', 'in', account_types)
         ]
         
@@ -1354,8 +1367,9 @@ def get_partner_ledger_report(data: Dict) -> Dict:
         
         account_ids = [acc['id'] for acc in accounts]
         
-        # Get move lines
+        # Get move lines - FILTER BY COMPANY_ID
         line_domain = [
+            ('company_id', '=', company_id),
             ('account_id', 'in', account_ids),
             ('parent_state', '=', 'posted')
         ]

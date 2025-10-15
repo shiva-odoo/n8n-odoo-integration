@@ -10,8 +10,15 @@ AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
 dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
 batch_table = dynamodb.Table('batch_processing')
 
-def update_batch_status(batch_id, status_data):
-    """Update batch processing status - specifically for n8n workflow updates"""
+def update_batch_status(batch_id, status_data, username=None, company_name=None):
+    """Update batch processing status - specifically for n8n workflow updates
+    
+    Args:
+        batch_id: The batch ID to update
+        status_data: Dictionary with status updates
+        username: Optional - verify batch belongs to this user
+        company_name: Optional - verify batch belongs to this company
+    """
     try:
         # Validate input
         if not batch_id:
@@ -26,7 +33,7 @@ def update_batch_status(batch_id, status_data):
                 "error": "status_data must be a non-empty dictionary"
             }
         
-        # Validate that batch exists
+        # Validate that batch exists and belongs to the correct company/user
         response = batch_table.get_item(
             Key={'batch_id': batch_id}
         )
@@ -35,6 +42,20 @@ def update_batch_status(batch_id, status_data):
             return {
                 "success": False,
                 "error": "Batch not found"
+            }
+        
+        # Verify company/user ownership if provided
+        batch_item = response['Item']
+        if username and batch_item.get('username') != username:
+            return {
+                "success": False,
+                "error": "Batch does not belong to this user"
+            }
+        
+        if company_name and batch_item.get('company_name') != company_name:
+            return {
+                "success": False,
+                "error": "Batch does not belong to this company"
             }
         
         # Build update expression dynamically based on provided fields
@@ -98,8 +119,16 @@ def update_batch_status(batch_id, status_data):
             "error": "Batch update process failed"
         }
     
-def update_file_status(batch_id, file_id, file_status_data):
-    """Update individual file status within a batch"""
+def update_file_status(batch_id, file_id, file_status_data, username=None, company_name=None):
+    """Update individual file status within a batch
+    
+    Args:
+        batch_id: The batch ID to update
+        file_id: The file ID within the batch to update
+        file_status_data: Dictionary with file status updates
+        username: Optional - verify batch belongs to this user
+        company_name: Optional - verify batch belongs to this company
+    """
     try:
         # Validate input
         if not batch_id:
@@ -132,6 +161,19 @@ def update_file_status(batch_id, file_id, file_status_data):
             }
         
         batch_item = response['Item']
+        
+        # Verify company/user ownership if provided
+        if username and batch_item.get('username') != username:
+            return {
+                "success": False,
+                "error": "Batch does not belong to this user"
+            }
+        
+        if company_name and batch_item.get('company_name') != company_name:
+            return {
+                "success": False,
+                "error": "Batch does not belong to this company"
+            }
         files_list = batch_item.get('files', [])
         
         # Find the file to update
