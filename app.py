@@ -61,6 +61,7 @@ import update_transactions_table as transactions
 import update_bills_table as bills
 import update_invoices_table as invoices
 import update_share_transactions_table as share_transactions
+import update_payroll_transactions_table as payroll_transactions
 import reports
 import process_payroll
 import dashboard
@@ -68,6 +69,7 @@ import company_profile
 import bank_reconciliation
 import compliance
 import create_payroll_transaction as createpayrolltransaction
+
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -3845,7 +3847,108 @@ def update_share_transactions_table():
             "details": str(e)
         }), 500
 
-    
+@app.route("/api/update/payroll-transactions-table", methods=["POST"])
+def update_payroll_transactions_table():
+    """
+    Create a single payroll transaction entry in DynamoDB
+    Accepts the JSON payroll transaction data in multiple formats:
+    - Direct transaction object: {entry_id: ..., entry_number: ..., ...}
+    - Wrapped in transaction key: {"transaction": {entry_id: ..., ...}}
+    - Wrapped in data key: {"data": {entry_id: ..., ...}}
+    - Wrapped in payroll_transaction key: {"payroll_transaction": {entry_id: ..., ...}}
+    """
+    try:
+        # Try multiple ways to get JSON data
+        data = None
+        try:
+            data = request.get_json()
+        except Exception:
+            try:
+                data = request.get_json(force=True)
+            except Exception as e:
+                print(f"⚠️ Failed to parse JSON: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON format"
+                }), 400
+       
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+       
+        # Handle multiple data formats
+        transaction_data = None
+       
+        # Format 1: Array with single transaction [transaction_object]
+        if isinstance(data, list):
+            if len(data) == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Empty array provided"
+                }), 400
+            elif len(data) > 1:
+                return jsonify({
+                    "success": False,
+                    "error": f"Expected single payroll transaction, received {len(data)} transactions. This endpoint processes one transaction at a time."
+                }), 400
+            else:
+                # Extract the single transaction from array
+                transaction_data = data[0]
+        
+        # Format 2-5: Object formats
+        elif isinstance(data, dict):
+            # Format 2: Direct transaction object (check for payroll-specific fields)
+            if 'entry_id' in data or 'entry_number' in data or 'total_debits' in data or 'period' in data or 'move_type' in data:
+                transaction_data = data
+            # Format 3: Wrapped in 'transaction' key
+            elif 'transaction' in data and isinstance(data['transaction'], dict):
+                transaction_data = data['transaction']
+            # Format 4: Wrapped in 'payroll_transaction' key
+            elif 'payroll_transaction' in data and isinstance(data['payroll_transaction'], dict):
+                transaction_data = data['payroll_transaction']
+            # Format 5: Wrapped in 'data' key
+            elif 'data' in data and isinstance(data['data'], dict):
+                transaction_data = data['data']
+            else:
+                # Try to use the data as-is
+                transaction_data = data
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Expected payroll transaction data as object/dictionary or array with single transaction"
+            }), 400
+       
+        # Validate we have transaction data
+        if transaction_data is None:
+            return jsonify({
+                "success": False,
+                "error": "Could not parse payroll transaction data. Expected transaction object"
+            }), 400
+       
+        if not isinstance(transaction_data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Payroll transaction data must be an object/dictionary"
+            }), 400
+       
+        # Process the payroll transaction
+        result = payroll_transactions.process_payroll_transaction(transaction_data)
+       
+        status_code = 201 if result["success"] else 500
+        return jsonify(result), status_code
+           
+    except Exception as e:
+        print(f"❌ Payroll transactions table update error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to update payroll transactions table",
+            "details": str(e)
+        }), 500
+
 
 # ============================================================================
 # FINANCIAL REPORTS (NEW SECTION)
