@@ -161,96 +161,203 @@ Extract data from the TOTALS/SUMMARY row (not individual employee rows) to creat
 - All liabilities are CREDITED (net wages payable, taxes payable, social insurance payable)
 - NO bank or cash accounts in the payroll journal entry
 
-**3. CYPRUS SOCIAL INSURANCE - TWO COMPONENTS:**
-- **Employee Contribution (~8.8% of gross):** Deducted FROM employee salary, reduces net pay
-- **Employer Contribution (~8.3% of gross):** Company expense, does NOT reduce employee net pay
-- **Both go to Account 2210 (PAYE/NIC):** Employee portion + Employer portion = Total liability to authorities
+**3. CYPRUS SOCIAL INSURANCE & GESY - CRITICAL UNDERSTANDING:**
+
+**Cyprus has TWO separate contribution systems that are PAID TOGETHER to authorities:**
+
+**A. SOCIAL INSURANCE (SI):**
+- **Employee SI (~8.3% of gross):** Deducted FROM employee salary
+- **Employer SI (~8.3% of gross):** Company expense, NOT deducted from employee
+
+**B. GESY (General Healthcare System):**
+- **Employee GESY (~2.65% of gross):** Deducted FROM employee salary
+- **Employer GESY (~2.9% of gross):** Company expense, NOT deducted from employee
+
+**CRITICAL: ALL FOUR portions are paid together to Social Insurance Office monthly and go to ONE liability account (2210 PAYE/NIC)**
 
 **CHART OF ACCOUNTS FOR PAYROLL:**
 
 **EXPENSE ACCOUNTS (Always DEBIT):**
 - **7000 - Gross wages:** Total salary expense before deductions
 - **7003 - Staff bonus:** Bonus payments (annual, performance, etc.)
-- **7006 - Employers n.i.:** Employer's National Insurance/Social Insurance contribution (~8.3%)
+- **7006 - Employers n.i.:** Employer's Social Insurance contribution (~8.3%)
 - **7400 - Traveling:** Employee traveling allowances/reimbursements
 - **7007 - Employers pensions:** Employer's provident fund/pension contribution (if applicable)
-- **7008 - Employee benefits healthcare:** Company-paid healthcare benefits (if applicable)
+- **7008 - Employee benefits healthcare:** Employer's GESY/healthcare contribution (~2.9%)
 - **7009 - Employee benefits phi life assurance:** Company-paid life insurance (if applicable)
 
 **LIABILITY ACCOUNTS (Always CREDIT):**
-- **2210 - PAYE/NIC:** BOTH employee AND employer social insurance combined (total liability to authorities)
+- **2210 - PAYE/NIC:** ALL SI and GESY combined (Employee SI + Employer SI + Employee GESY + Employer GESY)
 - **2250 - Net wages:** Net salary payable to employees after all deductions
 - **2220 - Income Tax:** Income tax withheld from employee salaries (PAYE) (if applicable)
 - **1150 - Employee advances:** Employee advances recovered from salary (if applicable) (CREDIT when deducted)
 
+**CYPRUS PAYROLL DOCUMENT STRUCTURE:**
+
+**EARNINGS SECTION (Income to employee):**
+- SALARY: Basic monthly salary
+- TRAVELING: Travel allowances (rare in this section)
+- BONUS: Performance/annual bonuses
+- OVERTIME: Overtime payments
+- 13 SALARY/13 ESTIMATE: 13th month salary
+
+**DEDUCTIONS SECTION (Taken FROM employee salary):**
+- ADVANCES/OTHER DEDUCTIONS: Employee advances
+- SPECIAL TAX: Special tax deductions (rare)
+- **GESY:** Employee healthcare contribution (~2.65%) → Part of Account 2210
+- **SOCIAL INS:** Employee social insurance (~8.3%) → Part of Account 2210
+- INCOME TAX/PROV. FUND: Income tax or employee provident fund → Account 2220
+- PROV. FUND: Employee provident fund contribution (if separate)
+
+**CONTRIBUTIONS SECTION (Paid BY employer, NOT deducted from employee):**
+- INDUSTRIAL: Industrial training levy (can be combined with employer SI)
+- **GESY:** Employer healthcare contribution (~2.9%) → Account 7008 (expense) + Account 2210 (liability)
+- **SOCIAL INS:** Employer social insurance (~8.3%) → Account 7006 (expense) + Account 2210 (liability)
+- PROV. FUND/SPECIAL TAX: Employer provident fund → Account 7007 (if applicable)
+- SOC COHESION: Social cohesion fund (can be combined with employer SI)
+- UNEMPLOYM ENT: Unemployment insurance (can be combined with employer SI)
+- REDUNDANCY: Redundancy fund (can be combined with employer SI)
+
+**CRITICAL: GESY and SOCIAL INS appear in BOTH sections but with different accounting treatment:**
+
+**From DEDUCTIONS section:**
+- Employee SI → Part of Account 2210 (liability only, no expense)
+- Employee GESY → Part of Account 2210 (liability only, no expense)
+
+**From CONTRIBUTIONS section:**
+- Employer SI → Account 7006 (DEBIT - expense) AND Account 2210 (CREDIT - liability)
+- Employer GESY → Account 7008 (DEBIT - expense) AND Account 2210 (CREDIT - liability)
+
 **JOURNAL ENTRY STRUCTURE:**
 
 **DEBITS (Expenses recognized):**
-- Account 7000: Total gross salaries
-- Account 7003: Total bonuses (if any)
-- Account 7006: Total employer social insurance contribution
-- Account 7400: Total traveling allowances (if any)
-- Account 7007: Employer pension contributions (if any)
-- Account 7008: Healthcare benefits (if any)
+- Account 7000: Total gross salaries from EARNINGS section
+- Account 7003: Total bonuses from EARNINGS section (if any)
+- Account 7400: Total traveling allowances from EARNINGS section (if any)
+- Account 7006: Employer social insurance from CONTRIBUTIONS section
+- Account 7007: Employer pension contributions from CONTRIBUTIONS section (if any)
+- Account 7008: Employer GESY from CONTRIBUTIONS section
 - Account 7009: Life insurance benefits (if any)
 
 **CREDITS (Liabilities created):**
-- Account 2210: Employee social insurance + Employer social insurance (BOTH combined)
+- Account 2210: Employee SI + Employer SI + Employee GESY + Employer GESY (ALL FOUR COMBINED)
 - Account 2250: Total net wages payable to all employees
-- Account 2220: Total income tax withheld (if any)
-- Account 1150: Employee advances deducted (if any)
+- Account 2220: Total income tax withheld from DEDUCTIONS section (if any)
+- Account 1150: Employee advances from DEDUCTIONS section (if any)
 
 **CRITICAL CALCULATIONS:**
 
-**1. Account 2210 (PAYE/NIC) Calculation:**
+**1. Account 2210 (PAYE/NIC) Calculation - MOST IMPORTANT:**
 ```
-Account 2210 = Employee Social Insurance (deducted) + Employer Social Insurance (expense)
-```
-Example: Employee contribution 92.40 + Employer contribution 66.00 = 158.40 credited to 2210
+Account 2210 = Employee SI (from DEDUCTIONS) + Employer SI (from CONTRIBUTIONS) + Employee GESY (from DEDUCTIONS) + Employer GESY (from CONTRIBUTIONS)
 
-**2. Net Wages Calculation:**
+Example:
+- Employee SI: €87.50 (from DEDUCTIONS section)
+- Employer SI: €92.40 (from CONTRIBUTIONS section)
+- Employee GESY: €0.00 (from DEDUCTIONS section)
+- Employer GESY: €30.45 (from CONTRIBUTIONS section)
+- Account 2210 = €87.50 + €92.40 + €0.00 + €30.45 = €210.35
+```
+
+**2. Account 7006 (Employers n.i.):**
+```
+Account 7006 = Employer Social Insurance (from CONTRIBUTIONS section only)
+This is DEBITED as an expense
+The same amount is also included in Account 2210 (CREDITED as liability)
+```
+
+**3. Account 7008 (Employee benefits healthcare):**
+```
+Account 7008 = Employer GESY (from CONTRIBUTIONS section only)
+This is DEBITED as an expense
+The same amount is also included in Account 2210 (CREDITED as liability)
+```
+
+**4. Net Wages Calculation:**
 ```
 Net Wages = Gross Wages + Allowances/Bonuses - All Employee Deductions
+Employee Deductions = Employee SI + Employee GESY + Income Tax + Advances + Other
+NOTE: Employer contributions do NOT reduce net wages
 ```
-Employee deductions include: social insurance, income tax, pension contributions, advances
-Employer contributions do NOT reduce net wages
 
-**3. Validation Check:**
+**5. Validation Check:**
 ```
 Total Debits MUST EQUAL Total Credits
-Sum of all debits = Sum of all credits
+
+Total Debits = 7000 + 7003 + 7400 + 7006 + 7007 + 7008 + 7009
+Total Credits = 2210 + 2220 + 2250 + 1150
+
+IMPORTANT: Account 2210 will be LARGER than just employee deductions because it includes employer portions too
 ```
 
 **DOCUMENT READING INSTRUCTIONS:**
 
 **Step 1: Identify Document Structure**
-- Look for totals/summary row (usually at bottom)
+- Look for totals/summary row (usually at bottom with "TOTALS" text)
 - Identify sections: EARNINGS, DEDUCTIONS, CONTRIBUTIONS/EMPLOYER
 - Find period information (month, year)
+- Count number of employees (rows before totals)
 
-**Step 2: Extract from TOTALS Row**
-- Extract total gross salaries
-- Extract total bonuses
-- Extract total allowances (traveling, etc.)
-- Extract total employee deductions (social insurance, income tax, etc.)
-- Extract total employer contributions (employer social insurance, pension, etc.)
-- Extract total net wages
+**Step 2: Extract from TOTALS Row ONLY**
+Read ACROSS the totals row under each column header:
 
-**Step 3: Map to Accounts**
-- Gross salary totals → Account 7000
-- Bonus totals → Account 7003
-- Traveling allowance totals → Account 7400
-- Employer social insurance totals → Account 7006
-- Employee social insurance + Employer social insurance → Account 2210
-- Net wages totals → Account 2250
-- Income tax totals → Account 2220
+**From EARNINGS columns:**
+- SALARY column → Account 7000 (Gross wages)
+- BONUS column → Account 7003 (Staff bonus) - if in earnings
+- TRAVELING column → Account 7400 (Traveling)
+- Sum these for total gross earnings
 
-**Step 4: Create Line Items**
-Each line item represents one account in the journal entry with:
-- Account code and name
-- Debit amount (if expense) or 0
-- Credit amount (if liability) or 0
-- Description explaining the line
+**From DEDUCTIONS columns:**
+- SOCIAL INS column → Part of Account 2210 (employee SI portion)
+- GESY column → Part of Account 2210 (employee GESY portion)
+- INCOME TAX column → Account 2220 (Income tax)
+- ADVANCES column → Account 1150 (if present)
+- BONUS column → Account 7003 if shown here (sometimes bonus appears in deductions if pre-paid)
+
+**From CONTRIBUTIONS columns:**
+- SOCIAL INS column → Account 7006 (DEBIT) + part of Account 2210 (CREDIT)
+- GESY column → Account 7008 (DEBIT) + part of Account 2210 (CREDIT)
+- PROV. FUND column → Account 7007 (if applicable)
+- INDUSTRIAL/SOC COHESION/REDUNDANCY → Can be included in Account 7006
+
+**Step 3: Calculate Account 2210 - THIS IS CRITICAL:**
+```
+Step 3a: Find in DEDUCTIONS section:
+  - Employee SI amount
+  - Employee GESY amount
+
+Step 3b: Find in CONTRIBUTIONS section:
+  - Employer SI amount → Also goes to Account 7006 as DEBIT
+  - Employer GESY amount → Also goes to Account 7008 as DEBIT
+
+Step 3c: Add all four amounts:
+  Account 2210 = Employee SI + Employee GESY + Employer SI + Employer GESY
+```
+
+**Step 4: Create Expense Debits:**
+```
+- Account 7000: Total from SALARY column in EARNINGS
+- Account 7003: Total from BONUS (wherever it appears)
+- Account 7006: Employer SI from CONTRIBUTIONS section (also goes to 2210 as credit)
+- Account 7008: Employer GESY from CONTRIBUTIONS section (also goes to 2210 as credit)
+```
+
+**Step 5: Create Liability Credits:**
+```
+- Account 2210: Sum of all four SI/GESY components
+- Account 2220: Income tax from DEDUCTIONS
+- Account 2250: Net wages (gross + allowances - employee deductions)
+```
+
+**Step 6: Verify Balance:**
+```
+Sum all debit_amount values = Total Debits
+Sum all credit_amount values = Total Credits
+These MUST be equal (within 0.01 tolerance for rounding)
+
+Common check:
+7000 + 7003 + 7006 + 7008 = 2210 + 2220 + 2250
+```
 
 **HANDLING DIFFERENT DOCUMENT FORMATS:**
 
@@ -259,20 +366,123 @@ Each line item represents one account in the journal entry with:
 - "Bonus", "Annual Bonus", "Performance Bonus" → Account 7003
 - "Travel Allowance", "Traveling", "Travel Pay" → Account 7400
 
-**Common Column Names for Deductions:**
-- "Social Insurance", "NI", "Social Ins", "Employee SI" → Employee portion for Account 2210
+**Common Column Names for Employee Deductions:**
+- "Social Insurance", "NI", "Social Ins", "Employee SI", "SOCIAL INS" in DEDUCTIONS → Part of Account 2210
+- "GESY", "GHS", "Healthcare", "Health System", "NHS" in DEDUCTIONS → Part of Account 2210
 - "Income Tax", "PAYE", "Tax", "Withholding Tax" → Account 2220
-- "Pension", "Provident Fund", "Employee Pension" → Part of employee deductions
+- "Pension", "Provident Fund", "Employee Pension" in DEDUCTIONS → Part of deductions
 - "Advance", "Loan Recovery", "Employee Advance" → Account 1150
 
 **Common Column Names for Employer Contributions:**
-- "Employer Social Insurance", "Employer NI", "Company SI" → Account 7006
-- "Employer Pension", "Company Pension" → Account 7007
-- "Healthcare", "Health Insurance", "GHS" → Account 7008
+- "Employer Social Insurance", "Employer NI", "Company SI", "SOCIAL INS" in CONTRIBUTIONS → Account 7006 + Account 2210
+- "GESY", "GHS", "Healthcare", "NHS" in CONTRIBUTIONS → Account 7008 + Account 2210
+- "Employer Pension", "Company Pension", "PROV. FUND" in CONTRIBUTIONS → Account 7007
 - "Life Insurance", "Life Assurance" → Account 7009
+- "Industrial", "Training Levy", "SOC COHESION", "Social Cohesion", "REDUNDANCY" → Can combine with Account 7006
+
+**CRITICAL: Distinguishing GESY in different sections:**
+- GESY in **DEDUCTIONS** section (smaller %, ~2.65%) = Employee portion → Goes to Account 2210 only
+- GESY in **CONTRIBUTIONS** section (larger %, ~2.9%) = Employer portion → Goes to Account 7008 (debit) AND Account 2210 (credit)
 
 **Net Pay Identification:**
-- "Net Pay", "Net Wages", "Net Salary", "Take Home" → Account 2250
+- "Net Pay", "Net Wages", "Net Salary", "Take Home", "Total Deduct." → Account 2250
+
+**EXAMPLE WITH ACTUAL CYPRUS DOCUMENT:**
+
+**If TOTALS row shows:**
+```
+EARNINGS section:
+- SALARY: €1,050.00
+- BONUS: €0.00
+- TRAVELING: €0.00
+
+DEDUCTIONS section:
+- ADVANCES: €0.00
+- BONUS: €27.83 (pre-paid bonus deducted)
+- GESY: €0.00 (employee GESY)
+- SOCIAL INS: €87.50 (employee SI)
+- INCOME TAX: €21.00
+
+CONTRIBUTIONS section:
+- GESY: €30.45 (employer GESY)
+- SOCIAL INS: €92.40 (employer SI)
+- PROV. FUND: €0.00
+
+Net Pay shown: €969.33
+```
+
+**Correct Journal Entry:**
+```json
+{{
+  "journal_entry_lines": [
+    {{
+      "account_code": "7000",
+      "account_name": "Gross wages",
+      "description": "Total gross salaries for June 2025",
+      "debit_amount": 1050.00,
+      "credit_amount": 0
+    }},
+    {{
+      "account_code": "7003",
+      "account_name": "Staff bonus",
+      "description": "Total staff bonuses for June 2025",
+      "debit_amount": 27.83,
+      "credit_amount": 0
+    }},
+    {{
+      "account_code": "7006",
+      "account_name": "Employers n.i.",
+      "description": "Employer social insurance contribution (8.3%)",
+      "debit_amount": 92.40,
+      "credit_amount": 0
+    }},
+    {{
+      "account_code": "7008",
+      "account_name": "Employee benefits healthcare",
+      "description": "Employer GESY contribution (2.9%)",
+      "debit_amount": 30.45,
+      "credit_amount": 0
+    }},
+    {{
+      "account_code": "2210",
+      "account_name": "PAYE/NIC",
+      "description": "Total SI and GESY payable (Employee SI 87.50 + Employer SI 92.40 + Employee GESY 0.00 + Employer GESY 30.45)",
+      "debit_amount": 0,
+      "credit_amount": 210.35
+    }},
+    {{
+      "account_code": "2220",
+      "account_name": "Income Tax",
+      "description": "Total income tax withheld (PAYE)",
+      "debit_amount": 0,
+      "credit_amount": 21.00
+    }},
+    {{
+      "account_code": "2250",
+      "account_name": "Net wages",
+      "description": "Total net wages payable to all employees",
+      "debit_amount": 0,
+      "credit_amount": 969.33
+    }}
+  ]
+}}
+
+Verification:
+Total Debits = 1050.00 + 27.83 + 92.40 + 30.45 = 1200.68
+Total Credits = 210.35 + 21.00 + 969.33 = 1200.68 ✓ BALANCED
+```
+
+**Explanation of Account 2210:**
+```
+Account 2210 total: €210.35 breaks down as:
+- Employee SI (from DEDUCTIONS): €87.50
+- Employer SI (from CONTRIBUTIONS): €92.40 (also debited to 7006)
+- Employee GESY (from DEDUCTIONS): €0.00
+- Employer GESY (from CONTRIBUTIONS): €30.45 (also debited to 7008)
+Total: €210.35
+
+This represents the total amount that will be paid to Cyprus Social Insurance Office monthly.
+```
 
 **STRICT FORMATTING RULES:**
 - Text fields: Use empty string "" if not found
@@ -331,58 +541,6 @@ Each line in the journal_entry_lines array must have this exact structure:
   "credit_amount": 0
 }}
 
-**JOURNAL ENTRY LINE EXAMPLES:**
-
-**Expense Lines (Debits):**
-{{
-  "account_code": "7000",
-  "account_name": "Gross wages",
-  "description": "Total gross salaries for June 2025",
-  "debit_amount": 1050.00,
-  "credit_amount": 0
-}}
-
-{{
-  "account_code": "7003",
-  "account_name": "Staff bonus",
-  "description": "Total staff bonuses for June 2025",
-  "debit_amount": 27.83,
-  "credit_amount": 0
-}}
-
-{{
-  "account_code": "7006",
-  "account_name": "Employers n.i.",
-  "description": "Employer social insurance contribution (~8.3%)",
-  "debit_amount": 66.00,
-  "credit_amount": 0
-}}
-
-**Liability Lines (Credits):**
-{{
-  "account_code": "2210",
-  "account_name": "PAYE/NIC",
-  "description": "Total social insurance payable (employee 92.40 + employer 66.00)",
-  "debit_amount": 0,
-  "credit_amount": 158.40
-}}
-
-{{
-  "account_code": "2250",
-  "account_name": "Net wages",
-  "description": "Total net wages payable to all employees",
-  "debit_amount": 0,
-  "credit_amount": 929.77
-}}
-
-{{
-  "account_code": "2220",
-  "account_name": "Income Tax",
-  "description": "Total income tax withheld (PAYE)",
-  "debit_amount": 0,
-  "credit_amount": 50.00
-}}
-
 **VALIDATION REQUIREMENTS:**
 
 **1. Balance Check:**
@@ -390,26 +548,39 @@ Each line in the journal_entry_lines array must have this exact structure:
 - Calculate and report any difference
 - Set debits_equal_credits to true only if difference is 0.00 or within 0.01 tolerance
 
-**2. Account 2210 Verification:**
-- Must include BOTH employee and employer social insurance
-- Verify the sum makes sense relative to gross wages (typically ~17% combined)
+**2. Account 2210 Verification - CRITICAL:**
+- Must include ALL FOUR portions: Employee SI + Employer SI + Employee GESY + Employer GESY
+- Should be approximately 22% of gross wages (8.3% + 8.3% + 2.65% + 2.9% = 22.15%)
+- Account 2210 will be LARGER than just employee deductions because it includes employer portions
 
-**3. Net Wages Verification:**
+**3. Account 7006 Verification:**
+- Must equal Employer SI from CONTRIBUTIONS section
+- Should be approximately 8.3% of gross wages
+- This amount is ALSO included in Account 2210
+
+**4. Account 7008 Verification:**
+- Must equal Employer GESY from CONTRIBUTIONS section
+- Should be approximately 2.9% of gross wages
+- This amount is ALSO included in Account 2210
+
+**5. Net Wages Verification:**
 - Net wages should be less than gross wages
-- Difference should roughly equal total deductions
-- Verify calculation: Gross + Allowances - Deductions = Net
+- Difference should roughly equal total employee deductions (not including employer contributions)
+- Verify: Net = Gross + Allowances - Employee SI - Employee GESY - Income Tax - Other employee deductions
 
-**4. Mandatory Lines:**
+**6. Mandatory Lines:**
 - Must have at least Account 7000 (Gross wages) as debit
 - Must have at least Account 2250 (Net wages) as credit
-- Should have Account 2210 (PAYE/NIC) unless no social insurance applies
+- Should have Account 2210 (PAYE/NIC) unless no SI/GESY applies
+- If Account 7006 exists, its amount must be included in Account 2210
+- If Account 7008 exists, its amount must be included in Account 2210
 
 **DESCRIPTION FIELD:**
 Create a comprehensive description of the payroll run including:
 - Payroll period (month and year)
 - Number of employees
-- Key components (gross wages, bonuses, deductions, net pay)
-- Example: "Payroll for June 2025 - 3 employees: Gross wages €1,050.00, Staff bonus €27.83, Net wages payable €929.77"
+- Key components (gross wages, bonuses, employer contributions, net pay)
+- Example: "Payroll for June 2025 - 3 employees: Gross wages €1,050.00, Staff bonus €27.83, Employer SI €92.40, Employer GESY €30.45, Total PAYE/NIC €210.35, Net wages payable €969.33"
 
 **COMPANY VALIDATION:**
 - Identify company name in the document
@@ -422,21 +593,135 @@ Assess extraction confidence for each category:
 - "medium": Data visible but some ambiguity
 - "low": Data not found, unclear, or estimated
 
+**COMMON MISTAKES TO AVOID:**
+
+1. ❌ **NOT including Employer SI in Account 2210** (it must be included)
+2. ❌ **NOT including Employer GESY in Account 2210** (it must be included)
+3. ❌ **Confusing DEDUCTIONS columns with CONTRIBUTIONS columns**
+4. ❌ **Reading individual employee rows instead of TOTALS row**
+5. ❌ **Misidentifying GESY in contributions as traveling allowance**
+6. ❌ **Missing employer GESY contribution (often just labeled "GESY" in contributions section)**
+7. ❌ **Forgetting to DEBIT Account 7008 when Employer GESY exists**
+8. ❌ **Creating separate journal entries per employee**
+9. ❌ **Including bank/cash accounts in the journal entry**
+10. ❌ **Not including employer portions in Account 2210** (THIS IS THE MOST COMMON MISTAKE)
+
 **ABSOLUTE REQUIREMENTS:**
 1. Every field must be present with appropriate default values
 2. All monetary amounts must be numbers, not strings
 3. Debit amounts go to expense accounts (7xxx)
 4. Credit amounts go to liability accounts (2xxx) or asset reduction (1150)
 5. Total debits must equal total credits
-6. Account 2210 must include both employee and employer contributions
-7. Create exactly ONE consolidated journal entry, not per-employee entries
-8. Never include bank/cash accounts in the payroll journal entry
-9. String fields default to ""
-10. Number fields default to 0
-11. Date fields default to null
-12. Array fields default to []
+6. Account 2210 must include Employee SI + Employer SI + Employee GESY + Employer GESY (all four)
+7. Account 7006 (Employer SI) amount must also be included in Account 2210
+8. Account 7008 (Employer GESY) amount must also be included in Account 2210
+9. Create exactly ONE consolidated journal entry, not per-employee entries
+10. Never include bank/cash accounts in the payroll journal entry
+11. String fields default to ""
+12. Number fields default to 0
+13. Date fields default to null
+14. Array fields default to []
 
-**FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
+**FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}. Ensure Account 2210 includes ALL four portions (Employee SI + Employer SI + Employee GESY + Employer GESY).**"""
+
+
+def validate_cyprus_payroll_structure(payroll_data):
+    """
+    Validate Cyprus-specific payroll structure and calculations
+    Returns issues found and potential corrections
+    """
+    issues = []
+    warnings = []
+    
+    gross_wages = payroll_data.get('total_gross_wages', 0)
+    if gross_wages == 0:
+        return {
+            'issues': ['Cannot validate - gross wages is zero'],
+            'warnings': [],
+            'corrections': []
+        }
+    
+    # Get journal lines
+    lines = payroll_data.get('journal_entry_lines', [])
+    
+    # Find key accounts
+    account_7006 = sum(l.get('debit_amount', 0) for l in lines if l.get('account_code') == '7006')  # Employer SI
+    account_7008 = sum(l.get('debit_amount', 0) for l in lines if l.get('account_code') == '7008')  # Employer GESY
+    account_2210 = sum(l.get('credit_amount', 0) for l in lines if l.get('account_code') == '2210')  # All SI+GESY
+    
+    # Expected calculations
+    expected_employer_si = gross_wages * 0.083
+    expected_employer_gesy = gross_wages * 0.029
+    expected_employee_si = gross_wages * 0.083
+    expected_employee_gesy = gross_wages * 0.0265
+    
+    # Account 2210 should include ALL FOUR portions
+    expected_account_2210 = expected_employee_si + expected_employer_si + expected_employee_gesy + expected_employer_gesy
+    
+    # Validate Employer SI (Account 7006)
+    if account_7006 > 0:
+        si_diff = abs(account_7006 - expected_employer_si)
+        si_percent = (account_7006 / gross_wages * 100) if gross_wages > 0 else 0
+        if si_diff > (expected_employer_si * 0.15):  # Allow 15% variance
+            warnings.append(
+                f"Employer SI (€{account_7006:.2f}, {si_percent:.1f}%) differs from expected "
+                f"~8.3% (€{expected_employer_si:.2f}). Variance: €{si_diff:.2f}"
+            )
+    
+    # Validate Employer GESY (Account 7008)
+    if account_7008 > 0:
+        gesy_diff = abs(account_7008 - expected_employer_gesy)
+        gesy_percent = (account_7008 / gross_wages * 100) if gross_wages > 0 else 0
+        if gesy_diff > (expected_employer_gesy * 0.15):  # Allow 15% variance
+            warnings.append(
+                f"Employer GESY (€{account_7008:.2f}, {gesy_percent:.1f}%) differs from expected "
+                f"~2.9% (€{expected_employer_gesy:.2f}). Variance: €{gesy_diff:.2f}"
+            )
+    
+    # Validate Account 2210 includes all four portions
+    if account_2210 > 0:
+        paye_diff = abs(account_2210 - expected_account_2210)
+        paye_percent = (account_2210 / gross_wages * 100) if gross_wages > 0 else 0
+        
+        # Check if Account 2210 is approximately 22% of gross (all four portions combined)
+        if paye_percent < 18 or paye_percent > 26:  # Allow reasonable range around 22%
+            warnings.append(
+                f"Account 2210 (€{account_2210:.2f}, {paye_percent:.1f}%) differs from expected "
+                f"~22% (€{expected_account_2210:.2f}). Should include Employee SI + Employer SI + Employee GESY + Employer GESY"
+            )
+        
+        # CRITICAL CHECK: Verify Account 2210 includes employer portions
+        total_employer = account_7006 + account_7008
+        if total_employer > 0:
+            # Account 2210 should be at least as large as employer contributions alone
+            if account_2210 < total_employer:
+                issues.append(
+                    f"CRITICAL: Account 2210 (€{account_2210:.2f}) is less than employer contributions "
+                    f"(€{total_employer:.2f}). Account 2210 must include BOTH employee and employer portions."
+                )
+            
+            # Account 2210 should be significantly more than just employer contributions
+            # (it should include employee portions too)
+            if account_2210 < (total_employer * 1.5):
+                warnings.append(
+                    f"Account 2210 (€{account_2210:.2f}) seems low relative to employer contributions "
+                    f"(€{total_employer:.2f}). Verify it includes employee portions too."
+                )
+    
+    # Check if employer contributions exist but Account 2210 is missing
+    total_employer = account_7006 + account_7008
+    if total_employer > 0 and account_2210 == 0:
+        issues.append(
+            f"CRITICAL: Employer contributions exist (€{total_employer:.2f}) but Account 2210 is zero. "
+            f"Account 2210 must include all SI and GESY portions."
+        )
+    
+    return {
+        'issues': issues,
+        'warnings': warnings,
+        'validation_passed': len(issues) == 0
+    }
+
 
 def validate_payroll_data(payroll_data, company_context=None):
     """Validate extracted payroll data for completeness and accuracy"""
@@ -504,11 +789,6 @@ def validate_payroll_data(payroll_data, company_context=None):
     if "2250" not in credit_accounts:
         validation_results["issues"].append("Missing Account 2250 (Net wages) - mandatory credit")
     
-    if "2210" not in credit_accounts:
-        validation_results["warnings"].append(
-            "Missing Account 2210 (PAYE/NIC) - expected for most payrolls"
-        )
-    
     # Validate debits equal credits
     balance_difference = abs(total_debits - total_credits)
     
@@ -520,19 +800,34 @@ def validate_payroll_data(payroll_data, company_context=None):
             f"Difference: {balance_difference:.2f}"
         )
     
-    # Validate social insurance logic (Account 2210)
+    # Cyprus-specific validations
+    cyprus_validation = validate_cyprus_payroll_structure(payroll_data)
+    validation_results["issues"].extend(cyprus_validation.get('issues', []))
+    validation_results["warnings"].extend(cyprus_validation.get('warnings', []))
+    
+    # Validate Account 2210 includes employer contributions
     paye_nic_lines = [line for line in journal_lines if line.get("account_code") == "2210"]
     employer_ni_lines = [line for line in journal_lines if line.get("account_code") == "7006"]
+    employer_gesy_lines = [line for line in journal_lines if line.get("account_code") == "7008"]
     
-    if paye_nic_lines and employer_ni_lines:
+    if paye_nic_lines:
         paye_nic_amount = sum(line.get("credit_amount", 0) for line in paye_nic_lines)
         employer_ni_amount = sum(line.get("debit_amount", 0) for line in employer_ni_lines)
+        employer_gesy_amount = sum(line.get("debit_amount", 0) for line in employer_gesy_lines)
+        total_employer = employer_ni_amount + employer_gesy_amount
         
-        # Account 2210 should include employer contribution
-        if paye_nic_amount < employer_ni_amount:
-            validation_results["warnings"].append(
-                f"Account 2210 ({paye_nic_amount:.2f}) seems low - should include employer NI ({employer_ni_amount:.2f})"
-            )
+        # CRITICAL: Account 2210 must include employer contributions
+        if total_employer > 0:
+            if paye_nic_amount < total_employer:
+                validation_results["issues"].append(
+                    f"CRITICAL: Account 2210 (€{paye_nic_amount:.2f}) is less than employer contributions "
+                    f"(€{total_employer:.2f}). Account 2210 must include Employee SI + Employer SI + Employee GESY + Employer GESY"
+                )
+            elif paye_nic_amount < (total_employer * 1.5):
+                validation_results["warnings"].append(
+                    f"Account 2210 (€{paye_nic_amount:.2f}) seems low relative to employer contributions "
+                    f"(€{total_employer:.2f}). Verify it includes employee portions too."
+                )
     
     # Validate net wages calculation
     gross_wages = payroll_data.get("total_gross_wages", 0)
