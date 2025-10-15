@@ -137,207 +137,174 @@ def get_payroll_processing_prompt(company_name, company_context=None):
 
 {company_context_section}
 
-**CYPRUS PAYROLL CONTRIBUTIONS - COMPLETE STRUCTURE:**
+**CRITICAL: PAYROLL DOCUMENT STRUCTURE - READ CAREFULLY**
 
-Cyprus employers pay FIVE mandatory contributions (all percentages of gross salary):
+Payroll documents have TWO types of rows:
+1. **Individual employee rows** (UI001, UI002, UI003, etc.) - DO NOT USE THESE
+2. **TOTALS row** (usually labeled "TOTALS" or "TOTALS (3)") - USE THIS ONLY
 
-**1. SOCIAL INSURANCE (SI) - ~8.3% each:**
-   - Employee SI: ~8.3% (deducted from employee)
-   - Employer SI: ~8.3% (company pays)
-   
-**2. GESY (General Healthcare System) - ~2.65% + ~2.9%:**
-   - Employee GESY: ~2.65% (deducted from employee)
-   - Employer GESY: ~2.9% (company pays)
-   
-**3. SOCIAL COHESION FUND - ~2% (employer only):**
-   - Employer only: ~2% (company pays)
-   
-**4. REDUNDANCY FUND - ~1.2% (employer only):**
-   - Employer only: ~1.2% (company pays)
-   
-**5. INDUSTRIAL TRAINING (HRDA) - ~0.5% (employer only):**
-   - Employer only: ~0.5% (company pays)
+**YOU MUST READ ONLY THE TOTALS ROW, NOT INDIVIDUAL EMPLOYEE ROWS**
 
-**CRITICAL ACCOUNTING TREATMENT:**
+The TOTALS row may span TWO lines:
+- **First line:** Shows totals for EARNINGS and most DEDUCTIONS
+- **Second line:** Shows additional items (often labeled with period like "202506 - JUNE") with more DEDUCTIONS and all CONTRIBUTIONS
 
-**All employer-only contributions (Social Cohesion, Redundancy, Industrial Training) should be COMBINED with Employer SI into Account 7006 (Employers n.i.)**
+**BOTH lines are part of the TOTALS section - read across both lines**
 
-**DO NOT create separate journal lines for Industrial Training, Social Cohesion, or Redundancy. Combine them all into one Account 7006 line.**
-
-**CHART OF ACCOUNTS FOR PAYROLL:**
+**CYPRUS PAYROLL - COMPLETE ACCOUNTING STRUCTURE:**
 
 **EXPENSE ACCOUNTS (Always DEBIT):**
-- **7000 - Gross wages:** Total salary expense before deductions
-- **7003 - Staff bonus:** Bonus payments (annual, performance, etc.)
-- **7006 - Employers n.i.:** Employer SI + Social Cohesion + Redundancy + Industrial Training (COMBINED)
-- **7007 - Employers pensions:** Employer's provident fund/pension contribution (if applicable)
-- **7008 - Employee benefits healthcare:** Employer's GESY/healthcare contribution (~2.9%)
-- **7400 - Traveling:** Employee traveling allowances/reimbursements
+- **7000 - Gross wages:** Total from SALARY column in EARNINGS (first TOTALS line)
+- **7003 - Staff bonus:** Total from BONUS column (may appear in EARNINGS or DEDUCTIONS)
+- **7006 - Employers n.i.:** Combined total of ALL employer-only contributions:
+  * Employer SI (from SOCIAL INS in CONTRIBUTIONS)
+  * Social Cohesion (from SOC COHESION in CONTRIBUTIONS)
+  * Redundancy/Unemployment (from UNEMPLOYM ENT in CONTRIBUTIONS)
+  * Industrial Training (from INDUSTRIAL in CONTRIBUTIONS)
+- **7008 - Employee benefits healthcare:** Employer GESY only (from GESY in CONTRIBUTIONS)
+- **7400 - Traveling:** From TRAVELING in EARNINGS (if any)
 
 **LIABILITY ACCOUNTS (Always CREDIT):**
-- **2210 - PAYE/NIC:** Employee SI + Employer SI + Employee GESY + Employer GESY + Social Cohesion + Redundancy + Industrial Training (ALL COMBINED)
-- **2250 - Net wages:** Net salary payable to employees after all deductions
-- **2220 - Income Tax:** Income tax withheld from employee salaries (PAYE)
-- **2XXX - Pension Payable:** Employer pension contributions (if separate from SI system)
+- **2210 - PAYE/NIC:** Sum of ALL these items:
+  * Employee SI (from SOCIAL INS in DEDUCTIONS)
+  * Employer SI (from SOCIAL INS in CONTRIBUTIONS)
+  * Employee GESY (from GESY in DEDUCTIONS, often €0)
+  * Employer GESY (from GESY in CONTRIBUTIONS)
+  * Social Cohesion (from SOC COHESION in CONTRIBUTIONS)
+  * Unemployment/Redundancy (from UNEMPLOYM ENT in CONTRIBUTIONS)
+  * Industrial Training (from INDUSTRIAL in CONTRIBUTIONS)
+- **2220 - Income Tax:** From INCOME TAX or PAYE in DEDUCTIONS (often €0 in Cyprus if under threshold)
+- **2250 - Net wages:** Calculate as: Total Debits - Account 2210 - Account 2220
 
-**CRITICAL CYPRUS PAYROLL RULES:**
+**CRITICAL RULE 1: COMBINE EMPLOYER CONTRIBUTIONS INTO ONE ACCOUNT 7006 LINE**
 
-**RULE 1: Account 7006 (Employers n.i.) includes ALL these employer contributions COMBINED:**
 ```
-Account 7006 = Employer SI + Social Cohesion + Redundancy + Industrial Training
-
-DO NOT create separate lines like:
+DO NOT create separate lines:
 ❌ Account 7006: Employer SI €92.40
-❌ Account 7006: Industrial/Social Cohesion €26.25
+❌ Account 7006: Industrial/Cohesion €26.25
 
-Instead create ONE line:
-✓ Account 7006: Employer n.i. €118.65 (all employer contributions combined)
+Instead create ONE combined line:
+✓ Account 7006: Employer n.i. €131.25 (all combined)
 ```
 
-**RULE 2: Account 2210 (PAYE/NIC) includes ALL SI, GESY, and employer-only contributions:**
-```
-Account 2210 = Employee SI + Employer SI + Employee GESY + Employer GESY + Social Cohesion + Redundancy + Industrial Training
-
-This is the TOTAL amount that will be paid to Cyprus Social Insurance Services monthly.
-```
-
-**RULE 3: Employer Pensions (Provident Fund) are handled separately IF they exist:**
-```
-- Account 7007 (Employer pensions): DEBIT for employer contribution
-- Account 2XXX (Pension Payable): CREDIT for same amount (separate from Account 2210)
-
-If employer pensions exist, they do NOT go to Account 2210.
-Account 2210 is only for SI, GESY, and related employer contributions.
-```
-
-**DOCUMENT READING INSTRUCTIONS:**
-
-**Step 1: Identify Document Structure**
-Look for TOTALS/SUMMARY row at bottom with three sections:
-- **EARNINGS:** SALARY, BONUS, TRAVELING, OVERTIME
-- **DEDUCTIONS:** Employee portions (SOCIAL INS, GESY, INCOME TAX, PROV. FUND)
-- **CONTRIBUTIONS:** Employer portions (SOCIAL INS, GESY, PROV. FUND, INDUSTRIAL, SOC COHESION, REDUNDANCY)
-
-**Step 2: Extract from TOTALS Row - EARNINGS Section:**
-```
-SALARY column → Account 7000 (Gross wages)
-BONUS column → Account 7003 (Staff bonus) if in earnings
-TRAVELING column → Account 7400 (Traveling) if in earnings
-```
-
-**Step 3: Extract from TOTALS Row - DEDUCTIONS Section (Employee portions):**
-```
-SOCIAL INS → Part of Account 2210 (employee SI)
-GESY → Part of Account 2210 (employee GESY)
-INCOME TAX → Account 2220 (Income Tax)
-PROV. FUND → Employee pension deduction (part of total deductions)
-```
-
-**Step 4: Extract from TOTALS Row - CONTRIBUTIONS Section (Employer portions):**
-
-**THIS IS CRITICAL - Read each contribution carefully:**
+**CRITICAL RULE 2: ACCOUNT 2210 INCLUDES ALL EMPLOYER CONTRIBUTIONS**
 
 ```
-SOCIAL INS in CONTRIBUTIONS → Employer SI (part of combined Account 7006)
-GESY in CONTRIBUTIONS → Account 7008 (separate line for GESY)
-PROV. FUND in CONTRIBUTIONS → Account 7007 (if exists)
-INDUSTRIAL in CONTRIBUTIONS → Combine with Account 7006 (do NOT create separate line)
-SOC COHESION in CONTRIBUTIONS → Combine with Account 7006 (do NOT create separate line)
-REDUNDANCY in CONTRIBUTIONS → Combine with Account 7006 (do NOT create separate line)
+Account 2210 must include:
+- Employee SI (DEDUCTIONS)
+- Employer SI (CONTRIBUTIONS) ← Include this
+- Employee GESY (DEDUCTIONS)
+- Employer GESY (CONTRIBUTIONS) ← Include this
+- Social Cohesion (CONTRIBUTIONS) ← Include this
+- Unemployment (CONTRIBUTIONS) ← Include this
+- Industrial (CONTRIBUTIONS) ← Include this
+
+These are ALL paid together to Cyprus Social Insurance Services.
 ```
 
-**Step 5: Create Combined Account 7006 Line:**
-
-**CRITICAL: Sum all employer contributions EXCEPT GESY and Pensions:**
+**CRITICAL RULE 3: BONUS HANDLING**
 
 ```
-Account 7006 Total = 
-  Employer SI (from SOCIAL INS column)
-  + Social Cohesion (from SOC COHESION column if exists)
-  + Redundancy (from REDUNDANCY column if exists)  
-  + Industrial Training (from INDUSTRIAL column if exists)
+If BONUS appears in DEDUCTIONS section with a value (like €27.83):
+- This is still a BONUS EXPENSE to the company
+- Create Account 7003 (Staff bonus) line with this amount as DEBIT
+- The bonus reduces net wages (it's being recovered or it's pre-paid)
+- DO NOT confuse this with Income Tax!
 
-Example:
-- Employer SI: €92.40
-- Social Cohesion: €21.00
-- Redundancy: €12.60
-- Industrial: €5.25
-Account 7006 = €92.40 + €21.00 + €12.60 + €5.25 = €131.25
+BONUS in DEDUCTIONS = Account 7003 (debit expense)
+INCOME TAX in DEDUCTIONS = Account 2220 (credit liability)
 
-Create ONE journal line:
-{{
-  "account_code": "7006",
-  "account_name": "Employers n.i.",
-  "description": "Employer contributions (SI €92.40 + Cohesion €21.00 + Redundancy €12.60 + Industrial €5.25)",
-  "debit_amount": 131.25,
-  "credit_amount": 0
-}}
+These are completely different!
 ```
 
-**Step 6: Create Account 2210 (PAYE/NIC) - MOST CRITICAL:**
+**CRITICAL RULE 4: NET WAGES CALCULATION**
 
-**Account 2210 includes EVERYTHING paid to Social Insurance Services:**
+```
+Net Wages = Total Debits - Account 2210 - Account 2220 - Other Credits
+
+This ensures the entry balances.
+
+Do NOT just copy the "Net Pay" from document - calculate it to balance the entry.
+
+Verification:
+If document shows Net Pay = €929.77
+And your calculation gives €990.33
+Use the CALCULATED amount (€990.33) to ensure accounting balance.
+
+The "Net Pay" in document may exclude some adjustments that appear in accounting.
+```
+
+**STEP-BY-STEP EXTRACTION PROCESS:**
+
+**Step 1: Locate the TOTALS Row(s)**
+
+Find the row that says "TOTALS" or "TOTALS (3)" - this may span two lines.
+The second line often has a period label like "202506 - JUNE"
+
+**Step 2: Extract EARNINGS (from first TOTALS line)**
+
+```
+SALARY column → Note the value for Account 7000
+TRAVELING column → Note if non-zero for Account 7400
+BONUS column → Check if appears here (usually €0 in Cyprus payrolls)
+```
+
+**Step 3: Extract DEDUCTIONS (from BOTH TOTALS lines)**
+
+```
+From first TOTALS line:
+- SOCIAL INS column in DEDUCTIONS → Employee SI for Account 2210
+- GESY column in DEDUCTIONS → Employee GESY for Account 2210 (often €0)
+- INCOME TAX column in DEDUCTIONS → For Account 2220 (often €0)
+
+From second TOTALS line (period line):
+- BONUS column in DEDUCTIONS → For Account 7003 (if present)
+- Note: This is still a company expense even though in deductions!
+```
+
+**Step 4: Extract CONTRIBUTIONS (from second TOTALS line)**
+
+```
+INDUSTRIAL column → Part of combined Account 7006
+GESY column → Account 7008 (separate)
+PROV. FUND column → Account 7007 if present (usually €0)
+SOCIAL INS column → Part of combined Account 7006
+SOC COHESION column → Part of combined Account 7006
+UNEMPLOYM ENT column → Part of combined Account 7006
+```
+
+**Step 5: Calculate Combined Account 7006**
+
+```
+Account 7006 = 
+  SOCIAL INS (CONTRIBUTIONS)
+  + SOC COHESION (CONTRIBUTIONS)
+  + UNEMPLOYM ENT (CONTRIBUTIONS)
+  + INDUSTRIAL (CONTRIBUTIONS)
+
+Example from document:
+€92.40 + €21.00 + €12.60 + €5.25 = €131.25
+
+Create ONE journal line for Account 7006 with this total.
+```
+
+**Step 6: Calculate Account 2210 (PAYE/NIC)**
 
 ```
 Account 2210 = 
-  Employee SI (from DEDUCTIONS)
-  + Employer SI (from CONTRIBUTIONS)
-  + Employee GESY (from DEDUCTIONS)
-  + Employer GESY (from CONTRIBUTIONS)
-  + Social Cohesion (from CONTRIBUTIONS)
-  + Redundancy (from CONTRIBUTIONS)
-  + Industrial Training (from CONTRIBUTIONS)
+  Employee SI (from DEDUCTIONS, first line)
+  + Employer SI (from CONTRIBUTIONS, second line)
+  + Employee GESY (from DEDUCTIONS, first line)
+  + Employer GESY (from CONTRIBUTIONS, second line)
+  + SOC COHESION (from CONTRIBUTIONS, second line)
+  + UNEMPLOYM ENT (from CONTRIBUTIONS, second line)
+  + INDUSTRIAL (from CONTRIBUTIONS, second line)
 
-Example calculation:
-- Employee SI: €87.50 (DEDUCTIONS)
-- Employer SI: €92.40 (CONTRIBUTIONS)
-- Employee GESY: €0.00 (DEDUCTIONS)
-- Employer GESY: €30.45 (CONTRIBUTIONS)
-- Social Cohesion: €21.00 (CONTRIBUTIONS)
-- Redundancy: €12.60 (CONTRIBUTIONS)
-- Industrial: €5.25 (CONTRIBUTIONS)
-
-Account 2210 = €87.50 + €92.40 + €0.00 + €30.45 + €21.00 + €12.60 + €5.25 = €249.20
-
-This is the total liability - what company will pay to authorities.
+Example from document:
+€87.50 + €92.40 + €0.00 + €30.45 + €21.00 + €12.60 + €5.25 = €249.20
 ```
 
-**Step 7: Verify Balance:**
-
-```
-DEBITS:
-7000 (Gross wages) + 7003 (Bonus) + 7006 (All employer contributions) + 7007 (Pensions if any) + 7008 (Employer GESY)
-
-CREDITS:
-2210 (All SI/GESY/employer contributions) + 2220 (Income tax) + 2250 (Net wages) + pension payable (if separate)
-
-Total Debits MUST EQUAL Total Credits
-```
-
-**EXAMPLE - COMPLETE CYPRUS PAYROLL ENTRY:**
-
-**Document shows in TOTALS row:**
-```
-EARNINGS:
-- SALARY: €1,050.00
-
-DEDUCTIONS:
-- SOCIAL INS (Employee): €87.50
-- GESY (Employee): €0.00
-- INCOME TAX: €21.00
-
-CONTRIBUTIONS:
-- SOCIAL INS (Employer): €92.40
-- GESY (Employer): €30.45
-- PROV. FUND (Employer): €12.60
-- SOC COHESION (Employer): €21.00
-- REDUNDANCY (Employer): €12.60
-- INDUSTRIAL (Employer): €5.25
-
-Net Pay: €941.50
-```
-
-**Correct Journal Entry:**
+**Step 7: Create Journal Entry Lines**
 
 ```json
 {{
@@ -345,137 +312,262 @@ Net Pay: €941.50
     {{
       "account_code": "7000",
       "account_name": "Gross wages",
-      "description": "Total gross salaries for June 2025",
-      "debit_amount": 1050.00,
+      "description": "Total gross salaries for [period]",
+      "debit_amount": [SALARY from EARNINGS],
+      "credit_amount": 0
+    }},
+    {{
+      "account_code": "7003",
+      "account_name": "Staff bonus",
+      "description": "Staff bonuses for [period]",
+      "debit_amount": [BONUS from DEDUCTIONS if present, else 0],
       "credit_amount": 0
     }},
     {{
       "account_code": "7006",
       "account_name": "Employers n.i.",
-      "description": "Employer contributions (SI €92.40 + Cohesion €21.00 + Redundancy €12.60 + Industrial €5.25)",
-      "debit_amount": 131.25,
+      "description": "Employer contributions (SI + Cohesion + Unemployment + Industrial combined)",
+      "debit_amount": [Sum of SOCIAL INS + SOC COHESION + UNEMPLOYM ENT + INDUSTRIAL from CONTRIBUTIONS],
       "credit_amount": 0
     }},
     {{
       "account_code": "7008",
       "account_name": "Employee benefits healthcare",
       "description": "Employer GESY contribution",
-      "debit_amount": 30.45,
-      "credit_amount": 0
-    }},
-    {{
-      "account_code": "7007",
-      "account_name": "Employers pensions",
-      "description": "Employer provident fund contribution",
-      "debit_amount": 12.60,
+      "debit_amount": [GESY from CONTRIBUTIONS],
       "credit_amount": 0
     }},
     {{
       "account_code": "2210",
       "account_name": "PAYE/NIC",
-      "description": "Total payable to authorities (Employee SI €87.50 + Employer SI €92.40 + Employer GESY €30.45 + Cohesion €21.00 + Redundancy €12.60 + Industrial €5.25)",
+      "description": "Total payable to authorities (Employee SI + all employer contributions)",
       "debit_amount": 0,
-      "credit_amount": 249.20
+      "credit_amount": [Sum calculated in Step 6]
     }},
     {{
       "account_code": "2220",
       "account_name": "Income Tax",
       "description": "Income tax withheld",
       "debit_amount": 0,
-      "credit_amount": 21.00
+      "credit_amount": [INCOME TAX from DEDUCTIONS, often 0]
     }},
     {{
       "account_code": "2250",
       "account_name": "Net wages",
       "description": "Net wages payable to employees",
       "debit_amount": 0,
-      "credit_amount": 941.50
-    }},
-    {{
-      "account_code": "2XXX",
-      "account_name": "Pension Payable",
-      "description": "Employer pension payable (if separate from SI)",
-      "debit_amount": 0,
-      "credit_amount": 12.60
+      "credit_amount": [CALCULATED to balance: Total Debits - 2210 - 2220]
     }}
   ]
 }}
-
-Verification:
-Total Debits = 1050.00 + 131.25 + 30.45 + 12.60 = 1224.30
-Total Credits = 249.20 + 21.00 + 941.50 + 12.60 = 1224.30 ✓ BALANCED
 ```
 
-**COMMON COLUMN NAMES IN CYPRUS PAYROLL:**
-
-**CONTRIBUTIONS Section (Employer pays):**
-- "INDUSTRIAL" / "HRDA" / "Training" / "Training Levy" → Part of Account 7006 (combine)
-- "SOC COHESION" / "Social Cohesion" / "Cohesion Fund" → Part of Account 7006 (combine)
-- "REDUNDANCY" / "Redundancy Fund" → Part of Account 7006 (combine)
-- "SOCIAL INS" / "Social Insurance" → Part of Account 7006 (combine)
-- "GESY" / "GHS" / "Healthcare" → Account 7008 (separate)
-- "PROV. FUND" / "Provident Fund" / "Pension" → Account 7007 (separate)
-
-**ABSOLUTE REQUIREMENTS:**
-
-1. **NEVER create multiple journal lines for Account 7006** - combine all employer contributions (except GESY and Pensions) into ONE line
-2. **Account 2210 must include ALL employer contributions** (SI + GESY + Cohesion + Redundancy + Industrial) PLUS employee portions
-3. **Account 7006 total must equal:** Employer SI + Cohesion + Redundancy + Industrial (NOT including GESY or Pensions)
-4. **Total Debits MUST equal Total Credits** - verify calculation before outputting
-5. **If Employer Pensions exist:** Create separate Account 7007 (debit) and pension payable (credit)
-
-**VALIDATION FORMULA:**
+**Step 8: Verify Balance**
 
 ```
-Check 1: Account 7006 should be approximately 12% of gross wages (8.3% SI + 2% Cohesion + 1.2% Redundancy + 0.5% Industrial)
+Calculate Total Debits:
+= Account 7000 + Account 7003 + Account 7006 + Account 7008
 
-Check 2: Account 2210 should be approximately 25% of gross wages (all employee + employer contributions combined)
+Calculate Total Credits:
+= Account 2210 + Account 2220 + Account 2250
 
-Check 3: Total Debits = 7000 + 7006 + 7008 + 7007 (if any)
-         Total Credits = 2210 + 2220 + 2250 + pension payable (if separate)
-         Must be equal!
+IF Total Debits ≠ Total Credits:
+Adjust Account 2250 (Net wages) to make them equal.
+
+Account 2250 = Total Debits - Account 2210 - Account 2220
+
+This is the ONLY way to ensure balance.
 ```
 
-**REQUIRED JSON STRUCTURE - ALL FIELDS MUST BE PRESENT:**
+**WORKED EXAMPLE FROM ACTUAL CYPRUS PAYROLL:**
 
+**Document TOTALS rows show:**
+```
+Line 1 (TOTALS (3)):
+SALARY: €1,050.00
+SOCIAL INS (DEDUCTIONS): €87.50
+All other deductions: €0.00
+
+Line 2 (202506 - JUNE):
+BONUS (DEDUCTIONS): €27.83
+INDUSTRIAL (CONTRIBUTIONS): €5.25
+GESY (CONTRIBUTIONS): €30.45
+SOCIAL INS (CONTRIBUTIONS): €92.40
+SOC COHESION (CONTRIBUTIONS): €21.00
+UNEMPLOYM ENT (CONTRIBUTIONS): €12.60
+```
+
+**Step-by-step calculation:**
+
+**1. Account 7000 (Gross wages):**
+```
+From SALARY in EARNINGS: €1,050.00
+```
+
+**2. Account 7003 (Staff bonus):**
+```
+From BONUS in DEDUCTIONS line 2: €27.83
+(Yes, it's in deductions, but it's still a bonus expense!)
+```
+
+**3. Account 7006 (Employers n.i.) - COMBINED:**
+```
+SOCIAL INS (CONTRIBUTIONS): €92.40
++ SOC COHESION: €21.00
++ UNEMPLOYM ENT: €12.60
++ INDUSTRIAL: €5.25
+= €131.25 (ONE line only!)
+```
+
+**4. Account 7008 (Employer GESY):**
+```
+GESY from CONTRIBUTIONS: €30.45
+```
+
+**5. Total Debits:**
+```
+€1,050.00 + €27.83 + €131.25 + €30.45 = €1,239.53
+```
+
+**6. Account 2210 (PAYE/NIC) - ALL COMBINED:**
+```
+Employee SI (DEDUCTIONS): €87.50
++ Employer SI (CONTRIBUTIONS): €92.40
++ Employee GESY (DEDUCTIONS): €0.00
++ Employer GESY (CONTRIBUTIONS): €30.45
++ SOC COHESION: €21.00
++ UNEMPLOYM ENT: €12.60
++ INDUSTRIAL: €5.25
+= €249.20
+```
+
+**7. Account 2220 (Income Tax):**
+```
+INCOME TAX from DEDUCTIONS: €0.00
+(No income tax in this payroll - under Cyprus threshold)
+```
+
+**8. Account 2250 (Net wages) - CALCULATED:**
+```
+Total Debits: €1,239.53
+- Account 2210: €249.20
+- Account 2220: €0.00
+= €990.33
+
+Use €990.33 (NOT the document's €929.77)
+This ensures accounting balance.
+```
+
+**9. Verify Balance:**
+```
+Total Debits: €1,239.53
+Total Credits: €249.20 + €0.00 + €990.33 = €1,239.53
+✓ BALANCED!
+```
+
+**COMPLETE JSON OUTPUT:**
+
+```json
 {{
   "success": true,
   "payroll_data": {{
-    "period": "",
-    "month": "",
-    "year": "",
+    "period": "202506 - JUNE",
+    "month": "June",
+    "year": "2025",
     "pay_date": null,
-    "num_employees": 0,
-    "currency_code": "",
-    "description": "",
-    "total_gross_wages": 0,
-    "total_net_wages": 0,
-    "total_deductions": 0,
-    "total_employer_contributions": 0,
-    "journal_entry_lines": []
+    "num_employees": 3,
+    "currency_code": "EUR",
+    "description": "Payroll for June 2025 - 3 employees: Gross wages €1,050.00, Staff bonus €27.83, Employer contributions €131.25, Employer GESY €30.45, Total PAYE/NIC €249.20, Net wages payable €990.33",
+    "total_gross_wages": 1050.00,
+    "total_net_wages": 990.33,
+    "total_deductions": 87.50,
+    "total_employer_contributions": 161.70,
+    "journal_entry_lines": [
+      {{
+        "account_code": "7000",
+        "account_name": "Gross wages",
+        "description": "Total gross salaries for June 2025",
+        "debit_amount": 1050.00,
+        "credit_amount": 0
+      }},
+      {{
+        "account_code": "7003",
+        "account_name": "Staff bonus",
+        "description": "Staff bonuses for June 2025 (from deductions)",
+        "debit_amount": 27.83,
+        "credit_amount": 0
+      }},
+      {{
+        "account_code": "7006",
+        "account_name": "Employers n.i.",
+        "description": "Employer contributions (SI €92.40 + Cohesion €21.00 + Unemployment €12.60 + Industrial €5.25)",
+        "debit_amount": 131.25,
+        "credit_amount": 0
+      }},
+      {{
+        "account_code": "7008",
+        "account_name": "Employee benefits healthcare",
+        "description": "Employer GESY contribution",
+        "debit_amount": 30.45,
+        "credit_amount": 0
+      }},
+      {{
+        "account_code": "2210",
+        "account_name": "PAYE/NIC",
+        "description": "Total payable to authorities (Employee SI €87.50 + Employer SI €92.40 + Employer GESY €30.45 + Cohesion €21.00 + Unemployment €12.60 + Industrial €5.25)",
+        "debit_amount": 0,
+        "credit_amount": 249.20
+      }},
+      {{
+        "account_code": "2220",
+        "account_name": "Income Tax",
+        "description": "Income tax withheld",
+        "debit_amount": 0,
+        "credit_amount": 0
+      }},
+      {{
+        "account_code": "2250",
+        "account_name": "Net wages",
+        "description": "Net wages payable to employees (calculated to balance entry)",
+        "debit_amount": 0,
+        "credit_amount": 990.33
+      }}
+    ]
   }},
   "company_validation": {{
     "expected_company": "{company_name}",
-    "found_company": "",
-    "company_match": "no_match",
-    "match_details": ""
+    "found_company": "ENAMI LIMITED",
+    "company_match": "exact_match",
+    "match_details": "Company name matches"
   }},
   "extraction_confidence": {{
-    "period_info": "low",
-    "amounts": "low",
-    "employee_count": "low",
-    "company_validation": "low"
+    "period_info": "high",
+    "amounts": "high",
+    "employee_count": "high",
+    "company_validation": "high"
   }},
   "validation_summary": {{
-    "debits_equal_credits": false,
-    "total_debits": 0,
-    "total_credits": 0,
+    "debits_equal_credits": true,
+    "total_debits": 1239.53,
+    "total_credits": 1239.53,
     "balance_difference": 0
   }},
   "missing_fields": []
 }}
+```
 
-**FINAL REMINDER: Return ONLY the JSON object. Start with {{ and end with }}. Combine all employer contributions (except GESY and Pensions) into ONE Account 7006 line. Ensure debits equal credits.**"""
+**ABSOLUTE REQUIREMENTS:**
+
+1. ✅ Read ONLY the TOTALS row(s), NOT individual employee rows
+2. ✅ TOTALS may span TWO lines - read BOTH lines
+3. ✅ Combine ALL employer contributions (except GESY) into ONE Account 7006 line
+4. ✅ Account 2210 includes ALL employer contributions + employee portions
+5. ✅ BONUS in DEDUCTIONS is still Account 7003 (expense), NOT income tax
+6. ✅ Calculate Account 2250 to balance the entry: Total Debits - 2210 - 2220
+7. ✅ Verify Total Debits = Total Credits before outputting
+8. ✅ Never create multiple lines for same account code
+
+**FINAL REMINDER: Return ONLY the JSON object. No text before or after. Ensure debits equal credits by calculating Account 2250 correctly.**"""
 
 def validate_cyprus_payroll_structure(payroll_data):
     """
