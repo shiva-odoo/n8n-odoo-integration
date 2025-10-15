@@ -217,8 +217,9 @@ def format_company_data_for_business_system(company):
         "city": None,
         "zip": None,
         "state": None,
-        "country_code": "IN",
-        "currency_code": "INR"
+        "country_code": "CY",
+        "currency_code": "EUR",
+        "is_vat_registered": company.get("is_vat_registered"),
     }
     
     return company_data

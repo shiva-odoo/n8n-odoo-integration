@@ -11,6 +11,53 @@ if os.path.exists('.env'):
     except ImportError:
         pass  # dotenv not installed, use system env vars
 
+def debug_list_company_taxes(company_id):
+    """
+    DEBUG FUNCTION: List all taxes for a company to see what actually exists
+    This helps identify the exact tax names and structures in Odoo
+    """
+    url = os.getenv("ODOO_URL")
+    db = os.getenv("ODOO_DB")
+    username = os.getenv("ODOO_USERNAME")
+    password = os.getenv("ODOO_API_KEY")
+    
+    try:
+        common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
+        models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
+        
+        uid = common.authenticate(db, username, password, {})
+        if not uid:
+            return {'success': False, 'error': 'Authentication failed'}
+        
+        # Get all taxes for this company
+        taxes = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search_read',
+            [[('company_id', '=', company_id)]], 
+            {'fields': ['id', 'name', 'amount', 'amount_type', 'type_tax_use'], 'order': 'name'}
+        )
+        
+        print("\n" + "="*80)
+        print(f"TAXES FOR COMPANY ID {company_id}:")
+        print("="*80)
+        for tax in taxes:
+            print(f"ID: {tax['id']:4d} | Name: {tax['name']:40s} | Type: {tax['amount_type']:10s} | Amount: {tax.get('amount', 0):6.2f}% | Use: {tax['type_tax_use']}")
+        print("="*80 + "\n")
+        
+        return {
+            'success': True,
+            'company_id': company_id,
+            'taxes': taxes,
+            'count': len(taxes)
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
 def main(data):
     """
     Create company from HTTP request data following Odoo documentation
@@ -30,7 +77,6 @@ def main(data):
     data['country_code'] = country_code
     data['currency_code'] = currency_code
     
-    # ==================== FIX STARTS HERE ====================
     # Handle VAT number: Normalize it, and if it's empty OR a hyphen, set it to '/'
     vat_input = data.get('vat', '').strip().upper()
 
@@ -45,7 +91,6 @@ def main(data):
         # If no VAT is provided, it's just whitespace, OR it's a hyphen, set it to '/'
         print(f"Input VAT was '{data.get('vat')}', setting field to '/' for Odoo.")
         data['vat'] = '/'
-    # ===================== FIX ENDS HERE =====================
 
     # Odoo connection details
     url = os.getenv("ODOO_URL")
@@ -186,6 +231,30 @@ def main(data):
         else:
             print(f"Journal creation issue: {journals_result.get('error', 'Unknown error')}")
 
+        # Configure taxes based on VAT registration status
+        # Wait for taxes to be created by chart of accounts
+        is_vat_registered = data.get('is_vat_registered', 'no')
+        print(f"\nWaiting for taxes to be created before configuration...")
+        print(f"VAT registration status: {is_vat_registered}")
+        
+        tax_ready = wait_for_taxes_to_exist(models, db, uid, password, company_id, max_wait_time=60)
+        
+        if tax_ready['success']:
+            print(f"Taxes are ready! Found {tax_ready['tax_count']} taxes")
+            tax_config_result = configure_taxes_for_company(models, db, uid, password, company_id, is_vat_registered)
+            if tax_config_result['success']:
+                print(f"Tax configuration completed successfully")
+                for update in tax_config_result.get('updates', []):
+                    if update.get('success'):
+                        print(f"  ✓ {update.get('message', 'Update completed')}")
+                    else:
+                        print(f"  ✗ {update.get('error', 'Update failed')}")
+            else:
+                print(f"Tax configuration warning: {tax_config_result.get('error')}")
+        else:
+            print(f"Warning: Taxes not ready yet - {tax_ready['message']}")
+            tax_config_result = {'success': False, 'error': tax_ready['message']}
+
         safe_read_fields = [
             'name', 'email', 'phone', 'website', 'vat', 'company_registry',
             'currency_id', 'country_id', 'street', 'city', 'zip'
@@ -224,6 +293,16 @@ def main(data):
         else:
             response['journal_warning'] = journals_result['error']
         
+        # Add tax configuration results to response
+        if tax_config_result['success']:
+            response['tax_configuration'] = {
+                'vat_registered': is_vat_registered,
+                'updates': tax_config_result.get('updates', [])
+            }
+            response['message'] += f' and configured taxes for VAT registration: {is_vat_registered}'
+        else:
+            response['tax_configuration_warning'] = tax_config_result.get('error')
+        
         if currency_warning:
             response['currency_warning'] = currency_warning
         
@@ -254,8 +333,89 @@ def main(data):
             'success': False,
             'error': f'Unexpected error: {str(e)}'
         }
-# --- All other functions (create_custom_accounts, wait_for_chart_of_accounts, etc.) remain unchanged ---
-# --- Paste them below this line if you are replacing the entire file ---
+    
+def wait_for_taxes_to_exist(models, db, uid, password, company_id, max_wait_time=60, check_interval=5):
+    """
+    Wait for taxes to be created by the chart of accounts installation
+    Checks for the existence of key taxes like 19%, 19% S, and 19% RC
+    """
+    start_time = time.time()
+    required_taxes = ['19%', '19% S', '19% RC']
+    min_tax_count = 10  # Should have at least 10 taxes when chart is installed
+    
+    print(f"Waiting for taxes to be created (max {max_wait_time} seconds)...")
+    
+    while time.time() - start_time < max_wait_time:
+        try:
+            # Count total taxes for this company
+            tax_count = models.execute_kw(
+                db, uid, password,
+                'account.tax', 'search_count',
+                [[('company_id', '=', company_id)]]
+            )
+            
+            print(f"Found {tax_count} taxes for company {company_id}")
+            
+            if tax_count >= min_tax_count:
+                # Check if our required taxes exist
+                found_taxes = {}
+                for tax_name in required_taxes:
+                    tax_ids = models.execute_kw(
+                        db, uid, password,
+                        'account.tax', 'search',
+                        [[('name', '=', tax_name), ('company_id', '=', company_id)]],
+                        {'limit': 5}
+                    )
+                    found_taxes[tax_name] = len(tax_ids)
+                    print(f"  - Tax '{tax_name}': found {len(tax_ids)} instances")
+                
+                # Check if all required taxes exist
+                all_found = all(count > 0 for count in found_taxes.values())
+                
+                if all_found:
+                    elapsed_time = int(time.time() - start_time)
+                    return {
+                        'success': True,
+                        'message': f'Taxes ready with {tax_count} total taxes (took {elapsed_time}s)',
+                        'tax_count': tax_count,
+                        'required_taxes_found': found_taxes
+                    }
+                else:
+                    missing = [name for name, count in found_taxes.items() if count == 0]
+                    print(f"  Still waiting for taxes: {missing}")
+            
+            time.sleep(check_interval)
+            
+        except Exception as e:
+            print(f"Error checking taxes: {str(e)}")
+            time.sleep(check_interval)
+    
+    # Timeout reached
+    elapsed_time = int(time.time() - start_time)
+    try:
+        final_tax_count = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search_count',
+            [[('company_id', '=', company_id)]]
+        )
+    except:
+        final_tax_count = 0
+    
+    if final_tax_count > 0:
+        return {
+            'success': True,
+            'message': f'Taxes partially ready with {final_tax_count} taxes after {elapsed_time}s (proceeding anyway)',
+            'tax_count': final_tax_count,
+            'timeout_reached': True
+        }
+    else:
+        return {
+            'success': False,
+            'message': f'Taxes not created after {elapsed_time}s - manual setup may be required',
+            'tax_count': 0,
+            'timeout_reached': True
+        }
+
 
 def create_custom_accounts(models, db, uid, password, company_id):
     """
@@ -643,6 +803,537 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
             'success': False,
             'error': f'Failed to create journals: {str(e)}'
         }
+    
+def configure_taxes_for_company(models, db, uid, password, company_id, is_vat_registered):
+    """
+    Configure tax settings based on VAT registration status
+    
+    Args:
+        models: Odoo models proxy
+        db: Database name
+        uid: User ID
+        password: API password
+        company_id: Company ID
+        is_vat_registered: "yes" or "no" string indicating VAT registration status
+    
+    Returns:
+        dict: Result with success status and details
+    """
+    try:
+        print(f"Configuring taxes for company {company_id}, VAT registered: {is_vat_registered}")
+        
+        results = {
+            'success': True,
+            'vat_registered': is_vat_registered,
+            'updates': []
+        }
+        
+        # Step 1: Configure 19% and 19% S taxes if NOT VAT registered
+        if is_vat_registered.lower() == "no":
+            non_recoverable_result = configure_non_recoverable_vat(
+                models, db, uid, password, company_id
+            )
+            results['updates'].append(non_recoverable_result)
+            
+            if not non_recoverable_result['success']:
+                results['success'] = False
+        
+        # Step 2: Configure 19% RC (Reverse Charge) taxes for ALL companies
+        reverse_charge_result = configure_reverse_charge_taxes(
+            models, db, uid, password, company_id
+        )
+        results['updates'].append(reverse_charge_result)
+        
+        if not reverse_charge_result['success']:
+            results['success'] = False
+        
+        return results
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Failed to configure taxes: {str(e)}'
+        }
+
+def find_or_create_component_tax_with_grid(models, db, uid, password, company_id, name, amount, account_id, type_tax_use, tax_grid_base, tax_grid_tax):
+    """
+    Find or create a component tax with proper tax grid configuration
+    
+    Tax grids in Cyprus:
+    - +6: Sales (invoices)
+    - +7: Purchases (bills) - base/expenses
+    - -1: Output VAT (2201)
+    - +4: Input VAT (2202)
+    """
+    try:
+        print(f"\n  Looking for tax: '{name}'...")
+        
+        # Search for existing tax
+        existing_tax = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search',
+            [[('name', '=', name), ('company_id', '=', company_id)]],
+            {'limit': 1}
+        )
+        
+        if existing_tax:
+            print(f"  ✓ Found existing tax: {name} (ID: {existing_tax[0]})")
+            return {'success': True, 'tax_id': existing_tax[0], 'created': False}
+        
+        # Create new component tax with tax grid
+        print(f"  Creating new tax with tax grid...")
+        tax_data = {
+            'name': name,
+            'amount': amount,
+            'amount_type': 'percent',
+            'type_tax_use': type_tax_use,
+            'company_id': company_id,
+            'invoice_repartition_line_ids': [
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'base',
+                    'tag_ids': [(6, 0, get_tax_grid_tag_ids(models, db, uid, password, company_id, tax_grid_base))],
+                }),
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'tax',
+                    'account_id': account_id,
+                    'tag_ids': [(6, 0, get_tax_grid_tag_ids(models, db, uid, password, company_id, tax_grid_tax))],
+                }),
+            ],
+            'refund_repartition_line_ids': [
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'base',
+                    'tag_ids': [(6, 0, get_tax_grid_tag_ids(models, db, uid, password, company_id, tax_grid_base))],
+                }),
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'tax',
+                    'account_id': account_id,
+                    'tag_ids': [(6, 0, get_tax_grid_tag_ids(models, db, uid, password, company_id, tax_grid_tax))],
+                }),
+            ],
+        }
+        
+        tax_id = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'create',
+            [tax_data]
+        )
+        
+        print(f"  ✓ Created tax: {name} (ID: {tax_id}) with grids: base={tax_grid_base}, tax={tax_grid_tax}")
+        return {'success': True, 'tax_id': tax_id, 'created': True}
+        
+    except Exception as e:
+        print(f"  ❌ Failed: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+def get_tax_grid_tag_ids(models, db, uid, password, company_id, grid_code):
+    """
+    Get tax report tag IDs for a specific grid code (e.g., '+6', '+7', '-1', '+4')
+    """
+    try:
+        # Search for account report tags with the specific code
+        tag_ids = models.execute_kw(
+            db, uid, password,
+            'account.account.tag', 'search',
+            [[('name', 'ilike', grid_code), ('applicability', '=', 'taxes')]],
+            {'limit': 1}
+        )
+        
+        if tag_ids:
+            print(f"    Found tax grid tag for {grid_code}: {tag_ids[0]}")
+            return tag_ids
+        else:
+            print(f"    ⚠️  No tax grid tag found for {grid_code}")
+            return []
+            
+    except Exception as e:
+        print(f"    ⚠️  Error finding tag for {grid_code}: {str(e)}")
+        return []
+
+
+def configure_non_recoverable_vat(models, db, uid, password, company_id):
+    """
+    Configure 19% and 19% S taxes to use Non Recoverable VAT account (7906)
+    with tax grid +7 for both base and tax (expenses)
+    """
+    try:
+        print("\n" + "="*80)
+        print("STARTING NON-RECOVERABLE VAT CONFIGURATION")
+        print("="*80)
+        
+        # Find the 7906 account
+        print(f"\n[STEP 1] Searching for account 'Non Recoverable VAT on expenses'...")
+        account_7906 = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', '=', 'Non Recoverable VAT on expenses'), ('company_ids', 'in', [company_id])]],
+            {'limit': 1}
+        )
+        
+        if not account_7906:
+            account_7906 = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('code', '=', '7906'), ('company_ids', 'in', [company_id])]],
+                {'limit': 1}
+            )
+        
+        if not account_7906:
+            return {'success': False, 'error': 'Account 7906 not found'}
+        
+        account_7906_id = account_7906[0]
+        print(f"✓ Found account 7906 with ID: {account_7906_id}")
+        
+        # Get tax grid tag for +7 (purchases/expenses)
+        tax_grid_tag_ids = get_tax_grid_tag_ids(models, db, uid, password, company_id, '+7')
+        
+        # Update 19% and 19% S taxes for PURCHASES only
+        tax_names_to_update = ['19%', '19% S']
+        updated_taxes = []
+        
+        for tax_name in tax_names_to_update:
+            print(f"\n[STEP 2] Searching for taxes named '{tax_name}'...")
+            
+            tax_ids = models.execute_kw(
+                db, uid, password,
+                'account.tax', 'search',
+                [[('name', '=', tax_name), ('company_id', '=', company_id), ('type_tax_use', '=', 'purchase')]]  # Only purchases
+            )
+            
+            if not tax_ids:
+                print(f"⚠️  No PURCHASE taxes found with name '{tax_name}'")
+                continue
+            
+            print(f"✓ Found {len(tax_ids)} PURCHASE tax(es): {tax_ids}")
+            
+            for tax_id in tax_ids:
+                tax_info = models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'read',
+                    [[tax_id]],
+                    {'fields': ['name', 'type_tax_use']}
+                )[0]
+                
+                print(f"  Updating {tax_info['name']} ({tax_info['type_tax_use']})...")
+                
+                # Update with tax grid +7 for both base and tax (expenses)
+                update_data = {
+                    'invoice_repartition_line_ids': [
+                        (5, 0, 0),
+                        (0, 0, {
+                            'factor_percent': 100,
+                            'repartition_type': 'base',
+                            'tag_ids': [(6, 0, tax_grid_tag_ids)],  # +7 for base
+                        }),
+                        (0, 0, {
+                            'factor_percent': 100,
+                            'repartition_type': 'tax',
+                            'account_id': account_7906_id,
+                            'tag_ids': [(6, 0, tax_grid_tag_ids)],  # +7 for tax (it's an expense)
+                        }),
+                    ],
+                    'refund_repartition_line_ids': [
+                        (5, 0, 0),
+                        (0, 0, {
+                            'factor_percent': 100,
+                            'repartition_type': 'base',
+                            'tag_ids': [(6, 0, tax_grid_tag_ids)],
+                        }),
+                        (0, 0, {
+                            'factor_percent': 100,
+                            'repartition_type': 'tax',
+                            'account_id': account_7906_id,
+                            'tag_ids': [(6, 0, tax_grid_tag_ids)],
+                        }),
+                    ],
+                }
+                
+                models.execute_kw(
+                    db, uid, password,
+                    'account.tax', 'write',
+                    [[tax_id], update_data]
+                )
+                print(f"  ✓ Updated with account 7906 and tax grid +7")
+                
+                updated_taxes.append({
+                    'id': tax_id,
+                    'name': tax_name,
+                    'type': tax_info['type_tax_use']
+                })
+        
+        print("\n" + "="*80)
+        print("NON-RECOVERABLE VAT CONFIGURATION COMPLETE")
+        print("="*80)
+        
+        if updated_taxes:
+            return {
+                'success': True,
+                'message': f'Configured {len(updated_taxes)} taxes with tax grid +7',
+                'taxes_updated': updated_taxes
+            }
+        else:
+            return {'success': False, 'error': 'No taxes updated'}
+            
+    except Exception as e:
+        print(f"\n❌❌❌ EXCEPTION: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return {'success': False, 'error': str(e)}
+
+
+def configure_reverse_charge_taxes(models, db, uid, password, company_id):
+    """
+    Configure 19% RC (Reverse Charge) taxes as GROUP OF TAXES with proper tax grids
+    """
+    try:
+        print("\n" + "="*80)
+        print("STARTING REVERSE CHARGE TAX CONFIGURATION")
+        print("="*80)
+        
+        # Find required accounts
+        print(f"\n[STEP 1] Searching for accounts...")
+        account_2201 = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', '=', 'Output VAT (Sales)'), ('company_ids', 'in', [company_id])]],
+            {'limit': 1}
+        )
+        if not account_2201:
+            account_2201 = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('code', '=', '2201'), ('company_ids', 'in', [company_id])]],
+                {'limit': 1}
+            )
+        
+        account_2202 = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search',
+            [[('name', '=', 'Input VAT (Purchases)'), ('company_ids', 'in', [company_id])]],
+            {'limit': 1}
+        )
+        if not account_2202:
+            account_2202 = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search',
+                [[('code', '=', '2202'), ('company_ids', 'in', [company_id])]],
+                {'limit': 1}
+            )
+        
+        if not account_2201 or not account_2202:
+            return {'success': False, 'error': 'Required accounts not found: 2201 or 2202'}
+        
+        account_2201_id = account_2201[0]
+        account_2202_id = account_2202[0]
+        print(f"✓ Found Output VAT (2201): {account_2201_id}")
+        print(f"✓ Found Input VAT (2202): {account_2202_id}")
+        
+        # Create component taxes for PURCHASES with correct names and tax grids
+        print(f"\n[STEP 2] Creating component taxes for PURCHASES...")
+        
+        # Reverse Charge -19% (purchases) - Tax grid: +7 base, -1 for 2201
+        rc_minus_purchase = find_or_create_component_tax_with_grid(
+            models, db, uid, password, company_id,
+            name='Reverse Charge -19% (purchases)',
+            amount=-19,
+            account_id=account_2201_id,
+            type_tax_use='purchase',
+            tax_grid_base='+7',  # Base on tax grid
+            tax_grid_tax='-1'    # Output VAT line
+        )
+        print(f"  Created/Found: Reverse Charge -19% (purchases) - ID: {rc_minus_purchase.get('tax_id')}")
+        
+        # Reverse Charge +19% (purchases) - Tax grid: +7 base, +4 for 2202
+        rc_plus_purchase = find_or_create_component_tax_with_grid(
+            models, db, uid, password, company_id,
+            name='Reverse Charge +19% (purchases)',
+            amount=19,
+            account_id=account_2202_id,
+            type_tax_use='purchase',
+            tax_grid_base='+7',  # Base on tax grid
+            tax_grid_tax='+4'    # Input VAT line
+        )
+        print(f"  Created/Found: Reverse Charge +19% (purchases) - ID: {rc_plus_purchase.get('tax_id')}")
+        
+        # Create component taxes for SALES with correct names and tax grids
+        print(f"\n[STEP 3] Creating component taxes for SALES...")
+        
+        # Reverse Charge -19% (sales) - Tax grid: +6 base
+        rc_minus_sale = find_or_create_component_tax_with_grid(
+            models, db, uid, password, company_id,
+            name='Reverse Charge -19% (sales)',
+            amount=-19,
+            account_id=account_2201_id,
+            type_tax_use='sale',
+            tax_grid_base='+6',  # Base on tax grid
+            tax_grid_tax='+6'    # Tax line (adjust if needed)
+        )
+        print(f"  Created/Found: Reverse Charge -19% (sales) - ID: {rc_minus_sale.get('tax_id')}")
+        
+        # Reverse Charge +19% (sales) - Tax grid: +6 base
+        rc_plus_sale = find_or_create_component_tax_with_grid(
+            models, db, uid, password, company_id,
+            name='Reverse Charge +19% (sales)',
+            amount=19,
+            account_id=account_2202_id,
+            type_tax_use='sale',
+            tax_grid_base='+6',  # Base on tax grid
+            tax_grid_tax='+6'    # Tax line (adjust if needed)
+        )
+        print(f"  Created/Found: Reverse Charge +19% (sales) - ID: {rc_plus_sale.get('tax_id')}")
+        
+        if not all([rc_minus_purchase['success'], rc_plus_purchase['success'], 
+                    rc_minus_sale['success'], rc_plus_sale['success']]):
+            return {'success': False, 'error': 'Failed to create component taxes'}
+        
+        # Find and update 19% RC taxes to GROUP
+        print(f"\n[STEP 4] Converting 19% RC taxes to GROUP OF TAXES...")
+        rc_tax_ids = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search',
+            [[('name', '=', '19% RC'), ('company_id', '=', company_id)]]
+        )
+        
+        if not rc_tax_ids:
+            return {'success': False, 'error': 'No 19% RC taxes found'}
+        
+        updated_rc_taxes = []
+        for tax_id in rc_tax_ids:
+            tax_info = models.execute_kw(
+                db, uid, password,
+                'account.tax', 'read',
+                [[tax_id]],
+                {'fields': ['name', 'type_tax_use']}
+            )[0]
+            
+            print(f"  Converting {tax_info['name']} ({tax_info['type_tax_use']}) to GROUP...")
+            
+            if tax_info['type_tax_use'] == 'sale':
+                component_tax_ids = [rc_minus_sale['tax_id'], rc_plus_sale['tax_id']]
+            else:  # purchase
+                component_tax_ids = [rc_minus_purchase['tax_id'], rc_plus_purchase['tax_id']]
+            
+            update_data = {
+                'amount_type': 'group',
+                'children_tax_ids': [(6, 0, component_tax_ids)],
+            }
+            
+            models.execute_kw(
+                db, uid, password,
+                'account.tax', 'write',
+                [[tax_id], update_data]
+            )
+            print(f"  ✓ Converted to GROUP with children: {component_tax_ids}")
+            
+            updated_rc_taxes.append({
+                'id': tax_id,
+                'name': tax_info['name'],
+                'type': tax_info['type_tax_use']
+            })
+        
+        print("\n" + "="*80)
+        print("REVERSE CHARGE CONFIGURATION COMPLETE")
+        print("="*80)
+        
+        return {
+            'success': True,
+            'message': f'Configured {len(updated_rc_taxes)} RC taxes with tax grids',
+            'taxes_updated': updated_rc_taxes
+        }
+            
+    except Exception as e:
+        print(f"\n❌❌❌ EXCEPTION: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return {'success': False, 'error': str(e)}
+
+def find_or_create_component_tax(models, db, uid, password, company_id, name, amount, account_id, type_tax_use):
+    """
+    Find or create a component tax for use in tax groups
+    """
+    try:
+        print(f"\n  [find_or_create_component_tax] Looking for tax: '{name}' (type: {type_tax_use}, company: {company_id})")
+        
+        # Search for existing tax
+        existing_tax = models.execute_kw(
+            db, uid, password,
+            'account.tax', 'search',
+            [[('name', '=', name), ('company_id', '=', company_id)]],
+            {'limit': 1}
+        )
+        
+        if existing_tax:
+            print(f"  ✓ Found existing component tax: {name} (ID: {existing_tax[0]})")
+            return {
+                'success': True,
+                'tax_id': existing_tax[0],
+                'created': False
+            }
+        
+        # Create new component tax
+        print(f"  Component tax not found, creating new one...")
+        tax_data = {
+            'name': name,
+            'amount': amount,
+            'amount_type': 'percent',
+            'type_tax_use': type_tax_use,
+            'company_id': company_id,
+            'invoice_repartition_line_ids': [
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'base',
+                }),
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'tax',
+                    'account_id': account_id,
+                }),
+            ],
+            'refund_repartition_line_ids': [
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'base',
+                }),
+                (0, 0, {
+                    'factor_percent': 100,
+                    'repartition_type': 'tax',
+                    'account_id': account_id,
+                }),
+            ],
+        }
+        
+        print(f"  Tax data to create: name={name}, amount={amount}%, type={type_tax_use}, account={account_id}")
+        
+        try:
+            tax_id = models.execute_kw(
+                db, uid, password,
+                'account.tax', 'create',
+                [tax_data]
+            )
+            
+            print(f"  ✓✓ Created component tax: {name} (ID: {tax_id})")
+            
+            return {
+                'success': True,
+                'tax_id': tax_id,
+                'created': True
+            }
+        except Exception as create_error:
+            print(f"  ❌ Failed to create component tax: {str(create_error)}")
+            raise
+        
+    except Exception as e:
+        print(f"  ❌❌ Exception in find_or_create_component_tax: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return {
+            'success': False,
+            'error': f'Failed to find/create component tax {name}: {str(e)}'
+        }
+
 
 def ensure_chart_of_accounts(models, db, uid, password, company_id, country_code=None):
     """
