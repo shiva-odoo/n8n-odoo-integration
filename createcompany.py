@@ -777,17 +777,25 @@ def create_essential_journals(models, db, uid, password, company_id, currency_id
         
         for journal_data in journals_to_create:
             try:
-                # Skip if this TYPE already exists (CoA might have created it)
-                if journal_data['type'] in existing_types:
-                    existing = existing_types[journal_data['type']]
-                    print(f"✓ Journal type '{journal_data['type']}' already exists: {existing['name']} ({existing['code']})")
-                    continue
-                
-                # Also check by code to be extra safe
-                if journal_data['code'] in existing_codes:
-                    existing = existing_codes[journal_data['code']]
-                    print(f"✓ Journal code '{journal_data['code']}' already exists: {existing['name']} (type: {existing['type']})")
-                    continue
+                # Special handling for Journal Voucher - always create it regardless of type
+                if journal_data['code'] == 'JV':
+                    # Only check by code, not by type
+                    if journal_data['code'] in existing_codes:
+                        existing = existing_codes[journal_data['code']]
+                        print(f"✓ Journal code '{journal_data['code']}' already exists: {existing['name']} (type: {existing['type']})")
+                        continue
+                else:
+                    # For Bank and Cash, skip if type already exists
+                    if journal_data['type'] in existing_types:
+                        existing = existing_types[journal_data['type']]
+                        print(f"✓ Journal type '{journal_data['type']}' already exists: {existing['name']} ({existing['code']})")
+                        continue
+                    
+                    # Also check by code to be extra safe
+                    if journal_data['code'] in existing_codes:
+                        existing = existing_codes[journal_data['code']]
+                        print(f"✓ Journal code '{journal_data['code']}' already exists: {existing['name']} (type: {existing['type']})")
+                        continue
                 
                 # Double-check with database query
                 db_existing = models.execute_kw(
