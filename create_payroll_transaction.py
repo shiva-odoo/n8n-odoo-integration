@@ -261,6 +261,73 @@ def find_account_by_name(models, db, uid, password, account_name, company_id, ac
         import traceback
         traceback.print_exc()
         return None
+    
+def find_suspense_account(models, db, uid, password, company_id):
+    """
+    Find suspense account for auto-balancing entries
+    
+    Searches for:
+    1. Account with code 1260 (Cyprus standard suspense account)
+    2. Account with exact name "Suspense account" (case-sensitive)
+    """
+    try:
+        # PRIORITY 1: Try code 1260 (Cyprus standard)
+        try:
+            account = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('code', '=', '1260'), ('active', '=', True), ('company_id', '=', company_id)]],
+                {'fields': ['id', 'name', 'code'], 'limit': 1}
+            )
+            if account:
+                print(f"✓ Found suspense account by code 1260: {account[0]['name']}")
+                return account[0]['id']
+        except:
+            # Try without company filter
+            account = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('code', '=', '1260'), ('active', '=', True)]],
+                {'fields': ['id', 'name', 'code'], 'limit': 1}
+            )
+            if account:
+                print(f"✓ Found suspense account by code 1260: {account[0]['name']}")
+                return account[0]['id']
+        
+        # PRIORITY 2: Try exact name "Suspense account" (case-sensitive)
+        try:
+            account = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('name', '=', 'Suspense account'), ('active', '=', True), ('company_id', '=', company_id)]],
+                {'fields': ['id', 'name', 'code'], 'limit': 1}
+            )
+            if account:
+                print(f"✓ Found suspense account by exact name: {account[0]['name']} (code: {account[0].get('code')})")
+                return account[0]['id']
+        except:
+            # Try without company filter
+            account = models.execute_kw(
+                db, uid, password,
+                'account.account', 'search_read',
+                [[('name', '=', 'Suspense account'), ('active', '=', True)]],
+                {'fields': ['id', 'name', 'code'], 'limit': 1}
+            )
+            if account:
+                print(f"✓ Found suspense account by exact name: {account[0]['name']} (code: {account[0].get('code')})")
+                return account[0]['id']
+        
+        print("⚠️  No suspense account found - cannot auto-balance")
+        print("   Searched for: code 1260, exact name 'Suspense account'")
+        print("   Please ensure account 1260 'Suspense account' exists in Odoo")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error finding suspense account: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 
 def find_account_by_code(models, db, uid, password, account_code, company_id):
     """Find account by account code"""
@@ -590,16 +657,82 @@ def main(data):
                 'missing_accounts': missing_accounts
             }
         
-        # Calculate balance for informational purposes
+        # Calculate balance
         balance_difference = abs(total_debits - total_credits)
         is_balanced = balance_difference < 0.01
+        auto_balanced = False
         
-        # Log balance information (but don't fail if unbalanced)
-        if is_balanced:
-            print(f"✓ Journal entry is balanced: Debits {total_debits:.2f} = Credits {total_credits:.2f}")
-        else:
-            print(f"⚠️  Journal entry has balance difference: Debits {total_debits:.2f}, Credits {total_credits:.2f}, Difference: {balance_difference:.2f}")
-            print(f"   Note: Entry will be created as-is. Odoo may automatically balance or accountant can adjust.")
+        # CRITICAL: Auto-balance if unbalanced
+        if not is_balanced:
+            print(f"⚠️  Entry unbalanced by €{balance_difference:.2f}")
+            print(f"   Total Debits: €{total_debits:.2f}")
+            print(f"   Total Credits: €{total_credits:.2f}")
+            
+            # Try to find a suspense/rounding account
+            suspense_account_id = find_suspense_account(models, db, uid, password, company_id)
+            
+            if suspense_account_id:
+                # Add balancing line
+                if total_debits > total_credits:
+                    # Need more credits
+                    balance_line = {
+                        'account_id': suspense_account_id,
+                        'name': f'Auto-balancing adjustment (Difference: €{balance_difference:.2f}) - REVIEW AND ADJUST',
+                        'debit': 0,
+                        'credit': balance_difference,
+                    }
+                else:
+                    # Need more debits
+                    balance_line = {
+                        'account_id': suspense_account_id,
+                        'name': f'Auto-balancing adjustment (Difference: €{balance_difference:.2f}) - REVIEW AND ADJUST',
+                        'debit': balance_difference,
+                        'credit': 0,
+                    }
+                
+                move_line_ids.append((0, 0, balance_line))
+                
+                # Recalculate totals after balancing
+                if total_debits > total_credits:
+                    total_credits += balance_difference
+                else:
+                    total_debits += balance_difference
+                
+                is_balanced = True
+                auto_balanced = True
+                
+                print(f"✓ Added auto-balancing line to suspense account")
+                print(f"⚠️  IMPORTANT: Manual review required to correct the balancing entry")
+            else:
+                # Cannot auto-balance - return detailed error
+                return {
+                    'success': False,
+                    'error': 'Entry is unbalanced and no suspense account found for auto-balancing',
+                    'total_debits': total_debits,
+                    'total_credits': total_credits,
+                    'balance_difference': balance_difference,
+                    'line_items_attempted': len(move_line_ids),
+                    'missing_accounts': missing_accounts if missing_accounts else None,
+                    'suggestion': 'Please verify the payroll document processing or create a suspense account (code: 9999)',
+                    'debug_info': {
+                        'journal_lines_provided': len(journal_entry_lines),
+                        'journal_lines_processed': len(move_line_ids),
+                        'debit_lines': [
+                            {'account': line[2].get('name'), 'amount': line[2].get('debit')} 
+                            for line in move_line_ids if line[2].get('debit', 0) > 0
+                        ],
+                        'credit_lines': [
+                            {'account': line[2].get('name'), 'amount': line[2].get('credit')} 
+                            for line in move_line_ids if line[2].get('credit', 0) > 0
+                        ]
+                    }
+                }
+        
+        # Log balance information
+        if is_balanced and not auto_balanced:
+            print(f"✓ Journal entry is naturally balanced: Debits €{total_debits:.2f} = Credits €{total_credits:.2f}")
+        elif is_balanced and auto_balanced:
+            print(f"✓ Journal entry is auto-balanced: Debits €{total_debits:.2f} = Credits €{total_credits:.2f}")
         
         # Warn about missing accounts
         if missing_accounts:
@@ -641,13 +774,17 @@ def main(data):
             if move_state != 'posted':
                 return {
                     'success': False,
-                    'error': f'Payroll entry was created but failed to post. Current state: {move_state}'
+                    'error': f'Payroll entry was created but failed to post. Current state: {move_state}',
+                    'entry_id': move_id,
+                    'auto_balanced': auto_balanced
                 }
                 
         except xmlrpc.client.Fault as e:
             return {
                 'success': False,
-                'error': f'Payroll entry created but failed to post: {str(e)}'
+                'error': f'Payroll entry created but failed to post: {str(e)}',
+                'entry_id': move_id,
+                'auto_balanced': auto_balanced
             }
         
         # Get final entry information
@@ -666,6 +803,15 @@ def main(data):
             {'fields': ['id', 'name', 'debit', 'credit', 'account_id']}
         )
         
+        # Build warnings array
+        warnings = []
+        if auto_balanced:
+            warnings.append('Entry was auto-balanced using suspense account - MANUAL REVIEW REQUIRED')
+            warnings.append('Verify all amounts match the source payroll document')
+            warnings.append('Adjust or remove the suspense account line after verification')
+        if missing_accounts:
+            warnings.append(f'Some accounts were not found: {", ".join(missing_accounts)}')
+        
         return {
             'success': True,
             'exists': False,
@@ -680,12 +826,16 @@ def main(data):
             'journal_code': journal_info['code'],
             'total_debits': total_debits,
             'total_credits': total_credits,
-            'balance_difference': balance_difference,
+            'balance_difference': 0 if auto_balanced else balance_difference,
             'is_balanced': is_balanced,
+            'auto_balanced': auto_balanced,
+            'requires_review': auto_balanced or len(missing_accounts) > 0,
             'line_items': line_items,
             'line_count': len(line_items),
             'missing_accounts': missing_accounts if missing_accounts else None,
-            'message': 'Payroll journal entry created and posted successfully'
+            'message': 'Payroll journal entry created and posted successfully' + 
+                      (' (AUTO-BALANCED - Manual review required)' if auto_balanced else ''),
+            'warnings': warnings if warnings else None
         }
         
     except xmlrpc.client.Fault as e:
