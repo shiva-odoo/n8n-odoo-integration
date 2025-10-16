@@ -36,8 +36,9 @@ def bill_common_accounts_logic():
 13. **7400 - Traveling** - Transport tickets, business travel (NOT hotels or meals)
 14. **7800 - Repairs and renewals** - Equipment repairs, maintenance (NOT purchases)
 15. **7906 - Non-Recoverable VAT on expenses** - VAT paid by non-VAT registered companies (expense, not recoverable)
-16. **5100 - Carriage** - Shipping, freight, courier services (NOT travel)
-17. **8200 - Other non-operating income or expenses** - Government fees, misc expenses
+16. **5001 - Purchases** - Materials, supplies, and goods purchased for projects (when company does NOT maintain inventory)
+17. **5100 - Carriage** - Shipping, freight, courier services (NOT travel)
+18. **8200 - Other non-operating income or expenses** - Government fees, misc expenses
 
 **STANDARD BILL JOURNAL ENTRY:**
 Dr. [Common Expense Account]    €X,XXX

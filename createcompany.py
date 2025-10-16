@@ -449,6 +449,13 @@ def create_custom_accounts(models, db, uid, password, company_id):
         # Define custom accounts
         custom_accounts_data = [
             {
+                'code': '5001',
+                'name': 'Purchases',
+                'account_type': 'expense',
+                'reconcile': False,
+                'note': 'General purchases and procurement expenses'
+            },
+            {
                 'code': '7101',
                 'name': 'Office space',
                 'account_type': 'expense',

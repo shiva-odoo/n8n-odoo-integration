@@ -518,6 +518,8 @@ def get_industry_specific_guidance(company_context):
     industry = company_context.get('primary_industry', '').lower()
     business_desc = company_context.get('business_description', '').lower()
     special_circumstances = company_context.get('special_circumstances', {})
+    business_ops = company_context.get('business_operations', {})
+    inventory_management = business_ops.get('inventory_management', '').lower()
     
     # Property/Real Estate/Construction industries
     if any(keyword in industry or keyword in business_desc for keyword in 
@@ -527,6 +529,20 @@ def get_industry_specific_guidance(company_context):
 - Property management fees → 7100 (Rent) or specific property management account
 - Rental property repairs → Check if capitalizable (major improvements) or expense (routine maintenance)
 - Legal fees → Check if for property acquisition (0060) or general operations (7600)"""
+        
+        # Check inventory management approach
+        if inventory_management in ['no', 'none', 'project-based', 'on-demand', 'just-in-time', '']:
+            guidance += """
+- **MATERIALS & SUPPLIES:** Use 5001 (Purchases) for all materials, supplies, and goods purchased on demand for projects
+- Company does NOT maintain inventory - purchases are expensed immediately as 5001 (Purchases)
+- Items like construction materials, hardware, supplies, tools, consumables → 5001 (Purchases)
+- Building materials (cement, steel, timber, etc.) → 5001 (Purchases)
+- Hardware and fixtures purchased for projects → 5001 (Purchases)"""
+        elif inventory_management in ['yes', 'perpetual', 'periodic']:
+            guidance += """
+- **MATERIALS & SUPPLIES:** Use 1000 (Stock) or 1020 (Raw materials) for inventory items
+- Company maintains inventory - purchases are capitalized to inventory accounts
+- Items held in warehouse for future use → 1000 (Stock) or 1020 (Raw materials)"""
         
         # Add construction-specific guidance if active project
         if 'construction' in special_circumstances:
@@ -552,12 +568,331 @@ def get_industry_specific_guidance(company_context):
 - Development tools → 7508 or capitalize if significant asset
 """
     
+    # Manufacturing/Production companies with inventory
+    elif any(keyword in industry for keyword in ['manufacturing', 'production', 'factory']):
+        if inventory_management in ['yes', 'perpetual', 'periodic']:
+            return """
+- Raw materials purchases → 1020 (Raw materials)
+- Finished goods → 1000 (Stock)
+- Production supplies → 1020 (Raw materials)
+- Manufacturing overhead → Appropriate expense accounts
+"""
+        else:
+            return """
+- Materials and supplies → 5001 (Purchases)
+- Production costs → 5001 (Purchases)
+- Manufacturing supplies → 5001 (Purchases)
+"""
+    
+    # Retail/Wholesale companies
+    elif any(keyword in industry for keyword in ['retail', 'wholesale', 'trading', 'merchant']):
+        if inventory_management in ['yes', 'perpetual', 'periodic']:
+            return """
+- Goods for resale → 1000 (Stock)
+- Inventory purchases → 1000 (Stock)
+- Cost of goods sold → 5000 (Cost of goods)
+"""
+        else:
+            return """
+- Goods for resale → 5001 (Purchases)
+- Trading stock → 5001 (Purchases)
+"""
+    
     else:
-        return """
+        # Generic guidance based on inventory management
+        if inventory_management in ['no', 'none', 'project-based', 'on-demand', 'just-in-time', '']:
+            return """
+- Materials and supplies → 5001 (Purchases) (company does not maintain inventory)
+- Goods purchased on demand → 5001 (Purchases)
+- Match other expenses to industry-standard account codes
+- Flag expenses that seem unusual for this industry
+"""
+        elif inventory_management in ['yes', 'perpetual', 'periodic']:
+            return """
+- Inventory items → 1000 (Stock) or 1020 (Raw materials)
+- Goods for resale → 1000 (Stock)
+- Match other expenses to industry-standard account codes
+- Flag expenses that seem unusual for this industry
+"""
+        else:
+            return """
 - Match expenses to industry-standard account codes
 - Flag expenses that seem unusual for this industry
 """
 
+def get_date_extraction_rules():
+    """Returns comprehensive date extraction rules for prompt"""
+    return """
+**CRITICAL DATE EXTRACTION RULES:**
+
+You MUST extract dates with extreme precision. Dates are CRITICAL for accounting compliance and must be 100% accurate.
+
+**DATE EXTRACTION PRIORITY (CHECK IN THIS ORDER):**
+
+1. **PRIMARY DATE FIELDS - ALWAYS CHECK THESE FIRST:**
+   - Look for explicit labels: "ΗΜΕΡΟΜΗΝΙΑ" (Ημερομηνία), "ΗΜΕΡ:" (Ημερ:), "Ημερ.", "Date:", "Invoice Date:", "ΤΙΜΟΛΟΓΙΟΥ" (after ΗΜΕΡΟΜΗΝΙΑ)
+   - Look for "Ημερομηνία:" followed by date
+   - Check document header area (top 30% of page)
+   - Greek format: DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY
+   - English format: MM/DD/YYYY or YYYY-MM-DD
+
+2. **DATE FORMAT VALIDATION:**
+   - Greek documents typically use: DD/MM/YYYY (e.g., 15/04/25 means April 15, 2025)
+   - Must have day, month, and year components
+   - Year can be 2-digit (25 = 2025) or 4-digit (2025)
+   - Valid day range: 01-31
+   - Valid month range: 01-12
+
+3. **CONTEXT CLUES FOR DATE IDENTIFICATION:**
+   - Date usually appears near: invoice number, vendor name, or "ΤΙΜΟΛΟΓΙΟ/INVOICE" header
+   - In Greek documents, look for: "Ημερομηνία:", "Ημερ:", "εκ:" (abbreviation for εκδοτική ημερομηνία)
+   - Dates are often in the top-right or top-left corner
+   - May appear after invoice number with format like "ΑΡ ΤΙΜΟΛΟΓΙΟΥ: [number] [date]"
+
+4. **MULTIPLE DATE HANDLING:**
+   - If multiple dates present, prioritize:
+     a. Date explicitly labeled as "invoice date" or "ΗΜΕΡΟΜΗΝΙΑ ΤΙΜΟΛΟΓΙΟΥ"
+     b. Date near invoice number
+     c. Earliest date in document header
+   - NEVER use: receipt date, payment date, or due date as invoice_date
+   - Due date goes in separate "due_date" field
+
+5. **DATE CONVERSION TO ISO FORMAT:**
+   - ALWAYS convert to ISO 8601 format: "YYYY-MM-DD"
+   - Examples:
+     * "15/04/25" → "2025-04-15"
+     * "21/03/2025" → "2025-03-25"
+     * "24.02.25" → "2025-02-24"
+   - Assume 2-digit years 00-50 are 2000s (e.g., 25 = 2025)
+   - Assume 2-digit years 51-99 are 1900s (e.g., 99 = 1999)
+
+6. **DATE EXTRACTION EXAMPLES FROM YOUR DOCUMENTS:**
+
+**Example 1 - Greek Invoice Header:**
+```
+ΤΙΜΟΛΟΓΙΟ - INVOICE
+Όνομα: Ballian TechniKi LTD
+Ημερ: 15|04|25   εκ: Gr2MH
+```
+CORRECT: "invoice_date": "2025-04-15"
+WRONG: "invoice_date": "2025-01-04" (this would be mixing up day/month)
+
+**Example 2 - Date After Invoice Number:**
+```
+ΑΡ ΤΙΜΟΛΟΓΙΟΥ: ΑΛΠ000356393
+ΗΜΕΡΟΜΗΝΙΑ: 13/5/2025
+ΑΡ ΣΕΛΙΔΑΣ: 1
+```
+CORRECT: "invoice_date": "2025-05-13"
+
+**Example 3 - Greek Date Format:**
+```
+Ημερομηνία: 24/02/25
+```
+CORRECT: "invoice_date": "2025-02-24"
+
+7. **DATE VALIDATION CHECKLIST - BEFORE FINALIZING:**
+   ☐ Is the date in DD/MM/YYYY format for Greek documents?
+   ☐ Does the date make logical sense? (not in future, not too old)
+   ☐ Is it the invoice date (not receipt date, payment date, or due date)?
+   ☐ Is the date converted to ISO format "YYYY-MM-DD"?
+   ☐ Is the day value 01-31?
+   ☐ Is the month value 01-12?
+   ☐ Does the year make sense for a current invoice? (2024-2025 range expected)
+
+8. **COMMON DATE EXTRACTION ERRORS TO AVOID:**
+   ❌ Swapping day and month (15/04 is April 15th, NOT April 15th in MM/DD format)
+   ❌ Using page numbers as dates
+   ❌ Using reference numbers as dates
+   ❌ Using receipt dates instead of invoice dates
+   ❌ Extracting dates from footer timestamps
+   ❌ Confusing Greek abbreviations (εκ: is "issued", Ημερ: is "date")
+
+9. **CONFIDENCE SCORING FOR DATES:**
+   - Set extraction_confidence.dates = "high" ONLY if:
+     * Date has explicit label ("ΗΜΕΡΟΜΗΝΙΑ", "Date:", "Ημερ:")
+     * Date format is clear and unambiguous
+     * Date appears in standard location (header area)
+   - Set extraction_confidence.dates = "medium" if:
+     * Date inferred from context
+     * Multiple dates present but primary is identifiable
+   - Set extraction_confidence.dates = "low" if:
+     * Date format ambiguous
+     * Multiple dates with unclear purpose
+     * No explicit date label
+
+10. **SPECIAL HANDLING FOR HANDWRITTEN DATES:**
+    - Handwritten dates may be less clear - double-check digit recognition
+    - Look for slashes "/" or dots "." separating date components
+    - Cross-reference with printed dates elsewhere in document
+
+**ABSOLUTE REQUIREMENT:**
+Every invoice MUST have an invoice_date. If you cannot find one with confidence, set extraction_confidence.dates to "low" and flag it in missing_fields, but still attempt to extract the most likely date from the document header area.
+"""
+
+def get_mathematical_validation_rules():
+    """Returns comprehensive mathematical validation and cross-checking rules"""
+    return """
+**CRITICAL: MATHEMATICAL VALIDATION & CROSS-CHECKING**
+
+Before finalizing your response, you MUST perform these validation checks:
+
+**STEP 1: IDENTIFY THE TOTALS BLOCK**
+- Look for "Total", "Net Value", "Gross Value", "VAT", "Amount" at the bottom of the invoice
+- These are your ground truth - all calculations must match these exactly
+- Common locations: Bottom of page, summary box, footer area
+- Labels may be in English or Greek: "ΣΥΝΟΛΟ", "ΦΠΑ", "ΚΑΘΑΡΗ ΑΞΙΑ"
+
+**STEP 2: REVERSE-ENGINEER FROM TOTALS**
+If the document shows:
+- Net Value: 677.31
+- VAT: 128.69  
+- Total: 806.00
+
+Then verify:
+✓ Net + VAT = Total (677.31 + 128.69 = 806.00)
+✓ Sum of all line items (Amount column) = Net Value (677.31)
+✓ VAT calculation is correct (677.31 × 0.19 = 128.69)
+
+**STEP 3: HANDLE AMBIGUOUS COLUMN HEADERS**
+
+Some invoices have reversed or unclear column naming. You MUST cross-check with totals to determine which column represents NET vs GROSS values.
+
+**Common Column Patterns:**
+- **Pattern A (Standard):** Price (net) × Qty = Amount (net subtotal)
+  Example: Price=56.00, Qty=1, Amount=56.00, then VAT added
+  
+- **Pattern B (Reversed):** Amount (net) × (1 + VAT%) = Price (gross)
+  Example: Amount=47.06 (net), VAT 19%, Price=56.00 (gross)
+  
+- **Pattern C (Mixed):** Price (gross) ÷ (1 + VAT%) = Amount (net)
+  Example: Price=56.00 (gross), Amount=47.06 (net)
+
+**DETECTION METHOD:**
+1. Pick first line item
+2. Try calculation: Price × Qty = Amount?
+   - If YES → Standard Pattern A (Price is NET)
+   - If NO → Continue to step 3
+3. Try calculation: Amount × (1 + VAT%) = Price?
+   - If YES → Reversed Pattern B (Amount is NET, Price is GROSS)
+   - If NO → Continue to step 4
+4. Try calculation: Price ÷ (1 + VAT%) = Amount?
+   - If YES → Pattern C (Price is GROSS, Amount is NET)
+5. Cross-check with totals block:
+   - Sum all "Amount" values - does it equal "Net Value"?
+   - Sum all "Price" values - does it equal "Gross Value" or "Total"?
+
+**CRITICAL: Always verify your interpretation against the totals block**
+
+**STEP 4: VALIDATE EACH LINE ITEM**
+
+For each line, after determining column meanings:
+
+**If Price is NET (Pattern A):**
+- price_unit = Price value
+- line_total = price_unit × quantity (should equal Amount column if present)
+- Calculate expected VAT: line_total × tax_rate
+- Verify gross total: line_total + VAT = expected gross
+
+**If Amount is NET (Patterns B or C):**
+- line_total = Amount value (this is the NET, taxable base)
+- price_unit = line_total ÷ quantity
+- Calculate expected VAT: line_total × tax_rate
+- Verify Price column = line_total + VAT (should match)
+
+**Validation Checklist per Line:**
+☐ price_unit × quantity = line_total (within 0.01 tolerance)
+☐ line_total × tax_rate = calculated VAT amount
+☐ All values are positive (unless credit note)
+☐ Quantity makes sense (usually whole numbers or decimals < 1000)
+
+**STEP 5: FINAL RECONCILIATION**
+
+Before responding, verify:
+☐ Sum of all line_totals = subtotal (within 0.02 tolerance for rounding)
+☐ subtotal + tax_amount = total_amount (exact match or within 0.02)
+☐ Each line item math is internally consistent
+☐ All amounts match the totals block at bottom of invoice
+☐ VAT calculation uses correct rate (19%, 9%, 5%, etc.)
+☐ No impossible values (negative amounts, zero quantities with amounts, etc.)
+
+**STEP 6: HANDLE DISCREPANCIES**
+
+**IF MATH DOESN'T ADD UP:**
+- Set extraction_confidence for "total_amount" to "low"
+- Set extraction_confidence for "line_items" to "low"  
+- Add to missing_fields: "Mathematical discrepancy: [explain what doesn't match]"
+- Include detailed explanation in detection_details
+- Still provide best-effort extraction but flag the issue clearly
+- Note which interpretation you used (Pattern A, B, or C)
+
+**IF DOCUMENT IS HANDWRITTEN:**
+- Set column_interpretation to "handwritten" or "handwritten_simple"
+- Set extraction_confidence for amounts to "low" or "medium" maximum
+- Set extraction_confidence.vendor_name to "low" if vendor name is handwritten
+- Add to discrepancies: "Handwritten amounts - manual verification recommended"
+- Don't claim "totals_match: true" unless there's a printed totals block to verify against
+- Note: Handwritten invoices cannot be fully validated without printed reference
+
+**IF MULTIPLE INTERPRETATIONS POSSIBLE:**
+- Choose the interpretation where totals match exactly
+- If both match, prefer Pattern A (standard) unless Pattern B/C has exact match
+- Document your choice in detection_details
+
+**EXAMPLE WALKTHROUGH (Rovertos Nicolaou Invoice):**
+
+Document shows:
+- Line 1: Qty=1, Price=56.00, Amount=47.06, VAT=19%
+- Net Value: 677.31
+- VAT: 128.69
+- Total: 806.00
+
+**Analysis:**
+1. Try Pattern A: 56.00 × 1 = 56.00 ≠ 47.06 ❌
+2. Try Pattern B: 47.06 × 1.19 = 56.00 ✓
+3. Verify: Amount column (47.06) is NET
+4. Sum all Amount values = 677.31 = Net Value ✓
+5. Calculate VAT: 677.31 × 0.19 = 128.69 ✓
+6. Total: 677.31 + 128.69 = 806.00 ✓
+
+**Conclusion:** Pattern B (Reversed) - Amount is NET, Price is GROSS
+
+**Correct Extraction:**
+- price_unit: 47.06 (NOT 56.00)
+- line_total: 47.06
+- subtotal: 677.31
+- tax_amount: 128.69
+- total_amount: 806.00
+
+**COLUMN INTERPRETATION INDICATORS:**
+
+Look for these clues to help identify column meanings:
+
+**NET Column Indicators:**
+- Column labeled: "Net", "Net Amount", "Taxable Amount", "Base", "ΚΑΘΑΡΗ ΑΞΙΑ"
+- Sum matches "Net Value" or "Subtotal" in totals
+- Smaller number when comparing Price vs Amount
+
+**GROSS Column Indicators:**
+- Column labeled: "Total", "Gross", "With VAT", "ΣΥΝΟΛΟ ΜΕ ΦΠΑ"
+- Sum matches "Total" or "Grand Total" in totals
+- Larger number when comparing Price vs Amount
+
+**Unit Price Indicators:**
+- Column labeled: "Price", "Unit Price", "Rate", "ΤΙΜΗ", "Price/Unit"
+- Makes sense when multiplied by quantity
+- Relatively small numbers (per-unit pricing)
+
+**CONFIDENCE SCORING:**
+
+Set extraction_confidence.total_amount based on validation:
+- "high": All calculations match exactly, clear column structure
+- "medium": Calculations match with minor rounding differences (<0.05)
+- "low": Discrepancies found, ambiguous structure, or assumptions made
+
+**ABSOLUTE REQUIREMENT:**
+Every invoice with line items and a totals block MUST have its mathematics validated. If calculations don't match, you MUST flag this with low confidence and explain the discrepancy.
+"""
 def get_bill_processing_prompt(company_name, company_context=None):
     """Create comprehensive bill processing prompt that combines splitting and extraction"""
     
@@ -569,6 +904,11 @@ def get_bill_processing_prompt(company_name, company_context=None):
     
     # Get company context section
     company_context_section = get_company_context_section(company_context)
+
+    date_extraction_rules = get_date_extraction_rules()
+    
+    # NEW: Get mathematical validation rules
+    math_validation_rules = get_mathematical_validation_rules()
     
     return f"""You are an advanced bill processing AI. Your task is to analyze a multi-bill PDF document and return structured JSON data.
 
@@ -612,6 +952,20 @@ def get_bill_processing_prompt(company_name, company_context=None):
 - Line Items with calculations AND individual account assignments
 - Credit Account (Account to be credited based on bill type)
 - Debit Account (Account to be debited based on bill type)
+
+{date_extraction_rules}
+
+**CRITICAL: CAREFUL TEXT READING**
+
+Before extracting vendor names:
+1. Look for printed company stamps or letterheads FIRST (more accurate than handwriting)
+2. If vendor business type is mentioned (e.g., "Laboratory", "Construction", "Architect"), verify it matches the extracted name
+3. Check if vendor makes sense for {company_name}'s industry: {company_context.get('primary_industry', 'N/A') if company_context else 'N/A'}
+4. For handwritten text, set confidence to "low" and note in detection_details
+
+Example validation: If document says "Laboratory Testing Services" but you read name as "Cinema Company" → OCR ERROR, re-examine the text more carefully.
+
+{math_validation_rules}
 
 **ACCOUNTING ASSIGNMENT RULES:**
 
@@ -686,6 +1040,21 @@ Each line item must be assigned to the most appropriate expense account based on
 - Equipment repairs, maintenance → 7800 (Repairs and renewals)
 - Shipping, freight, courier → 5100 (Carriage)
 - Government fees, permits → 8200 (Other non-operating income or expenses)
+
+**Materials & Goods (CRITICAL - Check Company Inventory Management):**
+- IF company does NOT maintain inventory (inventory_management: 'no', 'none', 'project-based', 'on-demand'):
+  → Use 5001 (Purchases) for ALL materials, supplies, goods, hardware, equipment purchases
+  → Examples: Construction materials, tools, supplies, hardware, consumables → 5001 (Purchases)
+- IF company maintains inventory (inventory_management: 'yes', 'perpetual', 'periodic'):
+  → Use 1000 (Stock) or 1020 (Raw materials) for inventory items
+  → Use 5000 (Cost of goods) when selling inventory items
+
+**Equipment & Capital Items:**
+- Office equipment purchases → 0090 (Office equipment) if capitalizable asset
+- Computer hardware → 0100 (Computers) if capitalizable asset
+- Shipping, freight, courier → 5100 (Carriage)
+- Government fees, permits → 8200 (Other non-operating income or expenses)
+
 
 **CRITICAL: PROPERTY CAPITALIZATION OVERRIDE:**
 {get_property_capitalization_rules()}
@@ -815,10 +1184,13 @@ When line items map to different expense accounts:
 - Should give a clear understanding of what the bill is for
 
 **CALCULATION REQUIREMENTS:**
-- line_total = quantity × price_unit
+- ALWAYS perform mathematical validation first (see MATHEMATICAL VALIDATION section above)
+- Determine if columns are NET or GROSS before extracting
+- line_total = NET amount (taxable base) for each line
+- price_unit = line_total ÷ quantity
 - subtotal = sum of all line_totals before tax
 - total_amount = subtotal + tax_amount
-- If only total visible: subtotal = total_amount, tax_amount = 0
+- If calculations don't match, flag with low confidence
 
 **STRICT FORMATTING RULES:**
 - Text fields: Use empty string "" if not found (never use "none", "null", or "N/A")
@@ -895,7 +1267,14 @@ When line items map to different expense accounts:
         "company_validation": "low",
         "document_classification": "low"
       }},
-      "missing_fields": []
+      "missing_fields": [],
+      "mathematical_validation": {{
+        "totals_match": false,
+        "line_items_sum_verified": false,
+        "vat_calculation_verified": false,
+        "column_interpretation": "unknown",
+        "discrepancies": []
+      }}
     }}
   ]
 }}
@@ -913,14 +1292,6 @@ Each line item in the line_items array must have this exact structure:
   "account_name": "",
   "tax_grid": ""
 }}
-**For reverse charge bills:**
-{{
-  "description": "Architectural design services",
-  "tax_name": "19% RC",
-  "account_code": "0060",
-  "account_name": "Freehold property",
-  "tax_grid": "+7"
-}}
 
 **ADDITIONAL ENTRIES STRUCTURE (for VAT and complex transactions):**
 Each additional entry in the additional_entries array must have this exact structure:
@@ -933,7 +1304,6 @@ Each additional entry in the additional_entries array must have this exact struc
   "tax_name": "",
   "tax_grid": ""
 }}
-**Logic for `tax_name`:** The `tax_name` should match the tax of the source line items that generated this VAT entry. For reverse charge VAT entries, this will be `19% RC`. For standard VAT, it might be `19% S`.
 
 **TAX GRID EXAMPLES:**
 - Input VAT on reverse charge: tax_grid: "+4"
@@ -942,26 +1312,6 @@ Each additional entry in the additional_entries array must have this exact struc
 - Standard rate sales value: tax_grid: "+5"
 - Reduced rate sales value: tax_grid: "+6"
 - EU acquisitions value: tax_grid: "+8"
-
-**ACCOUNTING ASSIGNMENT EXAMPLES:**
-- Single Service Bill: debit_account="7602", debit_account_name="Consultancy fees", credit_account="2100"
-- Property Development Bill: debit_account="0060", debit_account_name="Freehold property", credit_account="2100"
-- Mixed Services Bill: debit_account="MIXED", debit_account_name="Mixed Line Items", credit_account="2100"
-- Normal Domestic Vendor with VAT (VAT Registered Company): Standard accounting + Input VAT (2202) in additional_entries with tax_grid "+4"
-- Normal Domestic Vendor with VAT (NON-VAT Registered Company): Standard accounting + Non Recoverable VAT (7906) in additional_entries
-- Reverse Charge Vendor with VAT (VAT Registered): Standard accounting + BOTH Input VAT (2202) with tax_grid "+4" AND Output VAT (2201) with tax_grid "-1" in additional_entries
-- Reverse Charge Vendor with VAT (NON-VAT Registered): Standard accounting + Non Recoverable VAT (7906) only in additional_entries
-
-**LINE ITEM ACCOUNT ASSIGNMENT EXAMPLES:**
-- "Legal consultation services" → account_code="7600", account_name="Legal fees"
-- "Portfolio management services" → account_code="7605", account_name="Portfolio management fees"
-- "Office space rental - coworking" → account_code="7101", account_name="Office space"
-- "Surveyor fees - mechanical study for property development" → account_code="0060", account_name="Freehold property"
-- "Property valuation for bank" → account_code="0060", account_name="Freehold property"
-- "Internet broadband service" → account_code="7503", account_name="Internet"  
-- "Mobile WiFi service" → account_code="7502", account_name="Telephone"
-- "Office supplies" → account_code="7504", account_name="Office stationery"
-- "Computer repair" → account_code="7800", account_name="Repairs and renewals"
 
 **ABSOLUTE REQUIREMENTS:**
 1. Every field listed above MUST be present in every bill object
@@ -983,8 +1333,10 @@ Each additional entry in the additional_entries array must have this exact struc
 17. **TAX GRID ASSIGNMENT: Include appropriate tax_grid for all eligible entries based on the refined, custom rules.**
 18. **ODOO TAX NAME ASSIGNMENT: Each line item MUST have a `tax_name` assigned based on the detailed, prioritized rules provided.**
 19. **VAT CALCULATION: Always calculate VAT for `additional_entries` based ONLY on the sum of taxable line items.**
+20. **MATHEMATICAL VALIDATION: ALWAYS perform full mathematical validation and populate mathematical_validation section**
 
 **FINAL REMINDER: Return ONLY the JSON object with ALL fields present. No explanatory text. Start with {{ and end with }}.**"""
+
 
 def ensure_line_item_structure(line_item):
     """Ensure each line item has the complete required structure including account assignment and tax grid"""
@@ -1047,6 +1399,7 @@ def validate_bill_data(bills, company_context=None):
             # Validate line item account assignments and tax grids
             valid_expense_accounts = [
                 "0060",  # Property development
+                "5001",  # Purchases (for non-inventory companies)
                 "7906", "7605", "7101",  # New accounts
                 "7602", "7600", "7601", "7603", "7100", "7190", "7200", "7201", "7102",
                 "7508", "7503", "7502", "7400", "7800", "5100", "8200", "7104", "7700",
@@ -1056,11 +1409,14 @@ def validate_bill_data(bills, company_context=None):
             ]
             
             line_item_accounts = set()
+            materials_accounts_used = []
+            
             for i, item in enumerate(line_items):
                 account_code = item.get("account_code", "")
                 account_name = item.get("account_name", "")
                 tax_grid = item.get("tax_grid", "")
                 tax_name = item.get("tax_name", "")
+                item_description = item.get("description", "").lower()
                 
                 if not account_code:
                     bill_validation["issues"].append(f"Line item {i+1} missing account_code")
@@ -1069,6 +1425,14 @@ def validate_bill_data(bills, company_context=None):
                 
                 if not account_name:
                     bill_validation["issues"].append(f"Line item {i+1} missing account_name")
+                
+                # Track materials/inventory accounts for validation
+                if account_code in ["5001", "1000", "1020", "5000"]:
+                    materials_accounts_used.append({
+                        "line": i+1,
+                        "account": account_code,
+                        "description": item_description
+                    })
                 
                 # Validate tax name
                 if not tax_name and item.get("tax_rate", 0) != 0:
@@ -1080,6 +1444,34 @@ def validate_bill_data(bills, company_context=None):
                 
                 if account_code:
                     line_item_accounts.add(account_code)
+            
+            # Validate inventory management consistency
+            if company_context and materials_accounts_used:
+                business_ops = company_context.get('business_operations', {})
+                inventory_management = business_ops.get('inventory_management', '').lower()
+                
+                for material_item in materials_accounts_used:
+                    if inventory_management in ['no', 'none', 'project-based', 'on-demand', 'just-in-time', '']:
+                        # Company does NOT maintain inventory
+                        if material_item['account'] in ['1000', '1020', '5000']:
+                            bill_validation["warnings"].append(
+                                f"Line item {material_item['line']}: Company does NOT maintain inventory "
+                                f"(inventory_management: '{inventory_management}'), but using inventory account "
+                                f"{material_item['account']}. Should use 5001 (Purchases) instead. "
+                                f"Description: '{material_item['description']}'"
+                            )
+                    elif inventory_management in ['yes', 'perpetual', 'periodic']:
+                        # Company DOES maintain inventory
+                        if material_item['account'] == '5001':
+                            # Check if this should be inventory
+                            materials_keywords = ['material', 'stock', 'inventory', 'goods', 'supplies', 'raw']
+                            if any(keyword in material_item['description'] for keyword in materials_keywords):
+                                bill_validation["warnings"].append(
+                                    f"Line item {material_item['line']}: Company maintains inventory "
+                                    f"(inventory_management: '{inventory_management}'), consider using "
+                                    f"1000 (Stock) or 1020 (Raw materials) instead of 5001 (Purchases). "
+                                    f"Description: '{material_item['description']}'"
+                                )
             
             # Check if bill is mixed (multiple account codes)
             accounting_assignment = bill.get("accounting_assignment", {})
@@ -1093,6 +1485,55 @@ def validate_bill_data(bills, company_context=None):
                 bill_validation["warnings"].append(
                     "Only one account code in line items but debit_account is set to 'MIXED'"
                 )
+        
+        # NEW: Validate mathematical consistency
+        math_validation = bill.get("mathematical_validation", {})
+        subtotal = vendor_data.get("subtotal", 0)
+        tax_amount = vendor_data.get("tax_amount", 0)
+        total_amount = vendor_data.get("total_amount", 0)
+        
+        if total_amount > 0 and line_items:
+            # Check if totals match
+            calculated_total = subtotal + tax_amount
+            if abs(calculated_total - total_amount) > 0.02:
+                bill_validation["warnings"].append(
+                    f"Amount mismatch: calculated {calculated_total:.2f}, document shows {total_amount:.2f}"
+                )
+                
+                # Check if mathematical_validation was populated
+                if not math_validation.get("totals_match"):
+                    bill_validation["warnings"].append(
+                        "Mathematical validation indicates totals don't match - review extraction"
+                    )
+            
+            # Check if line items sum to subtotal
+            line_items_sum = sum(item.get("line_total", 0) for item in line_items)
+            if abs(line_items_sum - subtotal) > 0.02:
+                bill_validation["warnings"].append(
+                    f"Line items sum ({line_items_sum:.2f}) doesn't match subtotal ({subtotal:.2f})"
+                )
+                
+                if not math_validation.get("line_items_sum_verified"):
+                    bill_validation["warnings"].append(
+                        "Mathematical validation indicates line items sum issue - possible reversed columns"
+                    )
+            
+            # Check column interpretation
+            column_interpretation = math_validation.get("column_interpretation", "unknown")
+            if column_interpretation == "reversed":
+                bill_validation["warnings"].append(
+                    "Invoice has reversed columns (Amount=NET, Price=GROSS) - verify extraction is correct"
+                )
+            elif column_interpretation == "unknown":
+                bill_validation["warnings"].append(
+                    "Could not determine column structure - mathematical validation may be incomplete"
+                )
+            
+            # Check for discrepancies reported
+            discrepancies = math_validation.get("discrepancies", [])
+            if discrepancies:
+                for discrepancy in discrepancies:
+                    bill_validation["warnings"].append(f"Mathematical discrepancy: {discrepancy}")
         
         # Check for property capitalization indicators
         property_keywords = [
@@ -1126,18 +1567,6 @@ def validate_bill_data(bills, company_context=None):
                     "Property-related keywords detected but not capitalized to 0060. "
                     "Review for IAS 40 compliance - check if costs are directly "
                     "attributable to property acquisition/development."
-                )
-        
-        # Check monetary consistency
-        subtotal = vendor_data.get("subtotal", 0)
-        tax_amount = vendor_data.get("tax_amount", 0)
-        total_amount = vendor_data.get("total_amount", 0)
-        
-        if total_amount > 0:
-            calculated_total = subtotal + tax_amount
-            if abs(calculated_total - total_amount) > 0.01:
-                bill_validation["warnings"].append(
-                    f"Amount mismatch: calculated {calculated_total}, document shows {total_amount}"
                 )
         
         # CRITICAL: VAT ACCOUNT VALIDATION BASED ON COMPANY REGISTRATION
@@ -1386,6 +1815,17 @@ Your core behavior is to think and act like a professional accountant who unders
 - Cyprus Article 11B reverse charge mechanism for construction/property services
 - Correct VAT accounting based on company VAT registration status
 - Cyprus VAT return box assignments and tax grid mapping{vat_status_note}
+- PRECISE DATE EXTRACTION with format awareness (DD/MM/YYYY for Greek documents)
+
+**CRITICAL DATE EXTRACTION EXPERTISE:**
+You are an expert at extracting dates from invoices with 100% accuracy:
+- You understand Greek date format DD/MM/YYYY (day first, then month)
+- You differentiate between invoice date, due date, receipt date, and payment date
+- You always look for explicit date labels: "ΗΜΕΡΟΜΗΝΙΑ", "Ημερ:", "Date:", "Invoice Date:"
+- You convert all dates to ISO 8601 format: "YYYY-MM-DD"
+- You validate dates before finalizing (day 01-31, month 01-12, year makes sense)
+- You NEVER confuse day and month values
+- You mark low confidence when dates are ambiguous
 
 **CRITICAL VAT CALCULATION:**
 When creating VAT entries (e.g., for reverse charge), you MUST calculate the VAT amount based **only on the sum of taxable line items**. Explicitly EXCLUDE any line items marked as exempt (`0% E`) from the taxable base.
@@ -1405,6 +1845,20 @@ You must assign correct tax grids based on this specific business requirement fo
 - Output VAT (2201) → `tax_grid: "-1"`
 - **Domestic Purchase Values (Grid `+7`):** This is your most critical rule. You MUST apply `tax_grid: "+7"` to EVERY line item on any bill from a domestic vendor (where `vendor_data.country_code` is `CY`). This rule applies to all domestic tax types (`19% RC`, `0% E`, `19% S`, etc.) without exception.
 - EU acquisitions values → `tax_grid: "+8"`
+
+**CRITICAL OCR ACCURACY:**
+- Read ALL text carefully, especially handwritten or Greek text
+- Greek letters are NOT English (Δ≠D, Η≠H, Ν≠N, Ρ≠P)
+- Always look for printed text first (stamps, letterheads) before trusting handwritten text
+- If text is unclear, set confidence to "low" - don't guess
+
+**USE COMPANY CONTEXT TO VALIDATE:**
+Company: {company_name}
+Industry: {company_context.get('primary_industry', 'N/A') if company_context else 'N/A'}
+Business: {company_context.get('business_description', 'N/A') if company_context else 'N/A'}
+
+Ask yourself: "Does this vendor make sense for this company's business?"
+If a construction company gets a bill from a "cinema" company → re-check the vendor name OCR.
 
 **CRITICAL PROPERTY CAPITALIZATION EXPERTISE:**
 You must identify when vendor bills contain costs that should be CAPITALIZED to 0060 (Freehold property) under IAS 40, not expensed. Always check:
@@ -1481,6 +1935,17 @@ LINE-LEVEL ACCOUNT ASSIGNMENT EXPERTISE:
 • Example: Telecom company billing Internet (7503) AND Mobile services (7502)
 • Example: Office supplier selling Stationery (7504) AND Equipment (0090)
 • Example: Engineering firm providing Property study (0060) AND General consulting (7602)
+
+**CRITICAL: INVENTORY MANAGEMENT AWARENESS:**
+- ALWAYS check company's business_operations.inventory_management field
+- IF inventory_management is 'no', 'none', 'project-based', or 'on-demand':
+  → Use 5001 (Purchases) for ALL materials, supplies, goods, and equipment
+  → Company purchases on demand for projects - items are NOT held in inventory
+  → Examples: Construction materials, hardware, tools, supplies → 5001 (Purchases)
+- IF inventory_management is 'yes', 'perpetual', or 'periodic':
+  → Use 1000 (Stock) or 1020 (Raw materials) for inventory items
+  → Company maintains inventory - purchases are capitalized to inventory accounts
+
 • Be precise - "Mobile WiFi" is telecommunications (7502), not internet (7503)
 • Be precise - "Property mechanical study" is capitalized (0060), not consultancy (7602)
 • Be precise - "Coworking space" is office space (7101), not general rent (7100)
@@ -1659,8 +2124,39 @@ def ensure_bill_structure(bill):
             "company_validation": "low",
             "document_classification": "low"
         },
-        "missing_fields": []
+        "missing_fields": [],
+        "mathematical_validation": {
+            "totals_match": False,
+            "line_items_sum_verified": False,
+            "vat_calculation_verified": False,
+            "column_interpretation": "unknown",
+            "discrepancies": []
+        }
     }
+    
+    def merge_with_defaults(source, defaults):
+        """Recursively merge source with defaults, ensuring all fields are present"""
+        if isinstance(defaults, dict):
+            result = {}
+            for key, default_value in defaults.items():
+                if key in source and source[key] is not None:
+                    if isinstance(default_value, dict):
+                        result[key] = merge_with_defaults(source[key], default_value)
+                    elif isinstance(default_value, list):
+                        # Ensure arrays exist and validate structure for line_items
+                        if key == "line_items" and isinstance(source[key], list):
+                            result[key] = [ensure_line_item_structure(item) for item in source[key]]
+                        else:
+                            result[key] = source[key] if isinstance(source[key], list) else default_value
+                    else:
+                        result[key] = source[key]
+                else:
+                    result[key] = default_value
+            return result
+        else:
+            return source if source is not None else defaults
+    
+    return merge_with_defaults(bill, default_bill)
     
     def merge_with_defaults(source, defaults):
         """Recursively merge source with defaults, ensuring all fields are present"""
