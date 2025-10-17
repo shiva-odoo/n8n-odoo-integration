@@ -959,7 +959,7 @@ def process_bank_statement_extraction(pdf_content, company_id, company_context=N
         # Send to Claude with parameters optimized for structured output
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=12000,
+            max_tokens=16384,
             temperature=0.0,  # Maximum determinism for consistent parsing
             system=f"""You are an expert accountant specializing in bank statement analysis and double-entry bookkeeping. Your core behavior is to think and act like a professional accountant who understands document types, transaction flows, proper account classification, and privacy requirements.
 
