@@ -1486,7 +1486,7 @@ def get_payment_report(data: Dict) -> Dict:
             'account.payment', 'search_read',
             [payment_domain],
             {'fields': ['name', 'date', 'partner_id', 'amount', 'payment_type', 
-                       'partner_type', 'communication', 'journal_id']}
+                       'partner_type', 'ref', 'journal_id']}
         )
         
         inbound_total = sum(p['amount'] for p in payments if p['payment_type'] == 'inbound')
@@ -1506,7 +1506,7 @@ def get_payment_report(data: Dict) -> Dict:
                 'payment_type': p['payment_type'],
                 'partner_type': p['partner_type'],
                 'amount': p['amount'],
-                'reference': p.get('communication', ''),
+                'reference': p.get('ref', ''),
                 'journal': p['journal_id'][1] if p.get('journal_id') else ''
             } for p in payments],
             'summary': {
@@ -1550,33 +1550,30 @@ def get_budget_vs_actual_report(data: Dict) -> Dict:
                 'error': f'Company with ID {company_id} not found'
             }
         
-        # Check if budget module is available
-        try:
-            # Try to check if the model exists
-            models.execute_kw(
-                db, uid, password,
-                'ir.model', 'search',
-                [[('model', '=', 'crossovered.budget')]]
-            )
-        except Exception as module_error:
-            return {
-                'success': False,
-                'error': 'Budget Management module (account_budget) is not installed in your Odoo instance. Please install it to use budget reports.'
-            }
-        
-        # Get budgets
+        # Get budgets - wrap in try/catch for module availability
         budget_domain = [('company_id', '=', company_id)]
         if date_from:
             budget_domain.append(('date_from', '>=', date_from))
         if date_to:
             budget_domain.append(('date_to', '<=', date_to))
         
-        budgets = models.execute_kw(
-            db, uid, password,
-            'crossovered.budget', 'search_read',
-            [budget_domain],
-            {'fields': ['name', 'date_from', 'date_to', 'state']}
-        )
+        try:
+            budgets = models.execute_kw(
+                db, uid, password,
+                'crossovered.budget', 'search_read',
+                [budget_domain],
+                {'fields': ['name', 'date_from', 'date_to', 'state']}
+            )
+        except Exception as budget_error:
+            # Check if it's a "model doesn't exist" error
+            error_str = str(budget_error)
+            if "doesn't exist" in error_str or "does not exist" in error_str:
+                return {
+                    'success': False,
+                    'error': 'Budget Management module (account_budget) is not installed in your Odoo instance. Please install it from the Odoo Apps menu to use budget reports.'
+                }
+            # Re-raise if it's a different error
+            raise
         
         budget_data = []
         
