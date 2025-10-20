@@ -27,18 +27,13 @@ def convert_decimal(obj):
     else:
         return obj
 
-def get_dashboard_metrics(business_company_id, username, company_name=None):
-    """Get dashboard metrics for a specific company using business_company_id"""
+def get_dashboard_metrics(username, company_name=None):
+    """Get dashboard metrics for a specific user by username"""
     try:
-        # IMPORTANT: Filter by business_company_id (from DynamoDB onboarding_submissions)
-        # This ensures we only get data for the specific company (e.g., 139, 124, 125, etc.)
-        filter_expression = 'business_company_id = :business_company_id'
-        expression_values = {':business_company_id': str(business_company_id)}
-        
-        # Add username filter for extra safety
-        if username:
-            filter_expression += ' AND username = :username'
-            expression_values[':username'] = username
+        # IMPORTANT: Filter by username (each username is unique per user/company)
+        # The batch_processing table does NOT have business_company_id field
+        filter_expression = 'username = :username'
+        expression_values = {':username': username}
         
         # Add company_name filter if provided for extra safety
         if company_name:
@@ -118,18 +113,13 @@ def get_dashboard_metrics(business_company_id, username, company_name=None):
             "error": str(e)
         }
 
-def get_recent_documents(business_company_id, username, company_name=None, limit=10):
-    """Get recent documents for a specific company using business_company_id"""
+def get_recent_documents(username, company_name=None, limit=10):
+    """Get recent documents for a specific user by username"""
     try:
-        # IMPORTANT: Filter by business_company_id (from DynamoDB onboarding_submissions)
-        # This ensures we only get data for the specific company (e.g., 139, 124, 125, etc.)
-        filter_expression = 'business_company_id = :business_company_id'
-        expression_values = {':business_company_id': str(business_company_id)}
-        
-        # Add username filter for extra safety
-        if username:
-            filter_expression += ' AND username = :username'
-            expression_values[':username'] = username
+        # IMPORTANT: Filter by username (each username is unique per user/company)
+        # The batch_processing table does NOT have business_company_id field
+        filter_expression = 'username = :username'
+        expression_values = {':username': username}
         
         # Add company_name filter if provided for extra safety
         if company_name:
@@ -191,18 +181,13 @@ def get_recent_documents(business_company_id, username, company_name=None, limit
             "error": str(e)
         }
 
-def get_compliance_items(business_company_id, username, company_name=None):
-    """Get compliance items/tasks for a specific company using business_company_id"""
+def get_compliance_items(username, company_name=None):
+    """Get compliance items/tasks for a specific user by username"""
     try:
-        # IMPORTANT: Filter by business_company_id (from DynamoDB onboarding_submissions)
-        # This ensures we only get data for the specific company (e.g., 139, 124, 125, etc.)
-        filter_expression = 'business_company_id = :business_company_id'
-        expression_values = {':business_company_id': str(business_company_id)}
-        
-        # Add username filter for extra safety
-        if username:
-            filter_expression += ' AND username = :username'
-            expression_values[':username'] = username
+        # IMPORTANT: Filter by username (each username is unique per user/company)
+        # The batch_processing table does NOT have business_company_id field
+        filter_expression = 'username = :username'
+        expression_values = {':username': username}
         
         # Add company_name filter if provided for extra safety
         if company_name:

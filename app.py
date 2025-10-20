@@ -1114,26 +1114,21 @@ def get_dashboard_metrics():
     """Get dashboard metrics for the current user's company"""
     try:
         current_user = get_current_user()
-        username = current_user.get('username')
         company_name = current_user.get('company_name')
         
-        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
-        # This is the company ID from DynamoDB onboarding_submissions (e.g., "139", "124", "125")
-        business_company_id = request.args.get('company_id')
+        # IMPORTANT: Get username from query parameter OR JWT token
+        # Frontend passes: ?username=enamilimit44
+        username = request.args.get('username') or current_user.get('username')
         
-        # Fallback to JWT business_company_id if not provided in query
-        if not business_company_id:
-            business_company_id = current_user.get('business_company_id')
-        
-        if not business_company_id:
+        if not username:
             return jsonify({
                 "success": False,
-                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
+                "error": "Username is required. Please provide ?username=XXX"
             }), 400
         
-        print(f"📊 Dashboard metrics for business_company_id: {business_company_id}, username: {username}")
+        print(f"📊 Dashboard metrics for username: {username}, company: {company_name}")
         
-        result = dashboard.get_dashboard_metrics(business_company_id, username, company_name)
+        result = dashboard.get_dashboard_metrics(username, company_name)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1153,28 +1148,24 @@ def get_recent_documents():
     """Get recent documents for the current user's company"""
     try:
         current_user = get_current_user()
-        username = current_user.get('username')
         company_name = current_user.get('company_name')
         
-        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
-        business_company_id = request.args.get('company_id')
+        # IMPORTANT: Get username from query parameter OR JWT token
+        # Frontend passes: ?username=enamilimit44
+        username = request.args.get('username') or current_user.get('username')
         
-        # Fallback to JWT business_company_id if not provided in query
-        if not business_company_id:
-            business_company_id = current_user.get('business_company_id')
-        
-        if not business_company_id:
+        if not username:
             return jsonify({
                 "success": False,
-                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
+                "error": "Username is required. Please provide ?username=XXX"
             }), 400
         
         # Get limit from query params (default 10)
         limit = request.args.get('limit', 10, type=int)
         
-        print(f"📄 Recent documents for business_company_id: {business_company_id}, username: {username}, limit: {limit}")
+        print(f"📄 Recent documents for username: {username}, company: {company_name}, limit: {limit}")
         
-        result = dashboard.get_recent_documents(business_company_id, username, company_name, limit)
+        result = dashboard.get_recent_documents(username, company_name, limit)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1194,25 +1185,21 @@ def get_dashboard_compliance_items():
     """Get compliance items for dashboard"""
     try:
         current_user = get_current_user()
-        username = current_user.get('username')
         company_name = current_user.get('company_name')
         
-        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
-        business_company_id = request.args.get('company_id')
+        # IMPORTANT: Get username from query parameter OR JWT token
+        # Frontend passes: ?username=enamilimit44
+        username = request.args.get('username') or current_user.get('username')
         
-        # Fallback to JWT business_company_id if not provided in query
-        if not business_company_id:
-            business_company_id = current_user.get('business_company_id')
-        
-        if not business_company_id:
+        if not username:
             return jsonify({
                 "success": False,
-                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
+                "error": "Username is required. Please provide ?username=XXX"
             }), 400
         
-        print(f"✅ Compliance items for business_company_id: {business_company_id}, username: {username}")
+        print(f"✅ Compliance items for username: {username}, company: {company_name}")
         
-        result = dashboard.get_compliance_items(business_company_id, username, company_name)
+        result = dashboard.get_compliance_items(username, company_name)
         
         if result["success"]:
             return jsonify(result), 200
