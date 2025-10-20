@@ -49,6 +49,7 @@ def generate_jwt(user_data):
         'username': user_data['username'],
         'role': user_data['role'],
         'company_id': user_data.get('company_id', ''),
+        'business_company_id': user_data.get('business_company_id', ''),  # ✅ ADDED: DynamoDB company ID
         'company_name': user_data['company_name'],
         'email': user_data['email'],
         'is_vat_registered': user_data.get('is_vat_registered', ''),
@@ -125,6 +126,7 @@ def authenticate_user(username, password):
             'role': user['role'],
             'company_name': user['company_name'],
             'company_id': user.get('company_id', ''),
+            'business_company_id': user.get('business_company_id', ''),  # ✅ ADDED: DynamoDB company ID
             'is_vat_registered': user.get('is_vat_registered', ''),
             'metadata': user.get('metadata', {})
         }
