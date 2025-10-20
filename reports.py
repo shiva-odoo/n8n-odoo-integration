@@ -793,6 +793,14 @@ def get_general_ledger_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # OPTIMIZED: Get account IDs from move lines that belong to this company
         line_domain = [
             ('company_id', '=', company_id),
@@ -1118,6 +1126,14 @@ def get_sales_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # Get customer invoices
         invoice_domain = [
             ('company_id', '=', company_id),
@@ -1238,6 +1254,14 @@ def get_purchase_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # Get vendor bills
         bill_domain = [
             ('company_id', '=', company_id),
@@ -1347,6 +1371,14 @@ def get_bank_reconciliation_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # Get bank journal
         journal = models.execute_kw(
             db, uid, password,
@@ -1425,6 +1457,14 @@ def get_payment_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # Get payments
         payment_domain = [
             ('company_id', '=', company_id),
@@ -1502,6 +1542,28 @@ def get_budget_vs_actual_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
+        # Check if budget module is available
+        try:
+            # Try to check if the model exists
+            models.execute_kw(
+                db, uid, password,
+                'ir.model', 'search',
+                [[('model', '=', 'crossovered.budget')]]
+            )
+        except Exception as module_error:
+            return {
+                'success': False,
+                'error': 'Budget Management module (account_budget) is not installed in your Odoo instance. Please install it to use budget reports.'
+            }
+        
         # Get budgets
         budget_domain = [('company_id', '=', company_id)]
         if date_from:
@@ -1578,6 +1640,14 @@ def get_partner_ledger_report(data: Dict) -> Dict:
             return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
+        
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
         
         # Build domain for account move lines
         account_types = []
