@@ -1432,17 +1432,22 @@ def get_compliance_items():
     """Get compliance items for the current user's company"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter OR JWT token
+        # Frontend should pass: ?company_id=139
+        business_company_id = request.args.get('company_id') or current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
         status = request.args.get('status')
         
-        result = compliance.get_compliance_items(company_id, status)
+        print(f"📋 Compliance items for business_company_id: {business_company_id}, status: {status}")
+        
+        result = compliance.get_compliance_items(business_company_id, status)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1462,14 +1467,7 @@ def create_compliance_item():
     """Create a new compliance item"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         username = current_user.get('username')
-        
-        if not company_id:
-            return jsonify({
-                "success": False,
-                "error": "Company ID not found for user"
-            }), 400
         
         item_data = request.get_json()
         
@@ -1479,7 +1477,18 @@ def create_compliance_item():
                 "error": "Item data is required"
             }), 400
         
-        result = compliance.create_compliance_item(company_id, item_data, username)
+        # IMPORTANT: Get business_company_id from request body OR JWT token
+        business_company_id = item_data.get('company_id') or item_data.get('business_company_id') or current_user.get('business_company_id')
+        
+        if not business_company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID (business_company_id) is required in request body"
+            }), 400
+        
+        print(f"➕ Creating compliance item for business_company_id: {business_company_id}")
+        
+        result = compliance.create_compliance_item(business_company_id, item_data, username)
         
         if result["success"]:
             return jsonify(result), 201
@@ -1499,14 +1508,7 @@ def update_compliance_item(compliance_id):
     """Update a compliance item"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         username = current_user.get('username')
-        
-        if not company_id:
-            return jsonify({
-                "success": False,
-                "error": "Company ID not found for user"
-            }), 400
         
         update_data = request.get_json()
         
@@ -1516,7 +1518,18 @@ def update_compliance_item(compliance_id):
                 "error": "Update data is required"
             }), 400
         
-        result = compliance.update_compliance_item(compliance_id, company_id, update_data, username)
+        # IMPORTANT: Get business_company_id from request body OR JWT token
+        business_company_id = update_data.get('company_id') or update_data.get('business_company_id') or current_user.get('business_company_id')
+        
+        if not business_company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID (business_company_id) is required"
+            }), 400
+        
+        print(f"✏️ Updating compliance item {compliance_id} for business_company_id: {business_company_id}")
+        
+        result = compliance.update_compliance_item(compliance_id, business_company_id, update_data, username)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1536,15 +1549,19 @@ def delete_compliance_item(compliance_id):
     """Delete a compliance item"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter OR JWT token
+        business_company_id = request.args.get('company_id') or current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
-        result = compliance.delete_compliance_item(compliance_id, company_id)
+        print(f"🗑️ Deleting compliance item {compliance_id} for business_company_id: {business_company_id}")
+        
+        result = compliance.delete_compliance_item(compliance_id, business_company_id)
         
         if result["success"]:
             return jsonify(result), 200
