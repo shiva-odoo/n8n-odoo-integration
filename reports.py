@@ -8,7 +8,33 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-#test
+def get_company_details(company_id):
+    """Get company name and details from Odoo"""
+    try:
+        models, uid, db, password = get_odoo_connection()
+        
+        company = models.execute_kw(
+            db, uid, password,
+            'res.company', 'read',
+            [company_id],
+            {'fields': ['id', 'name', 'currency_id', 'country_id', 'email', 'phone', 'website']}
+        )
+        
+        if company:
+            return {
+                'id': company[0]['id'],
+                'name': company[0]['name'],
+                'currency': company[0]['currency_id'][1] if company[0].get('currency_id') else 'EUR',
+                'country': company[0]['country_id'][1] if company[0].get('country_id') else '',
+                'email': company[0].get('email', ''),
+                'phone': company[0].get('phone', ''),
+                'website': company[0].get('website', '')
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting company details: {e}")
+        return None
+
 def resolve_company_id(company_id_input):
     """
     Resolve company_id to integer ID
@@ -130,6 +156,14 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # OPTIMIZED: Get account IDs from move lines that belong to this company
         # This ensures we only process accounts that have transactions for company 143
         line_domain = [
@@ -157,7 +191,7 @@ def get_profit_loss_report(data: Dict) -> Dict:
             return {
                 'success': True,
                 'report_type': 'Profit & Loss',
-                'company_id': company_id,
+                'company': company_details,
                 'date_from': date_from,
                 'date_to': date_to,
                 'data': {
@@ -246,7 +280,7 @@ def get_profit_loss_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Profit & Loss',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': {
@@ -282,6 +316,14 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # OPTIMIZED: Get account IDs from move lines that belong to this company
         line_domain = [
             ('company_id', '=', company_id),
@@ -303,7 +345,7 @@ def get_balance_sheet_report(data: Dict) -> Dict:
             return {
                 'success': True,
                 'report_type': 'Balance Sheet',
-                'company_id': company_id,
+                'company': company_details,
                 'date': date,
                 'data': {
                     'assets': {'total': 0, 'accounts': []},
@@ -369,7 +411,7 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Balance Sheet',
-            'company_id': company_id,
+            'company': company_details,
             'date': date,
             'data': balance_sheet
         }
@@ -395,6 +437,14 @@ def get_cash_flow_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # OPTIMIZED: Get account IDs from move lines that belong to this company
         line_domain = [
             ('company_id', '=', company_id),
@@ -419,7 +469,7 @@ def get_cash_flow_report(data: Dict) -> Dict:
             return {
                 'success': True,
                 'report_type': 'Cash Flow Statement',
-                'company_id': company_id,
+                'company': company_details,
                 'date_from': date_from,
                 'date_to': date_to,
                 'data': {
@@ -500,7 +550,7 @@ def get_cash_flow_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Cash Flow Statement',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': {
@@ -534,6 +584,14 @@ def get_aged_payables_report(data: Dict) -> Dict:
             return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
+        
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
         
         # Get unpaid vendor bills
         bill_domain = [
@@ -603,7 +661,7 @@ def get_aged_payables_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Aged Payables',
-            'company_id': company_id,
+            'company': company_details,
             'as_of_date': as_of_date,
             'data': aged_data,
             'totals': totals,
@@ -629,6 +687,14 @@ def get_aged_receivables_report(data: Dict) -> Dict:
             return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
+        
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
         
         # Get unpaid customer invoices
         invoice_domain = [
@@ -698,7 +764,7 @@ def get_aged_receivables_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Aged Receivables',
-            'company_id': company_id,
+            'company': company_details,
             'as_of_date': as_of_date,
             'data': aged_data,
             'totals': totals,
@@ -753,7 +819,7 @@ def get_general_ledger_report(data: Dict) -> Dict:
             return {
                 'success': True,
                 'report_type': 'General Ledger',
-                'company_id': company_id,
+                'company': company_details,
                 'date_from': date_from,
                 'date_to': date_to,
                 'data': []
@@ -814,7 +880,7 @@ def get_general_ledger_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'General Ledger',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': ledger_data
@@ -841,6 +907,14 @@ def get_trial_balance_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # OPTIMIZED: Get account IDs from move lines that belong to this company
         line_domain = [
             ('company_id', '=', company_id),
@@ -865,7 +939,7 @@ def get_trial_balance_report(data: Dict) -> Dict:
             return {
                 'success': True,
                 'report_type': 'Trial Balance',
-                'company_id': company_id,
+                'company': company_details,
                 'date_from': date_from,
                 'date_to': date_to,
                 'data': [],
@@ -922,7 +996,7 @@ def get_trial_balance_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Trial Balance',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': trial_balance,
@@ -957,6 +1031,14 @@ def get_tax_report(data: Dict) -> Dict:
             return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         models, uid, db, password = get_odoo_connection()
+        
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
         
         # Get tax lines
         tax_domain = [
@@ -1003,7 +1085,7 @@ def get_tax_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Tax Report',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': list(tax_summary.values()),
@@ -1123,7 +1205,7 @@ def get_sales_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Sales Report',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'group_by': group_by,
@@ -1227,7 +1309,7 @@ def get_purchase_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Purchase Report',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'group_by': group_by,
@@ -1302,7 +1384,7 @@ def get_bank_reconciliation_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Bank Reconciliation',
-            'company_id': company_id,
+            'company': company_details,
             'journal_name': journal[0]['name'],
             'as_of_date': date,
             'data': {
@@ -1373,7 +1455,7 @@ def get_payment_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Payment Report',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'payment_type': payment_type,
@@ -1464,7 +1546,7 @@ def get_budget_vs_actual_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Budget vs Actual',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': budget_data
@@ -1528,7 +1610,7 @@ def get_partner_ledger_report(data: Dict) -> Dict:
             return {
                 'success': True,
                 'report_type': 'Partner Ledger',
-                'company_id': company_id,
+                'company': company_details,
                 'date_from': date_from,
                 'date_to': date_to,
                 'partner_type': partner_type,
@@ -1603,7 +1685,7 @@ def get_partner_ledger_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Partner Ledger',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'partner_type': partner_type,
@@ -1634,11 +1716,11 @@ def get_executive_summary_report(data: Dict) -> Dict:
             return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
         # Get multiple reports
-        pl_data = get_profit_loss_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
-        bs_data = get_balance_sheet_report({'company_id': company_id, 'date': date_to})
-        cf_data = get_cash_flow_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
-        sales_data = get_sales_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
-        purchase_data = get_purchase_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
+        pl_data = get_profit_loss_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
+        bs_data = get_balance_sheet_report({'company': company_details, 'date': date_to})
+        cf_data = get_cash_flow_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
+        sales_data = get_sales_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
+        purchase_data = get_purchase_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
         
         executive_summary = {
             'revenue': pl_data['data']['revenue']['total'] if pl_data['success'] else 0,
@@ -1656,7 +1738,7 @@ def get_executive_summary_report(data: Dict) -> Dict:
         return {
             'success': True,
             'report_type': 'Executive Summary',
-            'company_id': company_id,
+            'company': company_details,
             'date_from': date_from,
             'date_to': date_to,
             'data': executive_summary
