@@ -125,10 +125,10 @@ def get_odoo_connection():
         uid = common.authenticate(db, username, password, {})
 
         if not uid:
-            print("❌ Authentication failed - Invalid credentials")
+            print("Authentication failed - Invalid credentials")
             raise Exception("Authentication with Odoo failed")
 
-        print(f"✅ Successfully authenticated! UID: {uid}")
+        print(f"Successfully authenticated! UID: {uid}")
         return models, uid, db, password
         
     except Exception as e:
@@ -1715,12 +1715,20 @@ def get_executive_summary_report(data: Dict) -> Dict:
         if not company_id:
             return {'success': False, 'error': f'Invalid company_id: {company_id_input}'}
         
+        # Get company details
+        company_details = get_company_details(company_id)
+        if not company_details:
+            return {
+                'success': False,
+                'error': f'Company with ID {company_id} not found'
+            }
+        
         # Get multiple reports
-        pl_data = get_profit_loss_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
-        bs_data = get_balance_sheet_report({'company': company_details, 'date': date_to})
-        cf_data = get_cash_flow_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
-        sales_data = get_sales_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
-        purchase_data = get_purchase_report({'company': company_details, 'date_from': date_from, 'date_to': date_to})
+        pl_data = get_profit_loss_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
+        bs_data = get_balance_sheet_report({'company_id': company_id, 'date': date_to})
+        cf_data = get_cash_flow_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
+        sales_data = get_sales_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
+        purchase_data = get_purchase_report({'company_id': company_id, 'date_from': date_from, 'date_to': date_to})
         
         executive_summary = {
             'revenue': pl_data['data']['revenue']['total'] if pl_data['success'] else 0,
