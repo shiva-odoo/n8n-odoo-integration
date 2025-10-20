@@ -130,28 +130,54 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get revenue accounts - NO company filter on account.account
-        # Company filtering is done on account.move.line instead
-        revenue_domain = [
-            ('account_type', 'in', ['income', 'income_other'])
+        # OPTIMIZED: Get account IDs from move lines that belong to this company
+        # This ensures we only process accounts that have transactions for company 143
+        line_domain = [
+            ('company_id', '=', company_id),
+            ('parent_state', '=', 'posted')
         ]
-        revenue_accounts = models.execute_kw(
+        if date_from:
+            line_domain.append(('date', '>=', date_from))
+        if date_to:
+            line_domain.append(('date', '<=', date_to))
+        
+        # Get unique account IDs from transactions
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [line_domain],
+            {'fields': ['account_id']}
+        )
+        
+        # Extract unique account IDs
+        unique_account_ids = list(set(line['account_id'][0] for line in move_lines if line.get('account_id')))
+        
+        if not unique_account_ids:
+            # No transactions found for this company in date range
+            return {
+                'success': True,
+                'report_type': 'Profit & Loss',
+                'company_id': company_id,
+                'date_from': date_from,
+                'date_to': date_to,
+                'data': {
+                    'revenue': {'total': 0, 'accounts': []},
+                    'expenses': {'total': 0, 'accounts': []},
+                    'net_profit': 0
+                }
+            }
+        
+        # Get account details ONLY for accounts used in transactions
+        accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [revenue_domain],
+            [[('id', 'in', unique_account_ids)]],
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
-        # Get expense accounts - NO company filter on account.account
-        expense_domain = [
-            ('account_type', 'in', ['expense', 'expense_depreciation', 'expense_direct_cost'])
-        ]
-        expense_accounts = models.execute_kw(
-            db, uid, password,
-            'account.account', 'search_read',
-            [expense_domain],
-            {'fields': ['id', 'name', 'code', 'account_type']}
-        )
+        # Separate into revenue and expense accounts
+        revenue_accounts = [acc for acc in accounts if acc['account_type'] in ['income', 'income_other']]
+        expense_accounts = [acc for acc in accounts if acc['account_type'] in ['expense', 'expense_depreciation', 'expense_direct_cost']]
         
         # Get account move lines for revenue
         revenue_data = []
