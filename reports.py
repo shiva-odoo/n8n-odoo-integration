@@ -282,7 +282,45 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get all account types for balance sheet
+        # OPTIMIZED: Get account IDs from move lines that belong to this company
+        line_domain = [
+            ('company_id', '=', company_id),
+            ('parent_state', '=', 'posted'),
+            ('date', '<=', date)
+        ]
+        
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [line_domain],
+            {'fields': ['account_id']}
+        )
+        
+        # Extract unique account IDs
+        unique_account_ids = list(set(line['account_id'][0] for line in move_lines if line.get('account_id')))
+        
+        if not unique_account_ids:
+            return {
+                'success': True,
+                'report_type': 'Balance Sheet',
+                'company_id': company_id,
+                'date': date,
+                'data': {
+                    'assets': {'total': 0, 'accounts': []},
+                    'liabilities': {'total': 0, 'accounts': []},
+                    'equity': {'total': 0, 'accounts': []}
+                }
+            }
+        
+        # Get ONLY accounts used in transactions
+        all_accounts = models.execute_kw(
+            db, uid, password,
+            'account.account', 'search_read',
+            [[('id', 'in', unique_account_ids)]],
+            {'fields': ['id', 'name', 'code', 'account_type']}
+        )
+        
+        # Categorize accounts by type
         account_types = {
             'assets': ['asset_receivable', 'asset_cash', 'asset_current', 'asset_non_current', 'asset_prepayments', 'asset_fixed'],
             'liabilities': ['liability_payable', 'liability_credit_card', 'liability_current', 'liability_non_current'],
@@ -292,16 +330,8 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         balance_sheet = {}
         
         for category, types in account_types.items():
-            # NO company filter on account.account - filter on move lines instead
-            accounts_domain = [
-                ('account_type', 'in', types)
-            ]
-            accounts = models.execute_kw(
-                db, uid, password,
-                'account.account', 'search_read',
-                [accounts_domain],
-                {'fields': ['id', 'name', 'code', 'account_type']}
-            )
+            # Filter accounts by category
+            accounts = [acc for acc in all_accounts if acc['account_type'] in types]
             
             category_data = []
             category_total = 0
@@ -365,16 +395,50 @@ def get_cash_flow_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get cash and bank accounts - NO company filter on account.account
-        cash_domain = [
-            ('account_type', 'in', ['asset_cash', 'liability_credit_card'])
+        # OPTIMIZED: Get account IDs from move lines that belong to this company
+        line_domain = [
+            ('company_id', '=', company_id),
+            ('parent_state', '=', 'posted')
         ]
-        cash_accounts = models.execute_kw(
+        if date_from:
+            line_domain.append(('date', '>=', date_from))
+        if date_to:
+            line_domain.append(('date', '<=', date_to))
+        
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [line_domain],
+            {'fields': ['account_id']}
+        )
+        
+        # Extract unique account IDs
+        unique_account_ids = list(set(line['account_id'][0] for line in move_lines if line.get('account_id')))
+        
+        if not unique_account_ids:
+            return {
+                'success': True,
+                'report_type': 'Cash Flow Statement',
+                'company_id': company_id,
+                'date_from': date_from,
+                'date_to': date_to,
+                'data': {
+                    'opening_balance': 0,
+                    'closing_balance': 0,
+                    'net_change': 0,
+                    'accounts': []
+                }
+            }
+        
+        # Get ONLY accounts used in transactions, filtered by cash/bank type
+        all_accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [cash_domain],
+            [[('id', 'in', unique_account_ids), ('account_type', 'in', ['asset_cash', 'liability_credit_card'])]],
             {'fields': ['id', 'name', 'code']}
         )
+        
+        cash_accounts = all_accounts
         
         cash_flow_data = []
         opening_balance = 0
@@ -663,8 +727,40 @@ def get_general_ledger_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get accounts - NO company filter on account.account
-        account_domain = []
+        # OPTIMIZED: Get account IDs from move lines that belong to this company
+        line_domain = [
+            ('company_id', '=', company_id),
+            ('parent_state', '=', 'posted')
+        ]
+        if account_id:
+            line_domain.append(('account_id', '=', account_id))
+        if date_from:
+            line_domain.append(('date', '>=', date_from))
+        if date_to:
+            line_domain.append(('date', '<=', date_to))
+        
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [line_domain],
+            {'fields': ['account_id']}
+        )
+        
+        # Extract unique account IDs
+        unique_account_ids = list(set(line['account_id'][0] for line in move_lines if line.get('account_id')))
+        
+        if not unique_account_ids:
+            return {
+                'success': True,
+                'report_type': 'General Ledger',
+                'company_id': company_id,
+                'date_from': date_from,
+                'date_to': date_to,
+                'data': []
+            }
+        
+        # Get ONLY accounts used in transactions
+        account_domain = [('id', 'in', unique_account_ids)]
         if account_id:
             account_domain.append(('id', '=', account_id))
         
@@ -745,11 +841,42 @@ def get_trial_balance_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get all accounts - NO company filter on account.account
+        # OPTIMIZED: Get account IDs from move lines that belong to this company
+        line_domain = [
+            ('company_id', '=', company_id),
+            ('parent_state', '=', 'posted')
+        ]
+        if date_from:
+            line_domain.append(('date', '>=', date_from))
+        if date_to:
+            line_domain.append(('date', '<=', date_to))
+        
+        move_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [line_domain],
+            {'fields': ['account_id']}
+        )
+        
+        # Extract unique account IDs
+        unique_account_ids = list(set(line['account_id'][0] for line in move_lines if line.get('account_id')))
+        
+        if not unique_account_ids:
+            return {
+                'success': True,
+                'report_type': 'Trial Balance',
+                'company_id': company_id,
+                'date_from': date_from,
+                'date_to': date_to,
+                'data': [],
+                'totals': {'debit': 0, 'credit': 0, 'difference': 0}
+            }
+        
+        # Get ONLY accounts used in transactions
         accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [[]],  # Empty domain = get all accounts
+            [[('id', 'in', unique_account_ids)]],
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
@@ -1377,8 +1504,40 @@ def get_partner_ledger_report(data: Dict) -> Dict:
         if partner_type == 'supplier' or partner_type == 'all':
             account_types.append('liability_payable')
         
-        # NO company filter on account.account - filter on move lines instead
+        # OPTIMIZED: Get account IDs from move lines that belong to this company
+        initial_line_domain = [
+            ('company_id', '=', company_id),
+            ('parent_state', '=', 'posted')
+        ]
+        if date_from:
+            initial_line_domain.append(('date', '>=', date_from))
+        if date_to:
+            initial_line_domain.append(('date', '<=', date_to))
+        
+        initial_lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'search_read',
+            [initial_line_domain],
+            {'fields': ['account_id']}
+        )
+        
+        # Extract unique account IDs
+        unique_account_ids = list(set(line['account_id'][0] for line in initial_lines if line.get('account_id')))
+        
+        if not unique_account_ids:
+            return {
+                'success': True,
+                'report_type': 'Partner Ledger',
+                'company_id': company_id,
+                'date_from': date_from,
+                'date_to': date_to,
+                'partner_type': partner_type,
+                'data': []
+            }
+        
+        # Get ONLY accounts used in transactions, filtered by type
         account_domain = [
+            ('id', 'in', unique_account_ids),
             ('account_type', 'in', account_types)
         ]
         
