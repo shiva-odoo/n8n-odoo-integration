@@ -130,9 +130,9 @@ def get_profit_loss_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get revenue accounts - FILTER BY COMPANY_ID
+        # Get revenue accounts - NO company filter on account.account
+        # Company filtering is done on account.move.line instead
         revenue_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', ['income', 'income_other'])
         ]
         revenue_accounts = models.execute_kw(
@@ -142,9 +142,8 @@ def get_profit_loss_report(data: Dict) -> Dict:
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
-        # Get expense accounts - FILTER BY COMPANY_ID
+        # Get expense accounts - NO company filter on account.account
         expense_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', ['expense', 'expense_depreciation', 'expense_direct_cost'])
         ]
         expense_accounts = models.execute_kw(
@@ -267,8 +266,8 @@ def get_balance_sheet_report(data: Dict) -> Dict:
         balance_sheet = {}
         
         for category, types in account_types.items():
+            # NO company filter on account.account - filter on move lines instead
             accounts_domain = [
-                ('company_id', '=', company_id),
                 ('account_type', 'in', types)
             ]
             accounts = models.execute_kw(
@@ -340,9 +339,8 @@ def get_cash_flow_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get cash and bank accounts - FILTER BY COMPANY_ID
+        # Get cash and bank accounts - NO company filter on account.account
         cash_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', ['asset_cash', 'liability_credit_card'])
         ]
         cash_accounts = models.execute_kw(
@@ -639,8 +637,8 @@ def get_general_ledger_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get accounts - FILTER BY COMPANY_ID
-        account_domain = [('company_id', '=', company_id)]
+        # Get accounts - NO company filter on account.account
+        account_domain = []
         if account_id:
             account_domain.append(('id', '=', account_id))
         
@@ -721,11 +719,11 @@ def get_trial_balance_report(data: Dict) -> Dict:
         
         models, uid, db, password = get_odoo_connection()
         
-        # Get all accounts - FILTER BY COMPANY_ID
+        # Get all accounts - NO company filter on account.account
         accounts = models.execute_kw(
             db, uid, password,
             'account.account', 'search_read',
-            [[('company_id', '=', company_id)]],
+            [[]],  # Empty domain = get all accounts
             {'fields': ['id', 'name', 'code', 'account_type']}
         )
         
@@ -1353,8 +1351,8 @@ def get_partner_ledger_report(data: Dict) -> Dict:
         if partner_type == 'supplier' or partner_type == 'all':
             account_types.append('liability_payable')
         
+        # NO company filter on account.account - filter on move lines instead
         account_domain = [
-            ('company_id', '=', company_id),
             ('account_type', 'in', account_types)
         ]
         
