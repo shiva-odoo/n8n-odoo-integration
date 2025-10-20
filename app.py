@@ -1114,16 +1114,26 @@ def get_dashboard_metrics():
     """Get dashboard metrics for the current user's company"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         username = current_user.get('username')
+        company_name = current_user.get('company_name')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
+        # This is the company ID from DynamoDB onboarding_submissions (e.g., "139", "124", "125")
+        business_company_id = request.args.get('company_id')
+        
+        # Fallback to JWT business_company_id if not provided in query
+        if not business_company_id:
+            business_company_id = current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
-        result = dashboard.get_dashboard_metrics(company_id, username)
+        print(f"📊 Dashboard metrics for business_company_id: {business_company_id}, username: {username}")
+        
+        result = dashboard.get_dashboard_metrics(business_company_id, username, company_name)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1143,19 +1153,28 @@ def get_recent_documents():
     """Get recent documents for the current user's company"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
+        username = current_user.get('username')
+        company_name = current_user.get('company_name')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
+        business_company_id = request.args.get('company_id')
+        
+        # Fallback to JWT business_company_id if not provided in query
+        if not business_company_id:
+            business_company_id = current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
         # Get limit from query params (default 10)
         limit = request.args.get('limit', 10, type=int)
-        username = current_user.get('username')
         
-        result = dashboard.get_recent_documents(company_id, username, limit)
+        print(f"📄 Recent documents for business_company_id: {business_company_id}, username: {username}, limit: {limit}")
+        
+        result = dashboard.get_recent_documents(business_company_id, username, company_name, limit)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1175,16 +1194,25 @@ def get_dashboard_compliance_items():
     """Get compliance items for dashboard"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         username = current_user.get('username')
+        company_name = current_user.get('company_name')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
+        business_company_id = request.args.get('company_id')
+        
+        # Fallback to JWT business_company_id if not provided in query
+        if not business_company_id:
+            business_company_id = current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
-        result = dashboard.get_compliance_items(company_id, username)
+        print(f"✅ Compliance items for business_company_id: {business_company_id}, username: {username}")
+        
+        result = dashboard.get_compliance_items(business_company_id, username, company_name)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1278,12 +1306,18 @@ def get_bank_transactions():
     """Get bank transactions for reconciliation"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
+        business_company_id = request.args.get('company_id')
+        
+        # Fallback to JWT business_company_id if not provided in query
+        if not business_company_id:
+            business_company_id = current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
         # Get query parameters
@@ -1292,8 +1326,10 @@ def get_bank_transactions():
         date_to = request.args.get('date_to')
         status = request.args.get('status')
         
+        print(f"🏦 Bank transactions for business_company_id: {business_company_id}")
+        
         result = bank_reconciliation.get_bank_transactions(
-            company_id, 
+            business_company_id, 
             bank_account_id, 
             date_from, 
             date_to, 
@@ -1318,15 +1354,23 @@ def get_bank_accounts():
     """Get bank accounts for the current user's company"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         
-        if not company_id:
+        # IMPORTANT: Get business_company_id from query parameter (sent by frontend)
+        business_company_id = request.args.get('company_id')
+        
+        # Fallback to JWT business_company_id if not provided in query
+        if not business_company_id:
+            business_company_id = current_user.get('business_company_id')
+        
+        if not business_company_id:
             return jsonify({
                 "success": False,
-                "error": "Company ID not found for user"
+                "error": "Company ID (business_company_id) is required. Please provide ?company_id=XXX"
             }), 400
         
-        result = bank_reconciliation.get_bank_accounts(company_id)
+        print(f"🏦 Bank accounts for business_company_id: {business_company_id}")
+        
+        result = bank_reconciliation.get_bank_accounts(business_company_id)
         
         if result["success"]:
             return jsonify(result), 200
@@ -1346,14 +1390,7 @@ def reconcile_transaction():
     """Reconcile a bank transaction"""
     try:
         current_user = get_current_user()
-        company_id = current_user.get('company_id')
         username = current_user.get('username')
-        
-        if not company_id:
-            return jsonify({
-                "success": False,
-                "error": "Company ID not found for user"
-            }), 400
         
         data = request.get_json()
         
@@ -1363,9 +1400,24 @@ def reconcile_transaction():
                 "error": "Transaction ID is required"
             }), 400
         
+        # IMPORTANT: Get business_company_id from request body
+        business_company_id = data.get('company_id') or data.get('business_company_id')
+        
+        # Fallback to JWT business_company_id if not provided in request
+        if not business_company_id:
+            business_company_id = current_user.get('business_company_id')
+        
+        if not business_company_id:
+            return jsonify({
+                "success": False,
+                "error": "Company ID (business_company_id) is required in request body"
+            }), 400
+        
+        print(f"🔄 Reconciling transaction {data['transaction_id']} for business_company_id: {business_company_id}")
+        
         result = bank_reconciliation.reconcile_transaction(
             data['transaction_id'],
-            company_id,
+            business_company_id,
             data.get('matched_record_type'),
             data.get('matched_record_id'),
             username

@@ -27,12 +27,13 @@ def convert_decimal(obj):
     else:
         return obj
 
-def get_bank_transactions(company_id, bank_account_id=None, date_from=None, date_to=None, status=None):
-    """Get bank transactions for reconciliation"""
+def get_bank_transactions(business_company_id, bank_account_id=None, date_from=None, date_to=None, status=None):
+    """Get bank transactions for reconciliation using business_company_id"""
     try:
-        # Build filter expression
-        filter_expression = 'company_id = :company_id'
-        expression_values = {':company_id': company_id}
+        # IMPORTANT: Filter by business_company_id (from DynamoDB onboarding_submissions)
+        # This ensures we only get transactions for the specific company (e.g., 139, 124, 125, etc.)
+        filter_expression = 'business_company_id = :business_company_id'
+        expression_values = {':business_company_id': str(business_company_id)}
         
         if bank_account_id:
             filter_expression += ' AND bank_account_id = :bank_account_id'
@@ -106,14 +107,15 @@ def get_bank_transactions(company_id, bank_account_id=None, date_from=None, date
             "error": str(e)
         }
 
-def get_bank_accounts(company_id):
-    """Get all bank accounts for a company"""
+def get_bank_accounts(business_company_id):
+    """Get all bank accounts for a company using business_company_id"""
     try:
         try:
+            # IMPORTANT: Filter by business_company_id (from DynamoDB onboarding_submissions)
             response = bank_accounts_table.scan(
-                FilterExpression='company_id = :company_id',
+                FilterExpression='business_company_id = :business_company_id',
                 ExpressionAttributeValues={
-                    ':company_id': company_id
+                    ':business_company_id': str(business_company_id)
                 }
             )
             accounts = convert_decimal(response.get('Items', []))
@@ -159,9 +161,27 @@ def get_bank_accounts(company_id):
             "error": str(e)
         }
 
-def reconcile_transaction(transaction_id, company_id, matched_record_type, matched_record_id, reconciled_by):
+def reconcile_transaction(transaction_id, business_company_id, matched_record_type, matched_record_id, reconciled_by):
     """Mark a transaction as reconciled and link to accounting record"""
     try:
+        # Validate that transaction belongs to the company (security check)
+        response = transactions_table.get_item(Key={'transaction_id': transaction_id})
+        transaction = response.get('Item')
+        
+        if not transaction:
+            return {
+                "success": False,
+                "error": "Transaction not found"
+            }
+        
+        # Verify the transaction belongs to this business_company_id
+        if transaction.get('business_company_id') != str(business_company_id):
+            return {
+                "success": False,
+                "error": "Transaction does not belong to this company"
+            }
+        
+        # Now proceed with reconciliation
         # Update transaction with reconciliation info
         transactions_table.update_item(
             Key={'transaction_id': transaction_id},
