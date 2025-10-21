@@ -14,8 +14,11 @@ def get_classification_prompt(company_name):
     return f"""You are a highly accurate document classification AI assistant. Perform strict OCR analysis on the uploaded document and extract key information in the specified JSON format.
 
 **CRITICAL OUTPUT REQUIREMENT:**
-Your response must contain ONLY valid JSON. No explanations, comments, or markdown.
+Your response MUST contain ONLY valid JSON. Absolutely NO markdown, NO code blocks, NO explanations, NO comments.
+Do NOT wrap your response in ```json or ``` tags.
+Do NOT add any text before or after the JSON.
 Start directly with {{ and end with }}.
+Output pure JSON only.
 
 **USER'S COMPANY:** "{company_name}"
 
@@ -218,13 +221,11 @@ Look for these exact fields in the document:
    - Another company issued this TO {company_name}
    
    **MANDATORY OUTPUT:**
-   ```json
    {{
      "document_type": "bill",
      "category": "money_going_out",
      "reasoning": "{company_name} appears in [TO/BILL TO/CUSTOMER] field. They are the recipient and must pay. This is a BILL."
    }}
-   ```
    
    **⛔ STOP HERE. DO NOT CHECK OTHER RULES. OUTPUT IMMEDIATELY.**
 
@@ -256,13 +257,11 @@ Look at the TOP/HEADER section of the document for:
       - {company_name} will RECEIVE money
       
       **MANDATORY OUTPUT:**
-      ```json
       {{
         "document_type": "invoice",
         "category": "money_coming_in",
         "reasoning": "{company_name} issued this document to [customer name]. They are requesting payment. This is an INVOICE."
       }}
-      ```
       
       **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
    
@@ -287,13 +286,11 @@ Look at the PAYMENT DETAILS section (usually at bottom):
    → {company_name} will RECEIVE the payment
    
    **MANDATORY OUTPUT:**
-   ```json
    {{
      "document_type": "invoice",
      "category": "money_coming_in",
      "reasoning": "Payment details show {company_name}'s bank account. They will receive payment. This is an INVOICE."
    }}
-   ```
    
    **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
 
@@ -301,13 +298,11 @@ Look at the PAYMENT DETAILS section (usually at bottom):
    → {company_name} must PAY to that account
    
    **MANDATORY OUTPUT:**
-   ```json
    {{
      "document_type": "bill",
      "category": "money_going_out",
      "reasoning": "Payment details show [vendor name]'s bank account. {company_name} must pay to this account. This is a BILL."
    }}
-   ```
    
    **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
 
@@ -329,31 +324,25 @@ Analyze:
 - Any contextual clues
 
 ✅ **{company_name} will SEND/PAY money**
-   ```json
    {{
      "document_type": "bill",
      "category": "money_going_out",
      "reasoning": "Based on document structure, {company_name} must pay. This is a BILL."
    }}
-   ```
 
 ✅ **{company_name} will RECEIVE/GET PAID money**
-   ```json
    {{
      "document_type": "invoice",
      "category": "money_coming_in",
      "reasoning": "Based on document structure, {company_name} will receive payment. This is an INVOICE."
    }}
-   ```
 
 ❌ **Cannot determine payment direction**
-   ```json
    {{
      "document_type": null,
      "category": "illegible_document",
      "reasoning": "Cannot determine payment direction or document structure unclear."
    }}
-   ```
 
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -387,12 +376,10 @@ Before generating final JSON, verify these ABSOLUTE RULES:
 ═══════════════════════════════════════════════════════════════════════════════
 
 **Example 1: Clear BILL case**
-```
 Document header: "ABC Consulting Services Ltd"
 BILL TO: Kyrastel Enterprises Limited
 Amount: $500
 Payment to: ABC Consulting's bank account
-```
 
 **Analysis:**
 - Kyrastel appears in "BILL TO:" field → **Rule 1 triggers**
@@ -400,24 +387,20 @@ Payment to: ABC Consulting's bank account
 - Kyrastel must PAY ABC Consulting
 
 **Output:**
-```json
 {{
   "document_type": "bill",
   "category": "money_going_out",
   "company_name": "Kyrastel Enterprises Limited",
   "reasoning": "Kyrastel Enterprises Limited appears in BILL TO field. They are receiving this document from ABC Consulting and must pay. This is a BILL."
 }}
-```
 
 ═══════════════════════════════════════════════════════════════════════════════
 
 **Example 2: Clear INVOICE case**
-```
 Document header: "Kyrastel Enterprises Limited"
 BILL TO: XYZ Corporation
 Amount: $1000
 Payment to: Kyrastel's bank account
-```
 
 **Analysis:**
 - Kyrastel in header as issuer → **Rule 2 checks**
@@ -426,24 +409,20 @@ Payment to: Kyrastel's bank account
 - Kyrastel will RECEIVE money
 
 **Output:**
-```json
 {{
   "document_type": "invoice",
   "category": "money_coming_in",
   "company_name": "Kyrastel Enterprises Limited",
   "reasoning": "Kyrastel Enterprises Limited issued this document to XYZ Corporation. Payment goes to Kyrastel's bank account. They will receive payment. This is an INVOICE."
 }}
-```
 
 ═══════════════════════════════════════════════════════════════════════════════
 
 **Example 3: Vendor invoice (BILL) case**
-```
 Document header: "N.A MechEnergy Consulting Engineer"
 BILL TO: Kyrastel Enterprises ltd
 Services: Engineering consultation
 Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
-```
 
 **Analysis:**
 - Kyrastel in "BILL TO:" field → **Rule 1 IMMEDIATELY triggers**
@@ -452,23 +431,19 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
 - Kyrastel must PAY
 
 **Output:**
-```json
 {{
   "document_type": "bill",
   "category": "money_going_out",
   "company_name": "Kyrastel Enterprises Limited",
   "reasoning": "Kyrastel Enterprises ltd appears in BILL TO field. N.A MechEnergy issued this to Kyrastel. Payment goes to N.A MechEnergy's bank account. Kyrastel must pay. This is a BILL."
 }}
-```
 
 **⚠️ WRONG Classification Example:**
-```json
 {{
   "document_type": "invoice",
   "category": "money_coming_in",
   "reasoning": "...from the issuer's perspective, this is an invoice..."
 }}
-```
 **Why this is WRONG:**
 - ❌ Used issuer's perspective instead of {company_name}'s perspective
 - ❌ Ignored Rule 1: {company_name} in BILL TO field
@@ -493,7 +468,6 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
 ═══════════════════════════════════════════════════════════════════════════════
 
 **REQUIRED JSON OUTPUT FORMAT:**
-```json
 {{
   "document_type": "payroll|invoice|bill|bank_statement|share_document|null",
   "category": "money_coming_in|money_going_out|bank_statement|illegible_document",
@@ -502,7 +476,6 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
   "confidence_score": 0.95,
   "reasoning": "Clear explanation from {company_name}'s perspective"
 }}
-```
 
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -517,7 +490,11 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
 7. ✅ Invoice → always money_coming_in
 8. ✅ Bill → always money_going_out
 9. ❌ NEVER use issuer's perspective
-10. ❌ NEVER output explanatory text, only JSON"""
+10. ❌ NEVER output explanatory text, only JSON
+11. ❌ NEVER use markdown code blocks or backticks
+12. ❌ NEVER add any text before or after the JSON object
+
+Output pure JSON immediately. No formatting. No markdown. Just JSON."""
 
 def generate_company_variations(company_name):
     """Generate common variations of company name for better matching"""
@@ -547,6 +524,38 @@ def generate_company_variations(company_name):
     
     # Format variations as bullet list
     return '\n'.join([f"  - {var}" for var in set(variations)])
+
+def clean_json_response(response_text):
+    """
+    Clean Claude's response to extract pure JSON
+    Handles markdown code blocks, extra whitespace, and double braces
+    """
+    cleaned = response_text.strip()
+    
+    # Remove markdown code blocks (both ```json and ```)
+    if cleaned.startswith("```"):
+        # Find the first newline after the opening fence
+        first_newline = cleaned.find('\n')
+        if first_newline != -1:
+            cleaned = cleaned[first_newline + 1:]
+        else:
+            # No newline found, remove the fence directly
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            elif cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+    
+    # Remove trailing code fence
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    
+    # Remove double braces (sometimes Claude uses template syntax)
+    cleaned = cleaned.replace("{{", "{").replace("}}", "}")
+    
+    # Strip again to remove any whitespace from fence removal
+    cleaned = cleaned.strip()
+    
+    return cleaned
 
 def download_from_s3(s3_key, bucket_name=None):
     """Download file from S3 using key"""
@@ -670,8 +679,11 @@ def main(data):
         
         if result["success"]:
             try:
-                # Parse Claude's JSON response
-                cleaned_response = result["classification"].replace("{{", "{").replace("}}", "}")
+                # Parse Claude's JSON response with robust cleaning
+                cleaned_response = clean_json_response(result["classification"])
+                
+                print(f"Cleaned response: {cleaned_response[:200]}...")  # Debug log
+                
                 classification_data = json.loads(cleaned_response)
                 
                 # CRITICAL: Post-processing validation and auto-correction
@@ -706,8 +718,9 @@ def main(data):
             except json.JSONDecodeError as e:
                 return {
                     "success": False,
-                    "error": "Claude returned invalid JSON",
-                    "raw_response": result["classification"]
+                    "error": f"Claude returned invalid JSON: {str(e)}",
+                    "raw_response": result["classification"],
+                    "cleaned_response": clean_json_response(result["classification"])
                 }
         else:
             return {
