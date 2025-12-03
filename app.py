@@ -69,6 +69,7 @@ import company_profile
 import bank_reconciliation
 import compliance
 import create_payroll_transaction as createpayrolltransaction
+import dynamodb_data_extractor
 
 
 app = Flask(__name__)
@@ -4490,6 +4491,298 @@ def download_executive_summary():
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# ================================
+# DYNAMO DB EXTRACTOR
+# ================================
+
+@app.route('/api/extract-dynamodb-data', methods=['POST'])
+def extract_dynamodb_data_endpoint():
+    """
+    Extract data from DynamoDB tables (invoices, bills, payroll, share transactions, bank transactions)
+    with mandatory company name filtering and optional company ID, date range, and partner extraction
+    
+    Expected JSON body:
+    {
+        "company_name": "Acme Corporation",  // REQUIRED - filter by company name
+        "company_id": "COMP-12345",          // Optional - filter by company ID
+        "start_date": "2025-01-01",          // Optional - filter by date range
+        "end_date": "2025-12-31",            // Optional - filter by date range
+        "status": "approved",                 // Optional - filter by status
+        "tables": ["invoices", "bills"],     // Optional - specific tables to extract
+        "include_partners": true              // Optional - extract customer/vendor data (default: true)
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "extraction_summary": {
+            "total_records": 1250,
+            "company_name": "Acme Corporation",
+            "company_id": "COMP-12345",
+            "tables_extracted": ["invoices", "bills", "customers", "vendors"],
+            "extraction_timestamp": "2025-11-26T10:30:00Z",
+            "records_by_table": {
+                "invoices": 450,
+                "bills": 320,
+                "customers": 125,
+                "vendors": 95,
+                "bank_transactions": 260
+            },
+            "filters_applied": {
+                "company_name": "Acme Corporation",
+                "company_id": "COMP-12345",
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31"
+            }
+        },
+        "data": {
+            "invoices": [
+                {
+                    "transaction_id": "INV-2025-001",
+                    "company_name": "Acme Corporation",
+                    "company_id": "COMP-12345",
+                    "partner_data": {
+                        "name": "ABC Corporation",
+                        "email": "billing@abc.com",
+                        "phone": "+1234567890",
+                        "street": "123 Main St",
+                        "city": "New York",
+                        "zip": "10001",
+                        "country_code": "US"
+                    },
+                    "transaction_date": "2025-01-15",
+                    "due_date": "2025-02-15",
+                    "transaction_ref": "INV-001",
+                    "total_amount": 5000.00,
+                    "currency_code": "USD",
+                    "accounting_assignment": {
+                        "debit_account": "1100",
+                        "credit_account": "4000"
+                    }
+                    // ... all other fields ...
+                }
+                // ... more invoices ...
+            ],
+            "bills": [
+                {
+                    "transaction_id": "BILL-2025-001",
+                    "company_name": "Acme Corporation",
+                    "company_id": "COMP-12345",
+                    "partner_data": {
+                        "name": "XYZ Supplies Ltd",
+                        "email": "accounts@xyz.com"
+                    },
+                    "total_amount": 3000.00
+                    // ... all other fields ...
+                }
+                // ... more bills ...
+            ],
+            "customers": [
+                {
+                    "name": "ABC Corporation",
+                    "email": "billing@abc.com",
+                    "phone": "+1234567890",
+                    "street": "123 Main St",
+                    "city": "New York",
+                    "zip": "10001",
+                    "country_code": "US",
+                    "partner_type": "customer"
+                }
+                // ... more customers ...
+            ],
+            "vendors": [
+                {
+                    "name": "XYZ Supplies Ltd",
+                    "email": "accounts@xyz.com",
+                    "partner_type": "vendor"
+                }
+                // ... more vendors ...
+            ],
+            "bank_transactions": [
+                {
+                    "transaction_id": "TXN-2025-001",
+                    "company_name": "Acme Corporation",
+                    "amount": 1500.00,
+                    "description": "Payment received"
+                }
+                // ... more transactions ...
+            ]
+        }
+    }
+    
+    Error Response:
+    {
+        "success": false,
+        "error": "Missing required parameter: company_name",
+        "details": "company_name is required for data extraction"
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate request body exists
+        if data is None:
+            return jsonify({
+                "success": False,
+                "error": "Missing request body",
+                "details": "Request body with company_name is required"
+            }), 400
+        
+        # Validate data types
+        if not isinstance(data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Invalid request format",
+                "details": "Request body must be a JSON object"
+            }), 400
+        
+        # Validate specific fields
+        validation_errors = []
+        
+        # Company Name validation (REQUIRED)
+        if 'company_name' not in data:
+            validation_errors.append("company_name is required")
+        elif not isinstance(data['company_name'], str) or not data['company_name'].strip():
+            validation_errors.append("company_name must be a non-empty string")
+        
+        # Company ID validation (OPTIONAL)
+        if 'company_id' in data:
+            if not isinstance(data['company_id'], str) or not data['company_id'].strip():
+                validation_errors.append("company_id must be a non-empty string")
+        
+        # Date validation
+        date_fields = ['start_date', 'end_date']
+        for field in date_fields:
+            if field in data:
+                if not isinstance(data[field], str):
+                    validation_errors.append(f"{field} must be a string in ISO format")
+                else:
+                    try:
+                        from datetime import datetime
+                        datetime.fromisoformat(data[field].replace('Z', '+00:00'))
+                    except ValueError:
+                        validation_errors.append(f"{field} must be in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)")
+        
+        # Date range logic validation
+        if 'start_date' in data and 'end_date' in data:
+            try:
+                from datetime import datetime
+                start = datetime.fromisoformat(data['start_date'].replace('Z', '+00:00'))
+                end = datetime.fromisoformat(data['end_date'].replace('Z', '+00:00'))
+                if start > end:
+                    validation_errors.append("start_date must be before or equal to end_date")
+            except ValueError:
+                pass  # Already caught above
+        
+        # Tables validation
+        if 'tables' in data:
+            if not isinstance(data['tables'], list):
+                validation_errors.append("tables must be an array")
+            else:
+                valid_tables = ['invoices', 'bills', 'payroll_transactions', 'share_transactions', 'transactions']
+                invalid_tables = [t for t in data['tables'] if t not in valid_tables]
+                if invalid_tables:
+                    validation_errors.append(
+                        f"Invalid table names: {', '.join(invalid_tables)}. "
+                        f"Valid options: {', '.join(valid_tables)}"
+                    )
+                if len(data['tables']) == 0:
+                    validation_errors.append("tables array cannot be empty")
+        
+        # Include partners validation
+        if 'include_partners' in data:
+            if not isinstance(data['include_partners'], bool):
+                validation_errors.append("include_partners must be a boolean")
+        
+        # Status validation
+        if 'status' in data:
+            if not isinstance(data['status'], str) or not data['status'].strip():
+                validation_errors.append("status must be a non-empty string")
+        
+        # Return validation errors if any
+        if validation_errors:
+            return jsonify({
+                "success": False,
+                "error": "Validation failed",
+                "details": validation_errors
+            }), 400
+        
+        # Log extraction parameters
+        log_params = {
+            'company_name': data['company_name'],
+            'company_id': data.get('company_id', 'not provided'),
+            'date_range': f"{data.get('start_date', 'any')} to {data.get('end_date', 'any')}",
+            'tables': data.get('tables', 'all'),
+            'include_partners': data.get('include_partners', True)
+        }
+        print(f"📊 Extracting DynamoDB data with parameters: {log_params}")
+        
+        # Call the extraction function
+        result = dynamodb_data_extractor.main(data)
+        
+        # Handle successful extraction
+        if result["success"]:
+            # Log success metrics
+            total_records = result['extraction_summary']['total_records']
+            tables_extracted = result['extraction_summary']['tables_extracted']
+            company_name = result['extraction_summary']['company_name']
+            
+            print(f"✅ Successfully extracted {total_records} total records for company: {company_name}")
+            print(f"📋 Tables extracted: {', '.join(tables_extracted)}")
+            
+            # Log per-table counts
+            if 'records_by_table' in result['extraction_summary']:
+                for table, count in result['extraction_summary']['records_by_table'].items():
+                    print(f"   - {table}: {count} records")
+            
+            # Return successful response
+            return jsonify(result), 200
+        else:
+            # Log extraction failure
+            error_msg = result.get("error", "Unknown error")
+            print(f"❌ DynamoDB extraction failed: {error_msg}")
+            
+            # Determine appropriate status code
+            status_code = 500
+            if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                status_code = 404
+            elif "permission" in error_msg.lower() or "access" in error_msg.lower():
+                status_code = 403
+            elif "validation" in error_msg.lower() or "required" in error_msg.lower():
+                status_code = 422
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "details": result.get("details", "No additional details available")
+            }), status_code
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+        
+    except Exception as e:
+        print(f"❌ Extract DynamoDB data endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "An unexpected error occurred while extracting data"
+        }), 500
 
 
 # ================================

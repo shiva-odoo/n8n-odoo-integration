@@ -190,7 +190,7 @@ def normalize_text(text):
     text = re.sub(r'[^\w\sάέήίόύώαβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ]', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     
-    # Remove common business suffixes
+    #  Remove common business suffixes
     text = re.sub(r'\b(ltd|limited|inc|corp|company|co|ε\.π\.ε|επε|αε|ε\.ε)\b', '', text)
     
     return text.strip()
