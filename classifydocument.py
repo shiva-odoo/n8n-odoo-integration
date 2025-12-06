@@ -204,19 +204,10 @@ A document is BANK_STATEMENT if it shows banking transactions for an account.
 
 **BANK STATEMENT DECISION:**
 - If 4+ indicators match → document_type = "bank_statement", category = "bank_statement"
-- If fewer indicators → Continue to check invoice/bill characteristics
+- If fewer indicators → Continue to receipt/invoice/bill determination
 
 ═══════════════════════════════════════════════════════════════════════════════
-**D. INVOICE / BILL DETERMINATION**
-═══════════════════════════════════════════════════════════════════════════════
-
-If the document is NOT payroll, share document, or bank statement, then it's either an INVOICE or BILL.
-The distinction depends on WHO issued it and WHO must pay FROM {company_name}'S PERSPECTIVE.
-
-🚨🚨🚨 **ABSOLUTE CLASSIFICATION RULES - FOLLOW IN EXACT ORDER** 🚨🚨🚨
-
-═══════════════════════════════════════════════════════════════════════════════
-**E. RECEIPT / PAYMENT CONFIRMATION CHECK**
+**D. RECEIPT / PAYMENT CONFIRMATION CHECK**
 ═══════════════════════════════════════════════════════════════════════════════
 
 A document is a RECEIPT if it confirms payment was received BY an entity FROM the company.
@@ -225,12 +216,12 @@ A document is a RECEIPT if it confirms payment was received BY an entity FROM th
 
 1. ✓ Document title contains:
    - "RECEIPT", "PAYMENT RECEIPT", "OFFICIAL RECEIPT"
-   - "ΑΠΟΔΕΙΞΗ" (Greek), "RECIBO" (Spanish), etc.
-   - Transaction confirmation, submission receipt
+   - "ΑΠΟΔΕΙΞΗ" (Greek), "ΑΠΟΔΕΙΞΗ ΕΙΣΠΡΑΞΗΣ" (Greek receipt)
+   - "RECIBO" (Spanish), transaction confirmation, submission receipt
 
 2. ✓ "Received from" or "Paid by" field:
    - "Received from: {company_name}"
-   - "Λήφθηκε από: {company_name}" (Greek)
+   - "Λήφθηκε από: {company_name}" (Greek for received from)
    - "Paid by: {company_name}"
    - Shows {company_name} as the PAYER
 
@@ -251,36 +242,58 @@ A document is a RECEIPT if it confirms payment was received BY an entity FROM th
 If document says "Received from {company_name}" → {company_name} PAID → This is a BILL
 
 **RECEIPT DECISION:**
-- If 3+ indicators match AND {company_name} is the payer → document_type = "bill", category = "money_going_out"
-- Reasoning must state: "Receipt shows {company_name} as payer. They paid [amount] to [recipient]. This is a BILL."
+- If 3+ indicators match AND {company_name} is the payer → 
+  
+  **MANDATORY OUTPUT:**
+  {{
+    "document_type": "bill",
+    "category": "money_going_out",
+    "company_name": "{company_name}",
+    "total_amount": [extracted amount],
+    "confidence_score": [0.0 to 1.0],
+    "reasoning": "Receipt shows {company_name} as payer. They paid [amount] to [recipient]. This is a BILL."
+  }}
+  
+  **⛔ STOP HERE. OUTPUT IMMEDIATELY.**
 
+- If not a receipt → Continue to invoice/bill determination
+
+═══════════════════════════════════════════════════════════════════════════════
+**E. INVOICE / BILL DETERMINATION**
+═══════════════════════════════════════════════════════════════════════════════
+
+If the document is NOT payroll, share document, bank statement, or receipt, then it's either an INVOICE or BILL.
+The distinction depends on WHO issued it and WHO must pay FROM {company_name}'S PERSPECTIVE.
+
+🚨🚨🚨 **ABSOLUTE CLASSIFICATION RULES - FOLLOW IN EXACT ORDER** 🚨🚨🚨
 
 ═══════════════════════════════════════════════════════════════════════════════
 
-**RULE 1: CHECK "TO:" / "BILL TO:" / "CUSTOMER:" FIELD FIRST**
+**RULE 1: CHECK "TO:" / "BILL TO:" / "CUSTOMER:" / "RECEIVED FROM:" FIELD FIRST**
 
 Look for these exact fields in the document:
 - "TO:", "BILL TO:", "CUSTOMER:", "CLIENT:", "BUYER:", "RECEIVER:", "SOLD TO:", "SHIP TO:"
+- "RECEIVED FROM:", "PAID BY:", "Λήφθηκε από:" (Greek for received from)
 
 **Question: Does {company_name} (or its variations) appear in ANY of these fields?**
 
-✅ **YES** → {company_name} is in the TO/BILL TO/CUSTOMER field
+✅ **YES** → {company_name} is in the TO/BILL TO/CUSTOMER/RECEIVED FROM field
    
    **ABSOLUTE RULE:** 
-   - {company_name} is the RECIPIENT/CUSTOMER
+   - {company_name} is the RECIPIENT/CUSTOMER OR PAYER
    - {company_name} MUST PAY this document
-   - Another company issued this TO {company_name}
+   - Another company issued this TO {company_name} or RECEIVED FROM {company_name}
    
    **MANDATORY OUTPUT:**
    {{
      "document_type": "bill",
      "category": "money_going_out",
-     "reasoning": "{company_name} appears in [TO/BILL TO/CUSTOMER] field. They are the recipient and must pay. This is a BILL."
+     "reasoning": "{company_name} appears in [TO/BILL TO/CUSTOMER/RECEIVED FROM] field. They are the recipient or payer and must pay. This is a BILL."
    }}
    
    **⛔ STOP HERE. DO NOT CHECK OTHER RULES. OUTPUT IMMEDIATELY.**
 
-❌ **NO** → {company_name} is NOT in the TO/BILL TO/CUSTOMER field
+❌ **NO** → {company_name} is NOT in the TO/BILL TO/CUSTOMER/RECEIVED FROM field
    → Continue to Rule 2
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -406,6 +419,7 @@ Before generating final JSON, verify these ABSOLUTE RULES:
 ❌ {company_name} in "BILL TO:" field + document_type = "invoice" → **WRONG!** Must be "bill"
 ❌ {company_name} in "BILL TO:" field + category = "money_coming_in" → **WRONG!** Must be "money_going_out"
 ❌ {company_name} in "CUSTOMER:" field + document_type = "invoice" → **WRONG!** Must be "bill"
+❌ {company_name} in "RECEIVED FROM:" field + document_type = "invoice" → **WRONG!** Must be "bill"
 ❌ document_type = "bill" + category = "money_coming_in" → **WRONG!** Must be "money_going_out"
 ❌ document_type = "invoice" + category = "money_going_out" → **WRONG!** Must be "money_coming_in"
 ❌ document_type = "payroll" + category = "money_coming_in" → **WRONG!** Must be "money_going_out"
@@ -418,6 +432,7 @@ Before generating final JSON, verify these ABSOLUTE RULES:
 ✅ document_type = "bill" → category MUST BE "money_going_out"
 ✅ document_type = "share_document" → category MUST BE "money_coming_in"
 ✅ {company_name} in "BILL TO:" field → MUST BE document_type = "bill" + category = "money_going_out"
+✅ {company_name} in "RECEIVED FROM:" field → MUST BE document_type = "bill" + category = "money_going_out"
 ✅ {company_name} as issuer + other company in "BILL TO:" → MUST BE document_type = "invoice" + category = "money_coming_in"
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -442,6 +457,8 @@ Payment to: ABC Consulting's bank account
   "document_type": "bill",
   "category": "money_going_out",
   "company_name": "Kyrastel Enterprises Limited",
+  "total_amount": 500.00,
+  "confidence_score": 0.95,
   "reasoning": "Kyrastel Enterprises Limited appears in BILL TO field. They are receiving this document from ABC Consulting and must pay. This is a BILL."
 }}
 
@@ -464,6 +481,8 @@ Payment to: Kyrastel's bank account
   "document_type": "invoice",
   "category": "money_coming_in",
   "company_name": "Kyrastel Enterprises Limited",
+  "total_amount": 1000.00,
+  "confidence_score": 0.95,
   "reasoning": "Kyrastel Enterprises Limited issued this document to XYZ Corporation. Payment goes to Kyrastel's bank account. They will receive payment. This is an INVOICE."
 }}
 
@@ -486,6 +505,8 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
   "document_type": "bill",
   "category": "money_going_out",
   "company_name": "Kyrastel Enterprises Limited",
+  "total_amount": 0.00,
+  "confidence_score": 0.95,
   "reasoning": "Kyrastel Enterprises ltd appears in BILL TO field. N.A MechEnergy issued this to Kyrastel. Payment goes to N.A MechEnergy's bank account. Kyrastel must pay. This is a BILL."
 }}
 
@@ -500,12 +521,13 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
 - ❌ Ignored Rule 1: {company_name} in BILL TO field
 - ❌ Forbidden combination: company in BILL TO + invoice type
 
+═══════════════════════════════════════════════════════════════════════════════
 
 **Example 4: Government Receipt (BILL) case**
 Document header: "REPUBLIC OF CYPRUS - REGISTRAR OF COMPANIES"
 Title: "RECEIPT / ΑΠΟΔΕΙΞΗ ΕΙΣΠΡΑΞΗΣ"
 Received from: KYRASTEL ENTERPRISES LTD
-Amount: €60.00
+Amount: 60.00 EUR
 Transaction No: 4112780/1
 
 **Analysis:**
@@ -515,13 +537,14 @@ Transaction No: 4112780/1
 - KYRASTEL paid money OUT
 
 **Output:**
-{
+{{
   "document_type": "bill",
   "category": "money_going_out",
   "company_name": "KYRASTEL ENTERPRISES LIMITED",
   "total_amount": 60.00,
-  "reasoning": "Receipt shows KYRASTEL ENTERPRISES LTD as payer ('Received from'). They paid €60 to Cyprus Registrar. This is a BILL."
-}
+  "confidence_score": 0.95,
+  "reasoning": "Receipt shows KYRASTEL ENTERPRISES LTD as payer in Received from field. They paid 60.00 EUR to Cyprus Registrar of Companies. This is a BILL."
+}}
 
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -556,17 +579,18 @@ Transaction No: 4112780/1
 **FINAL REMINDERS:**
 
 1. ✅ ALWAYS classify from {company_name}'s perspective
-2. ✅ Follow rules in EXACT order (Rule 1 → Rule 2 → Rule 3 → Rule 4)
+2. ✅ Follow rules in EXACT order (Receipt Check → Rule 1 → Rule 2 → Rule 3 → Rule 4)
 3. ✅ STOP immediately when a rule gives a definitive answer
-4. ✅ If {company_name} in "BILL TO:" field → ALWAYS bill + money_going_out
+4. ✅ If {company_name} in "BILL TO:" or "RECEIVED FROM:" field → ALWAYS bill + money_going_out
 5. ✅ Check forbidden combinations before outputting
 6. ✅ Payroll → always money_going_out
 7. ✅ Invoice → always money_coming_in
 8. ✅ Bill → always money_going_out
-9. ❌ NEVER use issuer's perspective
-10. ❌ NEVER output explanatory text, only JSON
-11. ❌ NEVER use markdown code blocks or backticks
-12. ❌ NEVER add any text before or after the JSON object
+9. ✅ ALL output values must be in English, even if document is in another language
+10. ❌ NEVER use issuer's perspective
+11. ❌ NEVER output explanatory text, only JSON
+12. ❌ NEVER use markdown code blocks or backticks
+13. ❌ NEVER add any text before or after the JSON object
 
 Output pure JSON immediately. No formatting. No markdown. Just JSON."""
 
@@ -608,12 +632,10 @@ def clean_json_response(response_text):
     
     # Remove markdown code blocks (both ```json and ```)
     if cleaned.startswith("```"):
-        # Find the first newline after the opening fence
         first_newline = cleaned.find('\n')
         if first_newline != -1:
             cleaned = cleaned[first_newline + 1:]
         else:
-            # No newline found, remove the fence directly
             if cleaned.startswith("```json"):
                 cleaned = cleaned[7:]
             elif cleaned.startswith("```"):
@@ -626,8 +648,26 @@ def clean_json_response(response_text):
     # Remove double braces (sometimes Claude uses template syntax)
     cleaned = cleaned.replace("{{", "{").replace("}}", "}")
     
-    # Strip again to remove any whitespace from fence removal
+    # Strip again
     cleaned = cleaned.strip()
+    
+    # CRITICAL FIX: Ensure JSON starts with { and ends with }
+    if not cleaned.startswith("{"):
+        # Try to find where JSON actually starts
+        json_start = cleaned.find("{")
+        if json_start != -1:
+            cleaned = cleaned[json_start:]
+        else:
+            # Malformed response - try to construct valid JSON
+            raise ValueError(f"Response does not contain valid JSON object. Starts with: {cleaned[:100]}")
+    
+    if not cleaned.endswith("}"):
+        # Try to find where JSON actually ends
+        json_end = cleaned.rfind("}")
+        if json_end != -1:
+            cleaned = cleaned[:json_end + 1]
+        else:
+            raise ValueError(f"Response does not contain complete JSON object. Ends with: {cleaned[-100:]}")
     
     return cleaned
 
@@ -720,6 +760,23 @@ def process_document_with_claude(pdf_content, company_name):
             "success": False,
             "error": str(e)
         }
+    
+def validate_json_structure(cleaned_json):
+    """Validate that JSON has all required fields before parsing"""
+    required_fields = [
+        '"document_type"',
+        '"category"',
+        '"company_name"',
+        '"reasoning"'
+    ]
+    
+    missing_fields = [field for field in required_fields if field not in cleaned_json]
+    
+    if missing_fields:
+        raise ValueError(f"JSON missing required fields: {missing_fields}. Response starts with: {cleaned_json[:200]}")
+    
+    return True
+
 
 def main(data):
     """
@@ -759,6 +816,9 @@ def main(data):
                 
                 print(f"Cleaned response: {cleaned_response[:200]}...")  # Debug log
                 
+                # Validate structure before parsing
+                validate_json_structure(cleaned_response)
+                
                 classification_data = json.loads(cleaned_response)
                 
                 # CRITICAL: Post-processing validation and auto-correction
@@ -790,6 +850,14 @@ def main(data):
                     }
                 }
                 
+            except ValueError as ve:
+                # Catch JSON structure validation errors
+                return {
+                    "success": False,
+                    "error": f"JSON structure validation failed: {str(ve)}",
+                    "raw_response": result["classification"],
+                    "cleaned_response": clean_json_response(result["classification"]) if "does not contain" not in str(ve) else result["classification"]
+                }
             except json.JSONDecodeError as e:
                 return {
                     "success": False,
