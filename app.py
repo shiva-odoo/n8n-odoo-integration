@@ -70,6 +70,7 @@ import bank_reconciliation
 import compliance
 import create_payroll_transaction as createpayrolltransaction
 import dynamodb_data_extractor
+import matchingworkflow
 
 
 app = Flask(__name__)
@@ -4784,6 +4785,200 @@ def extract_dynamodb_data_endpoint():
             "details": "An unexpected error occurred while extracting data"
         }), 500
 
+# ================================
+# MATCHING WORKFLOW
+# ================================
+
+# Add this route to your app.py file
+# Import at the top of your app.py:
+# import matchingworkflow
+
+@app.route('/api/matching-workflow', methods=['POST'])
+def matching_workflow_endpoint():
+    """
+    Execute the transaction matching workflow to match bank transactions with bills, invoices, payroll, and shares.
+    
+    Expected JSON body:
+    {
+        "company_name": "ACME Corporation Ltd",  // Optional
+        "bank_transactions": [
+            {
+                "odoo_id": 1885,
+                "date": "2025-06-01",
+                "amount": 1000.00,
+                "partner_name": "ABC Corporation",
+                "description": "Payment for services",
+                "line_items": [
+                    {"account": "Accounts payable", "debit": 1000.00, "credit": 0.00},
+                    {"account": "Bank", "debit": 0.00, "credit": 1000.00}
+                ]
+            }
+        ],
+        "bills": [...],  // Optional
+        "invoices": [...],  // Optional
+        "payroll_transactions": [...],  // Optional
+        "share_transactions": [...]  // Optional
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "workflow_completed": true,
+        "matched_transactions": [...],
+        "unmatched_transactions": [...],
+        "duplicate_transactions": [...],
+        "errors": [...],
+        "summary": {...}
+    }
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate request body exists
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body with transaction data is required"
+            }), 400
+        
+        # Validate required fields
+        if 'bank_transactions' not in data:
+            return jsonify({
+                "success": False,
+                "error": "Missing required field: bank_transactions",
+                "details": "bank_transactions array is required"
+            }), 400
+        
+        # Validate bank_transactions is an array
+        if not isinstance(data['bank_transactions'], list):
+            return jsonify({
+                "success": False,
+                "error": "Invalid bank_transactions format",
+                "details": "bank_transactions must be an array"
+            }), 400
+        
+        # Validate bank_transactions is not empty
+        if len(data['bank_transactions']) == 0:
+            return jsonify({
+                "success": False,
+                "error": "Empty bank_transactions array",
+                "details": "At least one transaction is required"
+            }), 400
+        
+        # Validate transaction structure
+        sample_transaction = data['bank_transactions'][0]
+        required_txn_fields = ['date', 'amount', 'line_items']
+        missing_txn_fields = [field for field in required_txn_fields if field not in sample_transaction]
+        
+        if missing_txn_fields:
+            return jsonify({
+                "success": False,
+                "error": "Invalid transaction structure",
+                "details": f"Missing fields: {', '.join(missing_txn_fields)}"
+            }), 400
+        
+        # Validate line_items structure
+        if not isinstance(sample_transaction.get('line_items'), list) or len(sample_transaction['line_items']) == 0:
+            return jsonify({
+                "success": False,
+                "error": "Invalid line_items structure",
+                "details": "Each transaction must have a non-empty line_items array"
+            }), 400
+        
+        # Validate optional document arrays
+        document_fields = ['bills', 'invoices', 'payroll_transactions', 'share_transactions']
+        for field in document_fields:
+            if field in data and not isinstance(data[field], list):
+                return jsonify({
+                    "success": False,
+                    "error": f"Invalid {field} format",
+                    "details": f"{field} must be an array if provided"
+                }), 400
+        
+        # Check if we have any documents
+        total_documents = sum(len(data.get(field, [])) for field in document_fields)
+        
+        if total_documents == 0:
+            return jsonify({
+                "success": False,
+                "error": "No documents provided for matching",
+                "details": "At least one document type (bills, invoices, payroll, shares) is required"
+            }), 400
+        
+        # Prepare workflow input
+        workflow_input = {
+            "bank_transactions": data['bank_transactions'],
+            "bills": data.get('bills', []),
+            "invoices": data.get('invoices', []),
+            "payroll_transactions": data.get('payroll_transactions', []),
+            "share_transactions": data.get('share_transactions', [])
+        }
+        
+        # Call the matching workflow
+        print(f"🔄 Processing {len(data['bank_transactions'])} transactions with {total_documents} documents")
+        result = matchingworkflow.main(workflow_input)
+        
+        # Handle result
+        if result.get("success"):
+            summary = result.get("summary", {})
+            matched = summary.get("matched", 0)
+            duplicates = summary.get("duplicates_found", 0)
+            print(f"✅ Matched: {matched}, Duplicates: {duplicates}, Rate: {summary.get('match_rate', '0%')}")
+            
+            # Determine status code
+            total_errors = len(result.get("errors", []))
+            critical_errors = sum(1 for err in result.get("errors", []) if err.get("severity") == "CRITICAL")
+            
+            if result.get("workflow_completed") and critical_errors == 0:
+                status_code = 200
+            else:
+                status_code = 207  # Partial success
+            
+            return jsonify(result), status_code
+        else:
+            error_msg = result.get("error", "Workflow execution failed")
+            print(f"❌ Workflow failed: {error_msg}")
+            
+            # Determine status code
+            if "validation" in error_msg.lower() or "invalid" in error_msg.lower():
+                status_code = 422
+            else:
+                status_code = 500
+            
+            return jsonify(result), status_code
+    
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+    
+    except KeyError as e:
+        print(f"❌ Missing data field: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Missing required field: {str(e)}",
+            "details": "Check transaction data structure"
+        }), 400
+    
+    except Exception as e:
+        print(f"❌ Endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": "Unexpected error during processing"
+        }), 500
 
 # ================================
 # HELPER FUNCTIONS
