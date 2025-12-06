@@ -13,12 +13,23 @@ def get_classification_prompt(company_name):
     
     return f"""You are a highly accurate document classification AI assistant. Perform strict OCR analysis on the uploaded document and extract key information in the specified JSON format.
 
+**LANGUAGE CAPABILITY:**
+You can read and analyze documents in ALL languages: English, Greek (Ελληνικά), Arabic (العربية), Chinese (中文), Cyrillic scripts, and any other language.
+NEVER classify as "illegible_document" due to language - you can read ALL scripts.
+Documents in Greek, Arabic, or any non-Latin script are NOT illegible just because they are not in English.    
+
 **CRITICAL OUTPUT REQUIREMENT:**
 Your response MUST contain ONLY valid JSON. Absolutely NO markdown, NO code blocks, NO explanations, NO comments.
 Do NOT wrap your response in ```json or ``` tags.
 Do NOT add any text before or after the JSON.
 Start directly with {{ and end with }}.
 Output pure JSON only.
+
+**MULTILINGUAL DOCUMENT SUPPORT:**
+You can read and analyze documents in ANY language including Greek, Arabic, Chinese, Cyrillic, etc.
+NEVER mark a document as "illegible_document" just because it's not in English.
+Extract information from all languages and classify correctly based on content, not language.
+
 
 **USER'S COMPANY:** "{company_name}"
 
@@ -203,6 +214,46 @@ If the document is NOT payroll, share document, or bank statement, then it's eit
 The distinction depends on WHO issued it and WHO must pay FROM {company_name}'S PERSPECTIVE.
 
 🚨🚨🚨 **ABSOLUTE CLASSIFICATION RULES - FOLLOW IN EXACT ORDER** 🚨🚨🚨
+
+═══════════════════════════════════════════════════════════════════════════════
+**E. RECEIPT / PAYMENT CONFIRMATION CHECK**
+═══════════════════════════════════════════════════════════════════════════════
+
+A document is a RECEIPT if it confirms payment was received BY an entity FROM the company.
+
+**MANDATORY RECEIPT CHARACTERISTICS (need 3+ to confirm):**
+
+1. ✓ Document title contains:
+   - "RECEIPT", "PAYMENT RECEIPT", "OFFICIAL RECEIPT"
+   - "ΑΠΟΔΕΙΞΗ" (Greek), "RECIBO" (Spanish), etc.
+   - Transaction confirmation, submission receipt
+
+2. ✓ "Received from" or "Paid by" field:
+   - "Received from: {company_name}"
+   - "Λήφθηκε από: {company_name}" (Greek)
+   - "Paid by: {company_name}"
+   - Shows {company_name} as the PAYER
+
+3. ✓ Issued by government/institution:
+   - Government agency (Registrar, Tax Authority, Municipality)
+   - Official institution stamps/seals
+   - Government letterhead
+
+4. ✓ Transaction/Receipt number:
+   - Official transaction ID
+   - Receipt number
+
+5. ✓ Payment confirmation language:
+   - "Payment received", "Amount paid"
+   - Cash/payment method indicated
+
+**CRITICAL RECEIPT RULE:**
+If document says "Received from {company_name}" → {company_name} PAID → This is a BILL
+
+**RECEIPT DECISION:**
+- If 3+ indicators match AND {company_name} is the payer → document_type = "bill", category = "money_going_out"
+- Reasoning must state: "Receipt shows {company_name} as payer. They paid [amount] to [recipient]. This is a BILL."
+
 
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -449,6 +500,29 @@ Payment to: N.A MechEnergy's bank account (IBAN: CY71...)
 - ❌ Ignored Rule 1: {company_name} in BILL TO field
 - ❌ Forbidden combination: company in BILL TO + invoice type
 
+
+**Example 4: Government Receipt (BILL) case**
+Document header: "REPUBLIC OF CYPRUS - REGISTRAR OF COMPANIES"
+Title: "RECEIPT / ΑΠΟΔΕΙΞΗ ΕΙΣΠΡΑΞΗΣ"
+Received from: KYRASTEL ENTERPRISES LTD
+Amount: €60.00
+Transaction No: 4112780/1
+
+**Analysis:**
+- Document is a receipt in Greek/English
+- "Received from: KYRASTEL ENTERPRISES LTD" → **KYRASTEL is the payer**
+- Government agency received payment FROM KYRASTEL
+- KYRASTEL paid money OUT
+
+**Output:**
+{
+  "document_type": "bill",
+  "category": "money_going_out",
+  "company_name": "KYRASTEL ENTERPRISES LIMITED",
+  "total_amount": 60.00,
+  "reasoning": "Receipt shows KYRASTEL ENTERPRISES LTD as payer ('Received from'). They paid €60 to Cyprus Registrar. This is a BILL."
+}
+
 ═══════════════════════════════════════════════════════════════════════════════
 
 **DOCUMENT TYPES:**
@@ -603,8 +677,9 @@ def process_document_with_claude(pdf_content, company_name):
         # Send to Claude
         message = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=2500,
+            max_tokens=4000,
             temperature=0,
+            system="You are an expert at reading and classifying financial documents in any language. You can accurately read Greek, English, and all other scripts.",
             messages=[
                 {
                     "role": "user",
