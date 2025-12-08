@@ -4969,30 +4969,17 @@ def update_reconciled_status():
     Update 'reconciled' = 'true' across:
     bills, invoices, shares, payroll, transactions
 
-    Expected JSON:
-    {
-        "bills": [...],
-        "invoices": [...],
-        "shares": [...],
-        "payroll": [...],
-        "bank_transactions": [...]
-    }
+    Flexible input handling:
+    - Accepts object {...}
+    - Accepts single-element array [{...}]
     """
 
     try:
-        # Attempt to parse incoming JSON
-        data = None
+        # Try reading JSON normally, fallback to forced parsing
         try:
             data = request.get_json()
         except Exception:
-            try:
-                data = request.get_json(force=True)
-            except Exception as e:
-                print(f"⚠️ Failed to parse JSON: {e}")
-                return jsonify({
-                    "success": False,
-                    "error": "Invalid JSON format"
-                }), 400
+            data = request.get_json(force=True)
 
         if not data:
             return jsonify({
@@ -5000,22 +4987,43 @@ def update_reconciled_status():
                 "error": "No data provided"
             }), 400
 
-        # Validate type
+        # ----------------------------------------------------
+        # FLEXIBLE FORMAT HANDLING:
+        # If the user sends: [ { ... } ] → unwrap automatically
+        # ----------------------------------------------------
+        if isinstance(data, list):
+            if len(data) == 0:
+                return jsonify({
+                    "success": False,
+                    "error": "Empty list received"
+                }), 400
+
+            if len(data) == 1 and isinstance(data[0], dict):
+                data = data[0]
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Expected either an object or a single-element list containing one object"
+                }), 400
+
+        # After this point → guaranteed dict
         if not isinstance(data, dict):
             return jsonify({
                 "success": False,
-                "error": "Expected JSON object"
+                "error": "Expected JSON object or [object]"
             }), 400
 
-        # Ensure at least one of the expected fields is present
         expected_keys = ["bills", "invoices", "shares", "payroll", "bank_transactions"]
+
         if not any(k in data for k in expected_keys):
             return jsonify({
                 "success": False,
                 "error": f"Expected at least one of: {expected_keys}"
             }), 400
 
-        # Process reconciliation
+        # ----------------------------------------------------
+        # Execute reconciliation
+        # ----------------------------------------------------
         try:
             reconciled_updater.process_reconciliation(data)
         except Exception as e:
@@ -5040,6 +5048,7 @@ def update_reconciled_status():
             "error": "Internal server error",
             "details": str(e)
         }), 500
+
 
 
 
