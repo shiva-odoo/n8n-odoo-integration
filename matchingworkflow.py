@@ -2763,7 +2763,7 @@ def orchestrate_matching(
     
     try:
         # Handle input format
-        company_data = input_data[0] if isinstance(input_data, list) else input_data
+        company_data = normalize_input_format(input_data)
         
         total_txns = len(company_data.get("bank_transactions", []))
         results["summary"]["total_transactions"] = total_txns
@@ -3212,6 +3212,72 @@ def orchestrate_matching(
         logger.error(traceback.format_exc())
         results["errors"].append({"error": str(e), "traceback": traceback.format_exc()})
         return results
+
+
+def normalize_input_format(input_data: Any) -> Dict:
+    """
+    Normalize input to the expected format regardless of how it arrives.
+    
+    Handles:
+    - Single object: {...}
+    - Array with single object: [{...}]
+    - Nested data: {data: {...}}
+    - Array with nested data: [{data: {...}}]
+    
+    Returns: Single dict with required top-level fields
+    """
+    logger.info("Normalizing input format...")
+    
+    # Case 1: Input is a list
+    if isinstance(input_data, list):
+        if len(input_data) == 0:
+            raise ValueError("Input array is empty")
+        
+        # Extract first item from array
+        input_data = input_data[0]
+        logger.debug("Extracted first item from array")
+    
+    # Case 2: Input is not a dict at this point (shouldn't happen, but defensive)
+    if not isinstance(input_data, dict):
+        raise ValueError(f"Expected dict after array extraction, got {type(input_data)}")
+    
+    # Case 3: Check if data is nested under 'data' key
+    if 'data' in input_data and isinstance(input_data['data'], dict):
+        # Check if 'bank_transactions' is under 'data'
+        if 'bank_transactions' in input_data['data']:
+            logger.debug("Found nested structure under 'data' key, extracting...")
+            input_data = input_data['data']
+    
+    # Case 4: Verify required fields exist
+    if 'bank_transactions' not in input_data:
+        raise ValueError(
+            f"Missing required field: bank_transactions. "
+            f"Available keys: {list(input_data.keys())}"
+        )
+    
+    # Ensure all required arrays exist (even if empty)
+    required_arrays = [
+        'bank_transactions',
+        'bills',
+        'invoices',
+        'payroll_transactions',
+        'share_transactions'
+    ]
+    
+    for array_name in required_arrays:
+        if array_name not in input_data:
+            input_data[array_name] = []
+            logger.debug(f"Added missing array: {array_name}")
+    
+    # Ensure company_name exists
+    if 'company_name' not in input_data or not input_data['company_name']:
+        input_data['company_name'] = "UNKNOWN COMPANY"
+        logger.debug("Set default company_name")
+    
+    logger.info(f"✓ Input normalized: {input_data['company_name']}, "
+                f"{len(input_data['bank_transactions'])} transactions")
+    
+    return input_data
 
 
 # =============================================================================
