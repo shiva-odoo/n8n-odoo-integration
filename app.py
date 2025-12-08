@@ -71,7 +71,8 @@ import compliance
 import create_payroll_transaction as createpayrolltransaction
 import dynamodb_data_extractor
 import matchingworkflow
-
+import reconcile_transactions
+import update_dynamo_reconciled as reconciled_updater
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -4800,7 +4801,7 @@ def matching_workflow_endpoint():
     
     Accepts multiple input formats:
     - Single object: {bank_transactions: [...], bills: [...]}
-    - Array: [{bank_transactions: [...], bills: [...]}]
+    - Array: [{bank_transactions: [...], bills: [...]}] 
     - Nested: {data: {bank_transactions: [...], bills: [...]}}
     """
     try:
@@ -4870,6 +4871,177 @@ def matching_workflow_endpoint():
             "error": "Internal server error",
             "details": str(e)
         }), 500
+
+
+# ================================
+# RECONCILIATION ENDPOINT
+# ================================
+
+@app.route('/api/reconcile-transactions', methods=['POST'])
+def reconcile_transactions_endpoint():
+    """
+    Execute the transaction reconciliation to reconcile matched bank transactions with bills, invoices, shares, and payroll.
+    
+    Accepts the output from the matching workflow or any data structure containing transaction matching information.
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "success": False,
+                "error": "Request must be JSON",
+                "details": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validate request body exists
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Empty request body",
+                "details": "JSON body with data is required"
+            }), 400
+        
+        # Call the reconciliation function (it handles normalization internally)
+        print(f"🔄 Starting reconciliation workflow...")
+        result = reconcile_transactions.main(data)
+        
+        # Handle result
+        if result.get("success"):
+            reconciled = result.get("reconciled", 0)
+            failed = result.get("failed", 0)
+            skipped = result.get("skipped", 0)
+            total = result.get("total_matches", 0)
+            
+            print(f"✅ Reconciled: {reconciled}/{total}")
+            if skipped > 0:
+                print(f"⏭️  Skipped: {skipped}")
+            if failed > 0:
+                print(f"❌ Failed: {failed}")
+            
+            # Determine status code
+            if failed == 0:
+                status_code = 200
+            elif reconciled > 0:
+                status_code = 207  # Partial success
+            else:
+                status_code = 500
+            
+            return jsonify(result), status_code
+        else:
+            error_msg = result.get("error", "Reconciliation failed")
+            print(f"❌ Reconciliation failed: {error_msg}")
+            
+            # Determine status code based on error type
+            if "validation" in error_msg.lower() or "invalid" in error_msg.lower() or "missing" in error_msg.lower():
+                status_code = 422
+            else:
+                status_code = 500
+            
+            return jsonify(result), status_code
+    
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON decode error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Invalid JSON format",
+            "details": str(e)
+        }), 400
+    
+    except Exception as e:
+        print(f"❌ Endpoint error: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": str(e)
+        }), 500
+
+# =======================================
+# UPDATE DYNAMO DB VALUES TO RECONCILED
+# =======================================
+
+import traceback
+
+@app.route("/api/update/reconciled", methods=["POST"])
+def update_reconciled_status():
+    """
+    Update 'reconciled' = 'true' across:
+    bills, invoices, shares, payroll, transactions
+
+    Expected JSON:
+    {
+        "bills": [...],
+        "invoices": [...],
+        "shares": [...],
+        "payroll": [...],
+        "bank_transactions": [...]
+    }
+    """
+
+    try:
+        # Attempt to parse incoming JSON
+        data = None
+        try:
+            data = request.get_json()
+        except Exception:
+            try:
+                data = request.get_json(force=True)
+            except Exception as e:
+                print(f"⚠️ Failed to parse JSON: {e}")
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON format"
+                }), 400
+
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+
+        # Validate type
+        if not isinstance(data, dict):
+            return jsonify({
+                "success": False,
+                "error": "Expected JSON object"
+            }), 400
+
+        # Ensure at least one of the expected fields is present
+        expected_keys = ["bills", "invoices", "shares", "payroll", "bank_transactions"]
+        if not any(k in data for k in expected_keys):
+            return jsonify({
+                "success": False,
+                "error": f"Expected at least one of: {expected_keys}"
+            }), 400
+
+        # Process reconciliation
+        try:
+            reconciled_updater.process_reconciliation(data)
+        except Exception as e:
+            print(f"❌ Reconciliation processing error: {e}")
+            traceback.print_exc()
+            return jsonify({
+                "success": False,
+                "error": "Failed to update reconciled status",
+                "details": str(e)
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "message": "Reconciled status updated successfully"
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Unexpected reconciliation endpoint error: {e}")
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+            "details": str(e)
+        }), 500
+
+
 
 # ================================
 # HELPER FUNCTIONS
