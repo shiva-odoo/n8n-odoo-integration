@@ -3359,23 +3359,73 @@ def orchestrate_matching(
         # =====================================================================
         logger.info("\n[STEP 9/9] Confidence Scoring")
         score_result = run_confidence_scoring(executor, validated)
-        
+
         if score_result["success"]:
             scored = score_result["result"].get("scored_matches", validated)
             
-            # Merge scores back
-            score_lookup = {m.get("transaction_id"): m for m in scored}
+            # DEBUG: Log what the LLM returned
+            logger.info(f"Confidence scoring returned {len(scored)} scored matches")
+            for s in scored:
+                if s.get("transaction_ids"):
+                    logger.info(f"  Scored combination: {s.get('transaction_ids')} → confidence={s.get('confidence_level')}")
+            
+            # Merge scores back - handle BOTH single and combination matches
+            merge_failures = []
             for match in validated:
-                tid = match.get("transaction_id")
-                if tid and tid in score_lookup:
-                    match.update(score_lookup[tid])
+                # Find the corresponding scored match
+                scored_match = None
+                match_key = None
+                
+                # Try matching by transaction_id (single matches, batch payments)
+                if tid := match.get("transaction_id"):
+                    match_key = f"transaction_id={tid}"
+                    scored_match = next(
+                        (s for s in scored if s.get("transaction_id") == tid),
+                        None
+                    )
+                
+                # Try matching by transaction_ids (split payments)
+                if not scored_match and (tids := match.get("transaction_ids")):
+                    match_key = f"transaction_ids={tids}"
+                    # Convert to sets of strings for comparison
+                    tids_set = set(str(t) for t in tids)
+                    scored_match = next(
+                        (s for s in scored 
+                        if set(str(t) for t in s.get("transaction_ids", [])) == tids_set),
+                        None
+                    )
+                
+                # Merge the confidence fields if found
+                if scored_match:
+                    match["confidence_level"] = scored_match.get("confidence_level", "LOW")
+                    match["confidence_score"] = scored_match.get("confidence_score", 50.0)
+                    match["recommendation"] = scored_match.get("recommendation", "MANUAL")
+                    logger.debug(f"  Merged confidence for {match_key}")
+                else:
+                    # Track failures
+                    merge_failures.append({
+                        "match_type": match.get("match_type"),
+                        "key": match_key,
+                        "has_tid": bool(match.get("transaction_id")),
+                        "has_tids": bool(match.get("transaction_ids"))
+                    })
+                    # Set defaults for unscored matches
+                    match["confidence_level"] = "LOW"
+                    match["confidence_score"] = 50.0
+                    match["recommendation"] = "MANUAL"
+            
+            # Log merge failures
+            if merge_failures:
+                logger.warning(f"Failed to merge confidence for {len(merge_failures)} matches:")
+                for f in merge_failures:
+                    logger.warning(f"  {f}")
             
             # Count levels
-            for m in scored:
+            for m in validated:
                 level = m.get("confidence_level", "LOW")
                 if level in results["summary"]["confidence_breakdown"]:
                     results["summary"]["confidence_breakdown"][level] += 1
-        
+
         state.completed_steps.append(9)
         results["summary"]["workflow_steps_completed"].append(9)
         
