@@ -157,6 +157,26 @@ def extract_table_data(table_name, filter_params=None):
                 filter_expressions.append('#status = :status')
                 expression_attribute_values[':status'] = filter_params['status']
                 expression_attribute_names['#status'] = 'status'
+
+            # Only retrieve non-reconciled entries
+            filter_expressions.append(
+                "("
+                "attribute_not_exists(#reconciled) "
+                "OR #reconciled = :empty_str "
+                "OR #reconciled = :false_bool "
+                "OR #reconciled = :false_str "
+                "OR (#reconciled <> :true_val AND #reconciled <> :true_str)"
+                ")"
+            )
+
+            expression_attribute_values[':empty_str'] = ""
+            expression_attribute_values[':false_bool'] = False
+            expression_attribute_values[':false_str'] = "false"
+            expression_attribute_values[':true_val'] = True         # boolean true
+            expression_attribute_values[':true_str'] = "true"       # string "true"
+            expression_attribute_names['#reconciled'] = 'reconciled'
+
+
             
             # Combine filter expressions
             if filter_expressions:
