@@ -401,11 +401,16 @@ def filter_candidate_documents(
     """
     Pre-filter documents by date/amount range.
 
-    ENHANCEMENT:
-    - For combination matching, disable the minimum-amount requirement.
-      This allows small bills (e.g., 1200, 800, 1200) to appear as candidates
-      for a larger transaction (e.g., 3200).
-    """
+    CRITICAL FOR COMBINATION MATCHING:
+    - BATCH payments (1→N): Transaction pays multiple SMALLER documents
+      Example: €3200 txn → [€1200, €800, €1200] bills
+      
+    - SPLIT payments (N→1): Multiple SMALLER transactions pay one LARGER document  
+      Example: [€20, €40] txns → €60 bill
+      
+    For combination matching, we use a VERY PERMISSIVE amount range (0 to 10x)
+    to ensure candidates are available for both scenarios.
+    """ 
 
     txn_date_str = transaction.get('date')
     txn_amount = to_decimal(transaction.get('amount', 0))
@@ -431,7 +436,7 @@ def filter_candidate_documents(
     if for_combination:
         # Combination matching needs *all* bills <= transaction amount
         min_amount = Decimal("0")
-        max_amount = abs_amount * Decimal("1.02")
+        max_amount = abs_amount * Decimal("10.0")
     else:
         # Original logic for exact and fuzzy matching
         min_amount = abs_amount * Decimal("0.5")
@@ -1833,7 +1838,7 @@ Assign confidence scores to validated matches.
 - LOW: <75% → MANUAL
 
 ## OUTPUT FORMAT
-```json
+`````json
 {
   "scored_matches": [
     {
@@ -1845,7 +1850,203 @@ Assign confidence scores to validated matches.
   ],
   "summary": {"HIGH": 5, "MEDIUM": 2, "LOW": 1}
 }
-```"""
+````"""
+
+
+
+CONFIDENCE_SCORING_PROMPT = """You are the Confidence Scoring Agent.
+
+========================================
+CRITICAL INSTRUCTIONS
+========================================
+1. Return ONLY valid JSON - no markdown, no preamble, no explanation
+2. ALL required fields MUST be present
+3. Use ONLY IDs that exist in the provided input
+4. NEVER fabricate or hallucinate IDs
+5. Follow the exact output format specified below
+
+========================================
+TASK
+========================================
+Assign confidence scores to validated matches, including:
+- Single matches (1 transaction → 1 document)
+- Combination matches (N transactions → 1 document OR 1 transaction → N documents)
+
+========================================
+SCORING RULES
+========================================
+
+FOR SINGLE MATCHES (has "transaction_id" and "document_id"):
+Weighted average:
+- Amount (30%): Exact=100%, Near=90%, Diff>0=80%
+- Currency (10%): Match=100%
+- Partner (30%): Exact=100%, Substring=85%, Fuzzy=70%
+- Date (20%): 0-7d=100%, 8-30d=90%, 31-60d=80%, 61-180d=70%
+- Context (10%): Single doc=100%
+
+FOR COMBINATION MATCHES (has "transaction_ids" OR "document_ids"):
+Base scoring:
+- Amount (40%): Exact sum (diff ≤0.01)=100%, Near (diff ≤0.05)=90%, Otherwise=80%
+- Currency (10%): All match=100%
+- Date (30%): Average date proximity
+  - All within 7 days=100%
+  - All within 14 days=90%
+  - All within 30 days=80%
+  - All within 60 days=70%
+- Combination size (20%): 
+  - 2 items=100%
+  - 3 items=90%
+  - 4 items=85%
+  - 5 items=80%
+
+Special rules for combinations:
+- Split payments (N→1): Start at MEDIUM (85%), upgrade to HIGH if perfect
+- Batch payments (1→N): Start at MEDIUM (80%), upgrade to HIGH if perfect
+- "Perfect" = exact amount sum (0.00 diff) + all dates within 14 days + same partner
+
+========================================
+CONFIDENCE LEVELS
+========================================
+- HIGH: 95%+ → AUTO_RECONCILE
+- MEDIUM: 75-94% → REVIEW
+- LOW: <75% → MANUAL
+
+========================================
+OUTPUT FORMAT
+========================================
+
+For SINGLE matches, return:
+```json
+{
+  "transaction_id": "1001",
+  "confidence_level": "HIGH",
+  "confidence_score": 98.5,
+  "recommendation": "AUTO_RECONCILE"
+}
+```
+
+For COMBINATION matches (split payment N→1), return:
+```json
+{
+  "transaction_ids": ["1001", "1002"],
+  "document_id": "BILL_001",
+  "confidence_level": "MEDIUM",
+  "confidence_score": 85.0,
+  "recommendation": "REVIEW"
+}
+```
+
+For COMBINATION matches (batch payment 1→N), return:
+```json
+{
+  "transaction_id": "1001",
+  "document_ids": ["BILL_001", "BILL_002"],
+  "confidence_level": "MEDIUM",
+  "confidence_score": 80.0,
+  "recommendation": "REVIEW"
+}
+```
+
+Complete output structure:
+```json
+{
+  "scored_matches": [
+    {
+      "transaction_id": "string",  // For single/batch matches
+      "transaction_ids": ["string"],  // For split matches (mutually exclusive with transaction_id)
+      "document_id": "string",  // For single/split matches
+      "document_ids": ["string"],  // For batch matches (mutually exclusive with document_id)
+      "confidence_level": "HIGH|MEDIUM|LOW",
+      "confidence_score": 85.0,
+      "recommendation": "AUTO_RECONCILE|REVIEW|MANUAL"
+    }
+  ],
+  "summary": {"HIGH": 5, "MEDIUM": 2, "LOW": 1}
+}
+```
+
+========================================
+EXAMPLES
+========================================
+
+Example 1: Single Match
+Input:
+{
+  "transaction_id": "1001",
+  "document_id": "BILL_001",
+  "match_type": "exact",
+  "match_details": {
+    "amount_match": "exact",
+    "partner_match": "exact",
+    "date_diff_days": 3
+  }
+}
+
+Output:
+{
+  "transaction_id": "1001",
+  "confidence_level": "HIGH",
+  "confidence_score": 98.5,
+  "recommendation": "AUTO_RECONCILE"
+}
+
+Example 2: Split Payment (N→1)
+Input:
+{
+  "transaction_ids": ["2092", "2094"],
+  "document_id": "BILL_001",
+  "match_type": "combination_split",
+  "match_details": {
+    "transaction_amounts": ["20.00", "40.00"],
+    "document_amount": "60.00",
+    "difference": "0.00",
+    "date_diff_days": 4
+  }
+}
+
+Output:
+{
+  "transaction_ids": ["2092", "2094"],
+  "document_id": "BILL_001",
+  "confidence_level": "HIGH",
+  "confidence_score": 95.0,
+  "recommendation": "AUTO_RECONCILE"
+}
+Reasoning: Exact sum (0.00 diff) + dates within 7 days + only 2 items = HIGH confidence
+
+Example 3: Batch Payment (1→N)
+Input:
+{
+  "transaction_id": "1003",
+  "document_ids": ["BILL_001", "BILL_002", "BILL_003"],
+  "match_type": "combination_batch",
+  "match_details": {
+    "document_amounts": ["1200.00", "800.00", "1200.00"],
+    "transaction_amount": "3200.00",
+    "difference": "0.00"
+  }
+}
+
+Output:
+{
+  "transaction_id": "1003",
+  "document_ids": ["BILL_001", "BILL_002", "BILL_003"],
+  "confidence_level": "MEDIUM",
+  "confidence_score": 88.0,
+  "recommendation": "REVIEW"
+}
+Reasoning: Exact sum but 3 documents = MEDIUM confidence
+
+========================================
+IMPORTANT NOTES
+========================================
+1. Always preserve the match structure (transaction_id vs transaction_ids)
+2. For combinations, be slightly more conservative with confidence
+3. Exact amount sums (0.00 difference) significantly boost confidence
+4. Larger combinations (4-5 items) should rarely get HIGH confidence
+5. Score ALL matches in the input, including combinations
+"""
+
 
 SUSPENSE_MATCH_PROMPT = """You are the Suspense Resolution Agent, a specialized component in a financial reconciliation system.
 
