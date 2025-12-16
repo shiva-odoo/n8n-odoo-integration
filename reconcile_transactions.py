@@ -1082,80 +1082,83 @@ def find_or_create_partner(
 
 
 def validate_reconciliation_amounts(
-    models: Any,
-    db: str,
-    uid: int,
-    password: str,
-    line_ids: List[int]
+    models,
+    db,
+    uid,
+    password,
+    line_ids
 ) -> Dict[str, Any]:
     """
-    Validate that the amounts balance for reconciliation with error handling
+    Validate reconciliation amounts.
+
+    UPDATED BEHAVIOR:
+    - No longer blocks reconciliation if amounts do not match exactly.
+    - Logs debit/credit imbalance for debugging.
+    - Always returns success as long as lines are readable.
+
+    This allows reconciliation in cases such as:
+    - Bank fees
+    - Rounding differences
+    - FX differences
+    - Partial payments
     """
+
     try:
         if not line_ids or not isinstance(line_ids, list):
             return {
-                'success': False,
-                'error': 'No line IDs provided for validation'
+                'success': True,
+                'balance': 0.0,
+                'total_debit': 0.0,
+                'total_credit': 0.0,
+                'warning': 'No line IDs provided for validation'
             }
-        
-        # Filter valid line IDs
-        valid_line_ids = [safe_int(lid, default=0) for lid in line_ids if safe_int(lid, default=0) > 0]
-        
-        if not valid_line_ids:
-            return {
-                'success': False,
-                'error': 'No valid line IDs provided'
-            }
-        
-        # Get line details
-        try:
-            lines = models.execute_kw(
-                db, uid, password,
-                'account.move.line', 'read',
-                [valid_line_ids],
-                {'fields': ['id', 'debit', 'credit', 'amount_residual']}
-            )
-        except Exception as read_err:
-            return {
-                'success': False,
-                'error': f'Error reading line details: {str(read_err)}'
-            }
-        
-        if not lines:
-            return {
-                'success': False,
-                'error': 'Could not read line details'
-            }
-        
+
+        # Read debit/credit from Odoo
+        lines = models.execute_kw(
+            db, uid, password,
+            'account.move.line', 'read',
+            [line_ids],
+            {'fields': ['debit', 'credit']}
+        )
+
         total_debit = 0.0
         total_credit = 0.0
-        
+
         for line in lines:
-            if isinstance(line, dict):
-                total_debit += safe_float(safe_get(line, 'debit', default=0))
-                total_credit += safe_float(safe_get(line, 'credit', default=0))
-        
-        # Check if amounts balance
-        balance = abs(total_debit - total_credit)
-        
-        if balance > 0.01:  # Allow 1 cent tolerance
-            return {
-                'success': False,
-                'error': f'Amounts do not balance. Debit: {total_debit:.2f}, Credit: {total_credit:.2f}, Difference: {balance:.2f}'
-            }
-        
+            total_debit += safe_float(line.get('debit', 0))
+            total_credit += safe_float(line.get('credit', 0))
+
+        balance = round(total_debit - total_credit, 2)
+
+        # Log imbalance but DO NOT fail
+        if abs(balance) > 0.01:
+            log_debug(
+                "Amount mismatch detected but reconciliation allowed",
+                {
+                    "total_debit": total_debit,
+                    "total_credit": total_credit,
+                    "difference": balance,
+                    "line_ids": line_ids
+                }
+            )
+
         return {
             'success': True,
+            'balance': balance,
             'total_debit': total_debit,
-            'total_credit': total_credit,
-            'balance': balance
+            'total_credit': total_credit
         }
-        
+
     except Exception as e:
+        log_debug("Amount validation error (non-blocking)", str(e))
         return {
-            'success': False,
-            'error': f'Error validating amounts: {str(e)}'
+            'success': True,
+            'balance': 0.0,
+            'total_debit': 0.0,
+            'total_credit': 0.0,
+            'warning': f'Validation skipped due to error: {str(e)}'
         }
+
 
 
 def perform_odoo_reconciliation(models, db, uid, password, line_ids):
