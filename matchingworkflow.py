@@ -76,6 +76,7 @@ class MatchingConfig:
     # Tolerance settings
     exact_tolerance: Decimal = Decimal("0.00")  # Zero tolerance for exact matches
     bank_fee_tolerance: Decimal = Decimal("5.00")  # Max bank fee difference
+    fuzzy_tolerance: Decimal = Decimal("10.00")
     rounding_tolerance: Decimal = Decimal("0.05")  # Split payment rounding
     percentage_tolerance: Decimal = Decimal("0.02")  # 2% for large transactions
     
@@ -148,6 +149,7 @@ class ToleranceType(Enum):
     BANK_FEE = "bank_fee"
     ROUNDING = "rounding"
     PERCENTAGE = "percentage"
+    FUZZY = "fuzzy" 
 
 
 class RejectionReason(Enum):
@@ -234,6 +236,8 @@ def calculate_tolerance(
         return config.rounding_tolerance
     elif tolerance_type == ToleranceType.PERCENTAGE:
         return dec_amount * config.percentage_tolerance
+    elif tolerance_type == ToleranceType.FUZZY:
+        return config.fuzzy_tolerance
     
     return Decimal("0.00")
 
@@ -575,6 +579,7 @@ def validate_exact_matches(
     """
     Python-side validation of exact matches.
     FIXED: Rejects hallucinated/missing IDs instead of accepting them.
+    ENHANCED: Supports generic partner wildcards for invoice_receipt and bill_payment.
     
     Returns:
         Tuple of (valid_matches, rejected_matches)
@@ -606,15 +611,59 @@ def validate_exact_matches(
             rejected.append(match)
             continue
         
-        # Determine tolerance type based on match characteristics
+        # ============================================================
+        # GENERIC PARTNER WILDCARD DETECTION
+        # ============================================================
+        is_generic_partner_match = False
+        txn_partner = str(txn.get("partner_name", "")).lower().strip()
+        txn_category = str(txn.get("category", "")).lower()
+        
+        # Define generic partners
+        generic_invoice_partners = ["customer", "client", "payer", "direct credit"]
+        generic_bill_partners = ["supplier", "vendor", "payee", "payment"]
+        
+        # Check if this is a generic partner wildcard match
+        if txn_category == "invoice_receipt" and any(gp in txn_partner for gp in generic_invoice_partners):
+            is_generic_partner_match = True
+            logger.info(f"Generic invoice partner wildcard detected: '{txn_partner}' (TXN {txn_id})")
+        elif txn_category == "bill_payment" and any(gp in txn_partner for gp in generic_bill_partners):
+            is_generic_partner_match = True
+            logger.info(f"Generic bill partner wildcard detected: '{txn_partner}' (TXN {txn_id})")
+        
+        # ============================================================
+        # DETERMINE TOLERANCE TYPE
+        # ============================================================
         tolerance_type = ToleranceType.EXACT
+        match_type = match.get("match_type", "")
+        
         # SUSPENSE MATCHES: Always use bank_fee tolerance (they may have fees/rounding)
-        if match.get("match_type", "").startswith("suspense"):
+        if match_type.startswith("suspense"):
             tolerance_type = ToleranceType.BANK_FEE
+            logger.debug(f"Using BANK_FEE tolerance for suspense match (TXN {txn_id})")
+        
+        # FUZZY MATCHES: Use fuzzy tolerance (allows differences up to 10.00)
+        elif match_type == "fuzzy":
+            tolerance_type = ToleranceType.FUZZY
+            logger.debug(f"Using FUZZY tolerance (€10) for fuzzy match (TXN {txn_id})")
+        
+        # GENERIC PARTNER WILDCARDS: Must be exact (tolerance = 0.00)
+        # This is IMPORTANT - we only allow generic wildcards with exact amount matches
+        elif is_generic_partner_match:
+            tolerance_type = ToleranceType.EXACT
+            logger.info(f"Using EXACT tolerance for generic partner wildcard match (TXN {txn_id})")
+            # Also ensure confidence is MEDIUM for generic wildcards
+            if match.get("confidence") == "HIGH":
+                match["confidence"] = "MEDIUM"
+                logger.info(f"Downgraded confidence to MEDIUM for generic wildcard (TXN {txn_id})")
+        
+        # BANK FEE MATCHES: Explicit bank fee or fee in reasoning
         elif match.get("has_bank_fee") or "fee" in (match.get("match_details", {}).get("reasoning", "") or "").lower():
             tolerance_type = ToleranceType.BANK_FEE
+            logger.debug(f"Using BANK_FEE tolerance for match with fees (TXN {txn_id})")
         
-        # Validate match integrity
+        # ============================================================
+        # VALIDATE MATCH INTEGRITY
+        # ============================================================
         is_valid, error, metadata = validate_match_integrity(
             txn, [doc], 
             match_type='single',
@@ -625,6 +674,13 @@ def validate_exact_matches(
         if is_valid:
             match["python_validated"] = True
             match["validation_metadata"] = metadata
+            
+            # Add flag if this was a generic partner wildcard match
+            if is_generic_partner_match:
+                match["is_generic_wildcard"] = True
+                match["generic_wildcard_type"] = txn_category
+                logger.info(f"✓ Generic wildcard match validated (TXN {txn_id} → DOC {doc_id})")
+            
             valid.append(match)
         else:
             match["rejection_reason"] = error
@@ -804,256 +860,249 @@ def calculate_date_difference(date1: str, date2: str) -> int:
     except (ValueError, TypeError):
         return 9999
 
+def enrich_transaction_python(txn: Dict) -> Dict:
+    """
+    Python tool for transaction enrichment - called by agent.
+    Deterministic, fast, reliable rule-based enrichment.
+    """
+    # Extract transaction_id
+    txn_id = str(txn.get("transaction_id") or txn.get("odoo_id"))
+    
+    # Extract account_name from line_items (first non-bank account)
+    account_name = "Unknown"
+    line_items = txn.get("line_items", [])
+    for item in line_items:
+        acc = item.get("account", "").lower()
+        # Skip bank/cash/credit card accounts
+        if acc and "bank" not in acc and "cash" not in acc and "credit card" not in acc:
+            account_name = item.get("account", "Unknown")
+            break
+    
+    # Normalize partner
+    partner_name = txn.get("partner_name") or txn.get("partner") or ""
+    normalized_partner = normalize_text(partner_name)
+    
+    # Category detection (priority order)
+    category = "bill_payment"  # default
+    is_suspense = False
+    is_internal_transfer = False
+    
+    # 1. SUSPENSE (highest priority)
+    suspense_keywords = ["suspense", "unknown", "unidentified", "pending"]
+    if any(kw in account_name.lower() for kw in suspense_keywords):
+        category = "suspense"
+        is_suspense = True
+    elif any(kw in partner_name.lower() for kw in suspense_keywords):
+        category = "suspense"
+        is_suspense = True
+    
+    # 2. INTERNAL_TRANSFER
+    if not is_suspense:
+        accounts_in_txn = [item.get("account", "").lower() for item in line_items]
+        has_credit_card = any("credit card" in acc for acc in accounts_in_txn)
+        has_bank = any("bank" in acc for acc in accounts_in_txn)
+        
+        if has_credit_card and has_bank:
+            category = "internal_transfer"
+            is_internal_transfer = True
+    
+    # 3. PAYROLL
+    if not is_suspense and not is_internal_transfer:
+        payroll_keywords = ["payroll", "wages", "salary", "employee", "paye", "nic", "social insurance"]
+        desc = str(txn.get("description", "")).lower()
+        
+        if any(kw in account_name.lower() for kw in payroll_keywords):
+            category = "payroll_payment"
+        elif any(kw in partner_name.lower() for kw in payroll_keywords):
+            category = "payroll_payment"
+        elif any(kw in desc for kw in payroll_keywords):
+            category = "payroll_payment"
+    
+    # 4. INVOICE_RECEIPT (revenue)
+    if not is_suspense and not is_internal_transfer and category == "bill_payment":
+        amount = to_decimal(txn.get("amount", 0))
+        revenue_keywords = ["accounts receivable", "receivable", "revenue", "sales"]
+        
+        if amount > 0 and any(kw in account_name.lower() for kw in revenue_keywords):
+            category = "invoice_receipt"
+    
+    # Format amount as string
+    amount_str = format_decimal(txn.get("amount", 0))
+    
+    # Build enriched transaction
+    enriched = {
+        "transaction_id": txn_id,
+        "odoo_id": txn.get("odoo_id"),
+        "date": txn.get("date"),
+        "amount": amount_str,
+        "currency": txn.get("currency", "EUR"),
+        "partner_name": partner_name,
+        "normalized_partner": normalized_partner,
+        "account_name": account_name,
+        "category": category,
+        "is_suspense": is_suspense,
+        "is_internal_transfer": is_internal_transfer,
+        "description": txn.get("description", "")[:80],
+        "keywords": []
+    }
+    
+    return enriched
+
+
+def enrich_document_python(doc: Dict, doc_type: str) -> Dict:
+    """Python tool for document enrichment - called by agent."""
+    partner_name = doc.get("partner_name", "")
+    normalized_partner = normalize_text(partner_name)
+    amount_str = format_decimal(doc.get("amount", 0))
+    
+    enriched = {**doc}
+    enriched["normalized_partner"] = normalized_partner
+    enriched["amount"] = amount_str
+    
+    return enriched
+
+
 
 # =============================================================================
 # AGENT PROMPTS (Optimized for batched processing)
 # =============================================================================
 
-DATA_ENRICHMENT_PROMPT = """You are the Data Enrichment Agent - the critical first step in transaction matching.
+DATA_ENRICHMENT_PROMPT = """You are the Data Enrichment Agent - orchestrator of data transformation.
+
+Your role: Call Python enrichment tools and validate outputs.
 
 ========================================
-CRITICAL OUTPUT REQUIREMENTS
+YOUR WORKFLOW
 ========================================
-1. MUST return ONLY valid JSON (no markdown, no explanation)
-2. ALL required fields MUST be present for each transaction
-3. Boolean fields (is_suspense, is_internal_transfer) MUST be actual booleans (true/false), NOT strings
-4. Amount fields MUST be formatted as "1000.00" strings with exactly 2 decimal places
-5. transaction_id MUST use odoo_id converted to string
-
-========================================
-REQUIRED OUTPUT FIELDS (EACH TRANSACTION)
-========================================
-- transaction_id: string (from odoo_id)
-- odoo_id: integer (original ID)
-- date: string (YYYY-MM-DD format)
-- amount: string (formatted as "1000.00")
-- currency: string (default "EUR" if missing)
-- partner_name: string (original partner name)
-- normalized_partner: string (lowercase, cleaned)
-- account_name: string (non-bank account from line_items)
-- category: string (bill_payment|invoice_receipt|payroll_payment|internal_transfer|suspense)
-- is_suspense: boolean (true/false, NOT string "true"/"false")
-- is_internal_transfer: boolean (true/false)
-- description: string (original description)
-- keywords: array of strings (max 3)
+1. Receive bank_transactions, bills, invoices, etc.
+2. Call enrich_transaction_python() for each transaction
+3. Call enrich_document_python() for each document
+4. Validate all enrichments completed successfully
+5. Return complete enriched dataset
 
 ========================================
-CATEGORY CLASSIFICATION RULES
+TOOL: enrich_transaction_python(transaction)
 ========================================
+Input: Single transaction dict
+Output: Enriched transaction with:
+- transaction_id (string)
+- odoo_id (integer)
+- date, amount, currency
+- partner_name, normalized_partner
+- account_name (extracted from line_items)
+- category (suspense|internal_transfer|payroll_payment|invoice_receipt|bill_payment)
+- is_suspense (boolean)
+- is_internal_transfer (boolean)
+- description (truncated to 80 chars)
+- keywords (empty array)
 
-1. SUSPENSE (Highest Priority)
-   Conditions (ANY of these):
-   - Account contains "suspense" (case-insensitive)
-   - Partner contains: "suspense", "unknown", "unidentified", "pending"
-   - Description suggests unidentified payment
-   
-   Required:
-   - category: "suspense"
-   - is_suspense: true (BOOLEAN, not string)
-
-2. INTERNAL_TRANSFER
-   Conditions (ALL must match):
-   - Line items contain BOTH "Credit card" AND "Bank" accounts
-   - Amount appears in both debit and credit
-   
-   Required:
-   - category: "internal_transfer"
-   - is_internal_transfer: true
-
-3. PAYROLL_PAYMENT
-   Conditions (ANY):
-   - Account contains: "payroll", "wages", "salary"
-   - Partner contains: "employee", "payroll"
-   - Description contains: "salary", "wages"
-   
-   Required:
-   - category: "payroll_payment"
-
-4. INVOICE_RECEIPT (Revenue)
-   Conditions:
-   - Positive amount AND
-   - Account contains: "accounts receivable", "revenue", "sales"
-   
-   Required:
-   - category: "invoice_receipt"
-
-5. BILL_PAYMENT (Expense)
-   Conditions:
-   - Account contains: "accounts payable", "expense"
-   - OR default for payments
-   
-   Required:
-   - category: "bill_payment"
+TOOL: enrich_document_python(document, doc_type)
+========================================
+Input: Single document dict + type ("bill"|"invoice"|etc)
+Output: Enriched document with normalized_partner and formatted amount
 
 ========================================
-ACCOUNT_NAME EXTRACTION RULES
+YOUR TASK
 ========================================
-From line_items array, extract the FIRST account that is NOT:
-- "Bank"
-- "Cash"
-- Any bank/cash account
+1. For EACH transaction in bank_transactions:
+   - Call enrich_transaction_python(transaction)
+   - Collect enriched result
 
-Example:
-line_items: [
-  {"account": "Accounts payable", "debit": 1000, "credit": 0},
-  {"account": "Bank", "debit": 0, "credit": 1000}
-]
-→ account_name: "Accounts payable"
+2. For EACH bill in bills:
+   - Call enrich_document_python(bill, "bill")
+   - Collect enriched result
 
-========================================
-EXAMPLES
-========================================
+3. For EACH invoice in invoices:
+   - Call enrich_document_python(invoice, "invoice")
+   - Collect enriched result
 
-Example 1: SUSPENSE Transaction
-Input:
-{
-  "odoo_id": 1008,
-  "date": "2025-06-20",
-  "amount": 1200.00,
-  "partner_name": "Suspense - Transfer",
-  "description": "Unidentified payment",
-  "line_items": [
-    {"account": "Suspense account", "debit": 1200, "credit": 0},
-    {"account": "Bank", "debit": 0, "credit": 1200}
-  ]
-}
+4. Repeat for credit_notes, payroll_transactions, share_transactions
 
-Output:
-{
-  "transaction_id": "1008",
-  "odoo_id": 1008,
-  "date": "2025-06-20",
-  "amount": "1200.00",
-  "currency": "EUR",
-  "partner_name": "Suspense - Transfer",
-  "normalized_partner": "suspense transfer",
-  "account_name": "Suspense account",
-  "category": "suspense",
-  "is_suspense": true,
-  "is_internal_transfer": false,
-  "description": "Unidentified payment",
-  "keywords": ["unidentified", "payment", "suspense"]
-}
+5. Count suspense and internal transfers
 
-Example 2: INTERNAL TRANSFER
-Input:
-{
-  "odoo_id": 1004,
-  "date": "2025-06-12",
-  "amount": 5000.00,
-  "partner_name": "Credit card payment",
-  "line_items": [
-    {"account": "Credit card", "debit": 5000, "credit": 0},
-    {"account": "Bank", "debit": 0, "credit": 5000}
-  ]
-}
-
-Output:
-{
-  "transaction_id": "1004",
-  "odoo_id": 1004,
-  "date": "2025-06-12",
-  "amount": "5000.00",
-  "currency": "EUR",
-  "partner_name": "Credit card payment",
-  "normalized_partner": "credit card payment",
-  "account_name": "Credit card",
-  "category": "internal_transfer",
-  "is_suspense": false,
-  "is_internal_transfer": true,
-  "description": "",
-  "keywords": ["credit", "card", "payment"]
-}
-
-Example 3: BILL PAYMENT
-Input:
-{
-  "odoo_id": 1001,
-  "date": "2025-06-05",
-  "amount": 2500.00,
-  "partner_name": "ABC Property Management",
-  "description": "Office rent payment June 2025",
-  "line_items": [
-    {"account": "Accounts payable", "debit": 2500, "credit": 0},
-    {"account": "Bank", "debit": 0, "credit": 2500}
-  ]
-}
-
-Output:
-{
-  "transaction_id": "1001",
-  "odoo_id": 1001,
-  "date": "2025-06-05",
-  "amount": "2500.00",
-  "currency": "EUR",
-  "partner_name": "ABC Property Management",
-  "normalized_partner": "abc property management",
-  "account_name": "Accounts payable",
-  "category": "bill_payment",
-  "is_suspense": false,
-  "is_internal_transfer": false,
-  "description": "Office rent payment June 2025",
-  "keywords": ["office", "rent", "payment"]
-}
-
-========================================
-DOCUMENT ENRICHMENT
-========================================
-For bills, invoices, credit_notes, payroll, shares:
-- Keep all existing fields
-- Add normalized_partner (lowercase cleaned)
-- Ensure all IDs are preserved
-- Format amounts as "1000.00"
+6. Return complete enriched dataset
 
 ========================================
 OUTPUT FORMAT
 ========================================
-```json
+Return this EXACT JSON structure:
+
 {
   "enriched_transactions": [
-    {
-      "transaction_id": "string",
-      "odoo_id": integer,
-      "date": "YYYY-MM-DD",
-      "amount": "1000.00",
-      "currency": "EUR",
-      "partner_name": "string",
-      "normalized_partner": "string",
-      "account_name": "string",
-      "category": "bill_payment|invoice_receipt|payroll_payment|internal_transfer|suspense",
-      "is_suspense": boolean,
-      "is_internal_transfer": boolean,
-      "description": "string",
-      "keywords": ["string"]
-    }
+    // All enriched transactions from tool calls
   ],
-  "enriched_bills": [...],
-  "enriched_invoices": [...],
-  "enriched_credit_notes": [...],
-  "enriched_payroll": [...],
+  "enriched_bills": [
+    // All enriched bills from tool calls
+  ],
+  "enriched_invoices": [
+    // All enriched invoices from tool calls
+  ],
+  "enriched_credit_notes": [],
+  "enriched_payroll": [],
   "enriched_shares": [],
   "enrichment_summary": {
-    "transactions_processed": integer,
-    "suspense_count": integer,
-    "internal_transfer_count": integer
+    "transactions_processed": N,
+    "suspense_count": N,  // Count where is_suspense = true
+    "internal_transfer_count": N  // Count where is_internal_transfer = true
   }
 }
-```
 
 ========================================
 VALIDATION CHECKLIST
 ========================================
-Before returning, verify:
-☑ All transactions have transaction_id as STRING
-☑ is_suspense is BOOLEAN (true/false), not string
-☑ is_internal_transfer is BOOLEAN (true/false), not string
-☑ Amounts are formatted as "1000.00" strings
-☑ Categories are valid enum values
-☑ Account names extracted correctly
-☑ All required fields present
-☑ Valid JSON syntax
-"""
+✓ enriched_transactions.length == input bank_transactions.length
+✓ All transactions processed (none skipped)
+✓ All documents processed
+✓ Counts are accurate
+✓ Return only JSON, no markdown
 
+========================================
+EXAMPLE
+========================================
+
+Input:
+{
+  "bank_transactions": [
+    {"odoo_id": 1008, "date": "2025-06-20", "amount": 1200, ...},
+    {"odoo_id": 1004, "date": "2025-06-12", "amount": 5000, ...}
+  ],
+  "bills": [
+    {"bill_id": "BILL_001", "amount": 100, ...}
+  ],
+  "invoices": []
+}
+
+Your actions:
+1. Call enrich_transaction_python(txn_1008) → get enriched_1008
+2. Call enrich_transaction_python(txn_1004) → get enriched_1004
+3. Call enrich_document_python(bill_001, "bill") → get enriched_bill_001
+4. Count: suspense_count = 1, internal_transfer_count = 1
+5. Return complete structure
+
+Output:
+{
+  "enriched_transactions": [enriched_1008, enriched_1004],
+  "enriched_bills": [enriched_bill_001],
+  "enriched_invoices": [],
+  "enriched_credit_notes": [],
+  "enriched_payroll": [],
+  "enriched_shares": [],
+  "enrichment_summary": {
+    "transactions_processed": 2,
+    "suspense_count": 1,
+    "internal_transfer_count": 1
+  }
+}
+
+========================================
+CRITICAL REMINDERS
+========================================
+- Call the Python tools for EACH item - don't try to enrich yourself
+- Tools are deterministic and reliable - trust their output
+- Your job is orchestration and validation, not transformation
+- Never skip items - process ALL transactions and documents
+- Return only JSON, no markdown or explanations
+"""
 
 DUPLICATE_DETECTION_PROMPT = """You are the Duplicate Detection Agent.
 
@@ -1074,29 +1123,103 @@ CRITICAL INSTRUCTIONS
 4. NEVER fabricate or hallucinate IDs
 5. Follow the exact output format specified below
 
+✅ CRITICAL: If you find NO duplicates, you MUST still return ALL transaction IDs in non_duplicate_transaction_ids
+✅ The non_duplicate_transaction_ids array should contain ALL transactions that are not duplicates
+❌ NEVER return an empty non_duplicate_transaction_ids array if input has transactions
+
+========================================
+LOGIC
 ========================================
 
-## OUTPUT FORMAT
+For each transaction:
+1. Check if it's an internal transfer (has both Credit card and Bank accounts)
+2. Compare with other internal transfers
+3. If EXACT match found (same date, same amount):
+   - Keep the SECOND one (later in list)
+   - Mark the FIRST one for deletion
+   - Add pair to duplicate_pairs
+4. All other transactions go to non_duplicate_transaction_ids
+
+========================================
+OUTPUT FORMAT
+========================================
 ```json
 {
   "duplicate_pairs": [
     {
-      "transaction_1": "1004",
-      "transaction_2": "1005",
-      "keep": "1005",
-      "mark_for_deletion": "1004",
+      "transaction_1": "TXN_ID_1",
+      "transaction_2": "TXN_ID_2",
+      "keep": "TXN_ID_2",
+      "mark_for_deletion": "TXN_ID_1",
       "odoo_id_to_delete": 1004,
+      "reason": "Internal transfer duplicate - same date and amount",
+      "confidence": "HIGH"
+    }
+  ],
+  "non_duplicate_transaction_ids": ["TXN_ID_3", "TXN_ID_4", "TXN_ID_5", ...],
+  "summary": {
+    "duplicates_found": 1,
+    "total_transactions": 30,
+    "non_duplicates": 29
+  }
+}
+```
+
+========================================
+IMPORTANT NOTES
+========================================
+1. ✅ non_duplicate_transaction_ids must contain ALL transaction IDs that are NOT in duplicate_pairs
+2. ✅ If NO duplicates found, non_duplicate_transaction_ids should have ALL input transaction IDs
+3. ✅ Use the EXACT transaction_id strings from the input
+4. ❌ NEVER return empty non_duplicate_transaction_ids if input has transactions
+5. ❌ NEVER omit transactions - every transaction must appear in either duplicate_pairs or non_duplicate_transaction_ids
+
+========================================
+EXAMPLES
+========================================
+
+Example 1: NO DUPLICATES FOUND
+Input: 30 transactions, none are duplicates
+
+Output:
+{
+  "duplicate_pairs": [],
+  "non_duplicate_transaction_ids": ["TXN_1", "TXN_2", "TXN_3", ..., "TXN_30"],
+  "summary": {
+    "duplicates_found": 0,
+    "total_transactions": 30,
+    "non_duplicates": 30
+  }
+}
+
+Example 2: DUPLICATES FOUND
+Input: 30 transactions, 1 duplicate pair found
+
+Output:
+{
+  "duplicate_pairs": [
+    {
+      "transaction_1": "TXN_5",
+      "transaction_2": "TXN_6",
+      "keep": "TXN_6",
+      "mark_for_deletion": "TXN_5",
+      "odoo_id_to_delete": 1005,
       "reason": "Internal transfer duplicate",
       "confidence": "HIGH"
     }
   ],
-  "non_duplicate_transaction_ids": ["1001", "1002", "1003"],
-  "summary": {"duplicates_found": 1}
+  "non_duplicate_transaction_ids": ["TXN_1", "TXN_2", "TXN_3", "TXN_4", "TXN_7", ..., "TXN_30"],
+  "summary": {
+    "duplicates_found": 1,
+    "total_transactions": 30,
+    "non_duplicates": 29
+  }
 }
-```"""
 
+Note: TXN_5 and TXN_6 are NOT in non_duplicate_transaction_ids because they're in duplicate_pairs
+"""
 
-EXACT_MATCH_PROMPT = """You are the Exact Match Agent.
+EXACT_MATCH_PROMPT = """You are the Exact Match Agent - specialized in high-confidence transaction-to-document matching.
 
 ========================================
 CRITICAL INSTRUCTIONS
@@ -1107,45 +1230,539 @@ CRITICAL INSTRUCTIONS
 4. NEVER fabricate or hallucinate IDs
 5. Follow the exact output format specified below
 
+✅ Process EVERY transaction provided in this batch
+✅ Return matches ONLY for high-confidence exact matches
+✅ Return ALL unmatched transaction IDs in unmatched_transaction_ids
+✅ If a transaction could match multiple documents, choose the BEST match
+✅ **CRITICAL: Some documents may have been matched in previous batches - if a document is not in the candidates list, it has already been matched. Do NOT attempt to match to documents not provided.**
+❌ NEVER omit transactions - every transaction must be either matched or unmatched
+❌ NEVER create matches with IDs not in the input
+
+========================================
+MISSION
+========================================
+Match transactions to documents using a STRUCTURED matching hierarchy.
+
+For EACH transaction:
+1. Apply the matching hierarchy (see below)
+2. If a SINGLE high-confidence match is found → add to matched array
+3. If MULTIPLE potential matches → select the BEST one using tie-breakers
+4. If NO confident match → add transaction_id to unmatched_transaction_ids
+
+========================================
+MATCHING HIERARCHY (Apply in Order)
 ========================================
 
-## TASK
-Match transactions to documents. Process ONLY the transactions provided.
+STEP 1: CATEGORY FILTERING
+---------------------------
+First, narrow down candidate documents by transaction category:
 
-## MATCHING RULES
-1. Amount: Must match exactly (or within €5 if bank fee suspected)
-2. Currency: Must match
-3. Partner: Exact or substring match
-4. Date: Within 7 days
+- bill_payment → Look for bills first, then credit_notes
+- invoice_receipt → Look for invoices first
+- payroll_payment → Look for payroll documents only
+- internal_transfer → Skip (don't match these)
+- suspense → Check all document types
 
-## IMPORTANT
-- Only return matches for transaction IDs that exist in the input
-- Only use document IDs that exist in the candidate list
-- If no match found, include in unmatched list
+STEP 2: REFERENCE MATCHING (Highest Priority)
+----------------------------------------------
+Check if transaction description/reference contains document reference numbers:
 
-## OUTPUT FORMAT
+Transaction: "Payment for invoice INV/2025/00003"
+Document: invoice with invoice_ref = "2025/18" or odoo_invoice_number = "INV/2025/00003"
+→ HIGH confidence match if reference found + amount matches
+
+Reference indicators:
+- Invoice numbers: "INV/", "invoice", "inv#", invoice_ref
+- Bill numbers: "BILL/", vendor_ref, payment_reference
+- Reference numbers in description
+
+STEP 3: AMOUNT MATCHING (Critical)
+-----------------------------------
+Amount must match within tolerance:
+
+Exact Match (tolerance = 0.00):
+- Amounts are EXACTLY equal (difference = 0)
+- Use for: Clean payments, round numbers
+- Example: Transaction €2500.00 = Bill €2500.00
+- Set has_bank_fee: false
+
+Near Match with Bank Fee (tolerance = 5.00):
+- Difference > €0.00 AND ≤ €5.00
+- Use for: Wire transfers, bank fees, small discrepancies
+- Example: Transaction €2500.00 vs Bill €2503.50 (diff = 3.50)
+- Example: Transaction €136.15 vs Bill €134.14 (diff = 2.01)
+- Example: Transaction €30.99 vs Bill €31.13 (diff = 0.14)
+- **CRITICAL: ALWAYS set has_bank_fee: true when difference > €0.00**
+
+Small Rounding (tolerance = 0.05):
+- Difference ≤ €0.05 (5 cents)
+- Use for: Split payments, rounding errors
+- Example: Transaction €100.00 vs Bill €100.03 (diff = 0.03)
+- Set has_bank_fee: true
+
+**CRITICAL RULE: If amount difference is between €0.01 and €5.00:**
+→ YOU MUST set has_bank_fee: true
+→ This enables proper tolerance validation
+→ Without this flag, the match will be rejected
+
+REJECT if:
+- Difference > €5.00 (exceeds bank fee tolerance)
+
+STEP 4: PARTNER MATCHING (Important)
+-------------------------------------
+
+BEFORE APPLYING PARTNER MATCHING, CHECK FOR GENERIC PARTNER WILDCARDS:
+
+Generic Partner Wildcards (Special Case):
+==========================================
+Some transactions have generic placeholder partner names instead of actual company names.
+These require special handling.
+
+**INVOICE_RECEIPT transactions (revenue) with generic partners:**
+Generic partners: "Customer", "Client", "Payer", "Direct Credit"
+
+Detection:
+- Check if transaction category = "invoice_receipt"
+- Check if partner name contains: "customer", "client", "payer", "direct credit" (case-insensitive)
+
+Matching rules when generic partner detected:
+- Match ONLY on: Amount (exact, 0.00 difference) + Date (within 7 days)
+- IGNORE partner name mismatch completely
+- Set confidence: MEDIUM (not HIGH, requires review)
+- Add "generic_wildcard" to match_details
+- In reasoning: State "Generic partner wildcard applied - matched on amount and date only"
+- **IMPORTANT: If there are multiple invoices with the same amount, prefer the one that hasn't been matched yet. Check the candidates list carefully.**
+
+Example:
+Transaction: €3570, partner "Customer", category "invoice_receipt", date 2025-06-06
+Invoice: €3570, partner "Metro Foods Trading Ltd", date 2025-06-05
+→ MATCH (generic wildcard, exact amount, 1 day difference, confidence: MEDIUM)
+
+**BILL_PAYMENT transactions (expense) with generic partners:**
+Generic partners: "Supplier", "Vendor", "Payee", "Payment"
+
+Detection:
+- Check if transaction category = "bill_payment"
+- Check if partner name contains: "supplier", "vendor", "payee", "payment" (case-insensitive)
+
+Matching rules when generic partner detected:
+- Match ONLY on: Amount (exact, 0.00 difference) + Date (within 7 days)
+- IGNORE partner name mismatch completely
+- Set confidence: MEDIUM (not HIGH, requires review)
+- Add "generic_wildcard" to match_details
+- In reasoning: State "Generic partner wildcard applied - matched on amount and date only"
+
+Example:
+Transaction: €144.43, partner "Supplier", category "bill_payment", date 2025-06-30
+Bill: €144.43, partner "Epic Ltd", date 2025-06-30
+→ MATCH (generic wildcard, exact amount, same date, confidence: MEDIUM)
+
+CRITICAL WILDCARDS NOTES:
+- Generic wildcards require EXACT amount (0.00 difference) for safety
+- Generic wildcards require date within 7 days
+- Generic wildcards ALWAYS get confidence: MEDIUM (never HIGH)
+- If both reference match AND generic wildcard apply, prefer reference match
+- If transaction has BOTH generic partner AND non-generic match available, prefer non-generic
+- **MOST IMPORTANT: If a document was already matched in a previous batch, it will NOT appear in the candidates list. Only match to documents that are actually provided in the candidates.**
+
+**STANDARD PARTNER MATCHING (when NOT generic):**
+
+Match transaction partner to document partner using this hierarchy:
+
+LEVEL 1 - Exact Match (Best):
+- Normalized strings are identical
+- Example: "epic ltd" == "epic ltd"
+- Confidence boost: +20
+
+LEVEL 2 - Substring Match (Good):
+- One is contained in the other
+- Example: "epic" in "epic ltd"
+- Example: "ETFL" in "ETFL LIMITED"
+- Confidence boost: +10
+
+LEVEL 3 - Fuzzy Match (Acceptable):
+- Similar names with variations
+- Example: "Bank of Cyprus" vs "BOC" 
+- Example: "Metro Foods Trading Ltd" vs "Metro Foods"
+- Remove: "Ltd", "Limited", "Inc", "Corp", punctuation
+- Check if remaining parts match
+- Confidence boost: +5
+
+LEVEL 4 - Different Partners (Investigate):
+- Partners don't match but amount + reference match
+- Example: Transaction partner "Customer" but document partner "ETFL Ltd"
+- Accept if reference match or amount + date very close
+- Confidence penalty: -10
+
+REJECT if:
+- Partners are clearly different companies
+- No reference match to justify the difference
+- No generic wildcard applies
+
+STEP 5: DATE PROXIMITY (Tiebreaker)
+------------------------------------
+Prefer matches where dates are closer:
+
+Same date (0 days): Best case
+Within 1-3 days: Normal (invoices paid within days)
+Within 4-7 days: Acceptable (standard payment terms)
+Within 8-30 days: Acceptable for specific categories:
+  - Professional services (long payment cycles)
+  - Government payments (slow processing)
+Within 31+ days: Only if reference match is strong
+
+REJECT if:
+- Date difference > 30 days AND no reference match
+- Transaction date is BEFORE document date by >7 days (can't pay before invoice issued)
+
+STEP 6: CURRENCY MATCHING (Mandatory)
+--------------------------------------
+Currency MUST match:
+- Both EUR
+- Both USD
+- etc.
+
+REJECT if currencies differ (no cross-currency matching)
+
+========================================
+PRIORITY MATCHING FOR COMMON SCENARIOS
+========================================
+
+**SCENARIO 1: Same Partner + Amount Within €5 + Same Date**
+
+If you find a transaction and document where:
+- Partner names match (exact, substring, or fuzzy)
+- Amount difference ≤ €5.00
+- Date difference ≤ 7 days
+
+→ YOU MUST MATCH THIS
+→ Set has_bank_fee: true if difference > €0.00
+→ This is the highest confidence non-exact match
+
+Example:
+Transaction: €136.15, partner "Cyta", date 2025-06-30
+Bill: €134.14, partner "Cyta", date 2025-06-30
+→ MATCH (partner match + €2.01 diff ≤ €5 + same date)
+→ Set has_bank_fee: true
+→ confidence: MEDIUM
+
+**SCENARIO 2: Exact Partner + Small Difference (€0.01-€2.00)**
+
+These are almost certainly correct matches:
+- Same company name
+- Tiny amount difference (likely fee or rounding)
+- Close dates
+
+→ ALWAYS MATCH THESE
+→ Set has_bank_fee: true
+→ confidence: HIGH
+
+Example:
+Transaction: €30.99, partner "Epic Ltd", date 2025-06-30
+Bill: €31.13, partner "Epic Ltd", date 2025-06-30
+→ MATCH (exact partner + €0.14 diff + same date)
+→ Set has_bank_fee: true
+→ confidence: HIGH
+
+========================================
+MULTIPLE MATCH HANDLING
+========================================
+
+If a transaction could match MULTIPLE documents, select the BEST one using:
+
+Priority 1: Reference match
+- If transaction description contains document reference → Choose that document
+
+Priority 2: Non-generic partner over generic wildcard
+- If one match has actual partner match and another needs wildcard → Choose partner match
+- Example: ETFL transaction matches ETFL invoice (partner match) vs Customer transaction matches ETFL invoice (wildcard)
+  → Choose partner match, leave wildcard for other documents
+
+Priority 3: Date proximity
+- Choose document with closest date to transaction
+
+Priority 4: Partner match quality
+- Exact partner match > Substring > Fuzzy > Wildcard
+
+Priority 5: Amount precision
+- Exact amount > Near match with fee
+
+Priority 6: **Document not previously matched**
+- **CRITICAL: If multiple documents have the same amount and partner, check which one is in the candidates list. Documents already matched will not appear in candidates.**
+
+If still tied:
+- Choose the FIRST document in the candidate list
+- Log this in reasoning
+
+========================================
+CONFIDENCE SCORING
+========================================
+
+HIGH confidence (use when):
+- Reference match found + amount matches + partner matches (non-wildcard)
+- Exact amount + exact partner + date within 7 days
+- Exact amount + substring partner + date within 3 days
+- Reference match + amount within €2.00
+
+MEDIUM confidence (use when):
+- Near match (amount diff €0.01-€5.00) + exact/substring partner + date within 7 days
+- Generic wildcard match + exact amount + date within 7 days
+- Exact amount + fuzzy partner + date within 3 days
+- Reference match + amount within €5.00
+
+LOW confidence (use when):
+- Fuzzy partner + near amount + date within 14 days
+- Different partners but strong reference match
+- Amount within €5.00 but date >7 days
+
+DO NOT MATCH if:
+- Amount difference > €5.00
+- Currency mismatch
+- Partners clearly different AND no reference match AND amount not exact
+- Date difference > 30 days AND no reference match
+
+========================================
+OUTPUT FORMAT
+========================================
 ```json
 {
   "matched": [
     {
-      "transaction_id": "1001",
-      "document_type": "bill",
-      "document_id": "BILL_2025_001",
+      "transaction_id": "TXN_2025_12_15_04_59_00_4",
+      "document_type": "invoice",
+      "document_id": "INV_2025_12_15_04_51_00",
       "match_type": "exact",
       "has_bank_fee": false,
       "match_details": {
         "amount_match": "exact",
+        "amount_difference": "0.00",
         "partner_match": "substring",
-        "date_diff_days": 4,
-        "reasoning": "Amount exact, partner substring match"
+        "partner_match_score": 85,
+        "date_diff_days": 0,
+        "reference_found": true,
+        "reference_value": "2025/18",
+        "reasoning": "Reference '2025/18' found in transaction description, exact amount match (€3570), partner ETFL substring match, same date"
+      },
+      "confidence": "HIGH"
+    },
+    {
+      "transaction_id": "TXN_2025_12_15_04_59_00_10",
+      "document_type": "bill",
+      "document_id": "BILL_2025_12_15_04_51_45",
+      "match_type": "exact",
+      "has_bank_fee": true,
+      "match_details": {
+        "amount_match": "near_with_fee",
+        "amount_difference": "2.01",
+        "partner_match": "exact",
+        "partner_match_score": 100,
+        "date_diff_days": 0,
+        "reference_found": false,
+        "reference_value": null,
+        "reasoning": "Exact partner match (Cyta = Cyta), amount within bank fee tolerance (€136.15 vs €134.14, diff €2.01), same date"
+      },
+      "confidence": "MEDIUM"
+    },
+    {
+      "transaction_id": "TXN_2025_12_15_04_59_00_11",
+      "document_type": "bill",
+      "document_id": "BILL_2025_12_15_04_53_07",
+      "match_type": "exact",
+      "has_bank_fee": true,
+      "match_details": {
+        "amount_match": "near_with_fee",
+        "amount_difference": "0.14",
+        "partner_match": "exact",
+        "partner_match_score": 100,
+        "date_diff_days": 0,
+        "reference_found": false,
+        "reference_value": null,
+        "reasoning": "Exact partner match (Epic Ltd = epic ltd), amount within tolerance (€30.99 vs €31.13, diff €0.14), same date"
       },
       "confidence": "HIGH"
     }
   ],
-  "unmatched_transaction_ids": ["1003"]
+  "unmatched_transaction_ids": ["TXN_2025_12_15_04_56_41_5", "TXN_2025_12_15_04_58_59_1"]
 }
-```"""
+```
 
+========================================
+FIELD REQUIREMENTS
+========================================
+
+For each match, you MUST include:
+
+Required fields:
+- transaction_id: string (from input)
+- document_type: "bill"|"invoice"|"credit_note"|"payroll"|"share"
+- document_id: string (from candidates)
+- match_type: "exact" (always for this agent)
+- has_bank_fee: boolean (true if amount difference suggests wire fee)
+- confidence: "HIGH"|"MEDIUM"|"LOW"
+
+match_details object must have:
+- amount_match: "exact"|"near_with_fee"
+- amount_difference: string (e.g., "0.00", "2.50")
+- partner_match: "exact"|"substring"|"fuzzy"|"different"|"generic_wildcard"
+- partner_match_score: integer 0-100 (use 0 for generic_wildcard)
+- date_diff_days: integer (absolute difference)
+- reference_found: boolean
+- reference_value: string or null
+- reasoning: string (clear explanation of WHY this match was chosen over alternatives)
+
+========================================
+EXAMPLES
+========================================
+
+Example 1: Small Amount Difference with Same Partner (MUST MATCH)
+Transaction:
+{
+  "transaction_id": "TXN_2025_12_15_04_59_00_10",
+  "date": "2025-06-30",
+  "amount": "136.15",
+  "partner": "Cyta",
+  "description": "Payment to Cyta",
+  "category": "bill_payment"
+}
+
+Candidate Bill:
+{
+  "id": "BILL_2025_12_15_04_51_45",
+  "date": "2025-06-30",
+  "amount": "134.14",
+  "partner": "Cyta"
+}
+
+Result: MATCH
+```json
+{
+  "transaction_id": "TXN_2025_12_15_04_59_00_10",
+  "document_type": "bill",
+  "document_id": "BILL_2025_12_15_04_51_45",
+  "match_type": "exact",
+  "has_bank_fee": true,
+  "match_details": {
+    "amount_match": "near_with_fee",
+    "amount_difference": "2.01",
+    "partner_match": "exact",
+    "partner_match_score": 100,
+    "date_diff_days": 0,
+    "reference_found": false,
+    "reference_value": null,
+    "reasoning": "Exact partner match (Cyta = Cyta). Amount within bank fee tolerance: €136.15 vs €134.14 (diff €2.01, well within €5 limit). Same date. Likely payment processing fee."
+  },
+  "confidence": "MEDIUM"
+}
+```
+
+Example 2: Very Small Amount Difference (MUST MATCH)
+Transaction:
+{
+  "transaction_id": "TXN_2025_12_15_04_59_00_11",
+  "date": "2025-06-30",
+  "amount": "30.99",
+  "partner": "Epic Ltd",
+  "description": "Payment to Epic Ltd",
+  "category": "bill_payment"
+}
+
+Candidate Bill:
+{
+  "id": "BILL_2025_12_15_04_53_07",
+  "date": "2025-06-30",
+  "amount": "31.13",
+  "partner": "epic ltd"
+}
+
+Result: MATCH
+```json
+{
+  "transaction_id": "TXN_2025_12_15_04_59_00_11",
+  "document_type": "bill",
+  "document_id": "BILL_2025_12_15_04_53_07",
+  "match_type": "exact",
+  "has_bank_fee": true,
+  "match_details": {
+    "amount_match": "near_with_fee",
+    "amount_difference": "0.14",
+    "partner_match": "exact",
+    "partner_match_score": 100,
+    "date_diff_days": 0,
+    "reference_found": false,
+    "reference_value": null,
+    "reasoning": "Exact partner match (Epic Ltd = epic ltd). Amount within tolerance: €30.99 vs €31.13 (diff €0.14, tiny rounding difference). Same date."
+  },
+  "confidence": "HIGH"
+}
+```
+
+Example 3: Amount Difference Too Large (DO NOT MATCH)
+Transaction:
+{
+  "transaction_id": "TXN_002",
+  "date": "2025-06-30",
+  "amount": "118.89",
+  "partner": "Epic Ltd",
+  "description": "Payment to Epic Ltd"
+}
+
+Candidate Bill:
+{
+  "id": "BILL_001",
+  "date": "2025-06-30",
+  "amount": "144.43",
+  "partner": "epic ltd"
+}
+
+Result: NO MATCH
+Reasoning: Amount difference €25.54 exceeds bank fee tolerance of €5.00. This is likely a partial payment or different transaction. Add to unmatched.
+
+Example 4: Generic Wildcard - Choose Available Invoice
+Transaction:
+{
+  "transaction_id": "TXN_2025_12_15_04_59_00_7",
+  "date": "2025-06-06",
+  "amount": "3570.00",
+  "partner": "Customer",
+  "category": "invoice_receipt"
+}
+
+Candidates:
+{
+  "invoices": [
+    {
+      "id": "INV_2025_12_15_04_50_01",
+      "date": "2025-06-05",
+      "amount": "3570.00",
+      "partner": "Metro Foods Trading Ltd"
+    }
+  ]
+}
+
+Note: INV_2025_12_15_04_51_00 (€3570, ETFL) was already matched to TXN_2025_12_15_04_59_00_4 in a previous batch, so it does NOT appear in the candidates list.
+
+Result: MATCH to INV_2025_12_15_04_50_01
+```json
+{
+  "transaction_id": "TXN_2025_12_15_04_59_00_7",
+  "document_type": "invoice",
+  "document_id": "INV_2025_12_15_04_50_01",
+  "match_type": "exact",
+  "has_bank_fee": false,
+  "match_details": {
+    "amount_match": "exact",
+    "amount_difference": "0.00",
+    "partner_match": "generic_wildcard",
+    "partner_match_score": 0,
+    "date_diff_days": 1,
+    "reference_found": false,
+    "reference_value": null,
+    "reasoning": "Generic partner wildcard applied (Customer). Exact amount match (€3570.00). Date within 1 day. This is the only available invoice with this amount in candidates."
+  },
+  "confidence": "MEDIUM"
+}
+```
+"""
 
 CONTEXT_ANALYSIS_PROMPT = """You are the Context Analysis Agent.
 
@@ -1193,35 +1810,441 @@ CRITICAL INSTRUCTIONS
 4. NEVER fabricate or hallucinate IDs
 5. Follow the exact output format specified below
 
-## TASK
-Match transactions using fuzzy partner matching. Amount must still be exact.
+========================================
+CRITICAL ID USAGE RULES
+========================================
+⚠️ ATTENTION: This is the most common source of errors. Read carefully:
 
-## PARTNER MATCHING TECHNIQUES
-- Substring: "ABC" matches "ABC Corporation Ltd"
-- Abbreviation: "Corp" = "Corporation"
-- Variations: "Co" = "Company"
+TRANSACTION IDs:
+- Always start with "TXN_"
+- Example: "TXN_2025_12_15_04_59_00_11"
+- Found in: transaction.transaction_id field
+- Use in: matched[].transaction_id field
 
-## OUTPUT FORMAT
+DOCUMENT IDs:
+- Bills start with "BILL_"
+- Invoices start with "INV_"
+- Example: "BILL_2025_12_15_04_53_07" or "INV_2025_12_15_04_51_00"
+- Found in: candidates.bills[].id or candidates.invoices[].id
+- Use in: matched[].document_id field
+
+❌ NEVER use a BILL_xxx or INV_xxx as a transaction_id
+❌ NEVER use a TXN_xxx as a document_id
+✅ ALWAYS copy the exact ID strings from the input
+
+========================================
+TASK
+========================================
+Match transactions to documents using fuzzy partner matching with tolerance for moderate amount differences.
+
+This agent handles transactions that:
+- Were NOT matched in exact matching phase
+- May have similar (but not identical) partner names
+- May have small amount differences (up to €10)
+
+========================================
+AMOUNT MATCHING FOR FUZZY
+========================================
+
+Fuzzy matching allows for moderate amount differences to account for real-world scenarios:
+
+**Amount Difference Thresholds:**
+
+€0.00 (Exact):
+- Perfect match
+- Set has_bank_fee: false
+- confidence: MEDIUM or HIGH
+
+€0.01 - €1.00 (Very Small):
+- Rounding, small fees
+- **MUST MATCH if partner matches**
+- Set has_bank_fee: true
+- confidence: MEDIUM or HIGH
+
+€1.01 - €5.00 (Small):
+- Wire transfer fees, processing fees
+- **MUST MATCH if partner matches**
+- Set has_bank_fee: true
+- confidence: MEDIUM
+
+€5.01 - €10.00 (Moderate):
+- Bank fees, international transfer fees
+- **MUST MATCH if partner matches**
+- Set has_bank_fee: true
+- confidence: MEDIUM
+
+> €10.00:
+- REJECT - likely different transaction or partial payment
+- Unless there's strong supporting evidence
+
+**CRITICAL RULES:**
+1. If partner matches AND amount difference ≤ €10.00 → **ALWAYS MATCH**
+2. If difference > €0.00 → **ALWAYS set has_bank_fee: true**
+3. Include exact amount_difference value in match_details
+4. Be ASSERTIVE, not cautious - if it fits the criteria, match it
+
+**Real-World Rationale for €10 Tolerance:**
+This catches legitimate scenarios:
+- ✅ Bank wire transfer fees: €2-€5 typical
+- ✅ Small invoice discrepancies: €0.14, €2.01, etc.
+- ✅ Payment processing fees: €1-€3
+- ✅ Currency rounding: €0.01-€0.50
+- ✅ Partial bank charges: up to €10
+- ❌ Large partial payments: >€10 difference
+- ❌ Completely unrelated transactions: >€10 difference
+
+The €10 threshold is intentionally generous to capture real matches while still rejecting obvious mismatches.
+
+========================================
+MATCHING PRIORITY RULES
+========================================
+
+**PRIORITY 1: EXACT PARTNER + AMOUNT WITHIN €10 = MUST MATCH**
+
+⚠️ CRITICAL: This is NON-NEGOTIABLE. If you find this scenario, YOU MUST MATCH IT.
+
+If you find:
+- Partner names match EXACTLY (after normalization)
+- Amount difference ≤ €10.00
+- Date within 30 days
+
+→ YOU MUST MATCH THIS. No exceptions. No hesitation.
+→ Set has_bank_fee: true if difference > €0.00
+→ confidence: MEDIUM (or HIGH if difference ≤ €1.00)
+
+This is the most confident fuzzy match scenario and accounts for:
+- Bank wire transfer fees (€2-€5)
+- Small invoice discrepancies (€0.14-€2.01)
+- Payment processing fees
+- Minor rounding differences
+
+Example 1: Small Difference
+Transaction: €30.99, partner "epic ltd", date 2025-06-30
+Bill: €31.13, partner "epic ltd", date 2025-06-30
+→ MUST MATCH (exact partner + €0.14 diff ≤ €10 + same date)
+→ Set has_bank_fee: true, confidence: MEDIUM
+
+Example 2: Moderate Difference
+Transaction: €136.15, partner "cyta", date 2025-06-30
+Bill: €134.14, partner "cyta", date 2025-06-30
+→ MUST MATCH (exact partner + €2.01 diff ≤ €10 + same date)
+→ Set has_bank_fee: true, confidence: MEDIUM
+
+Example 3: Bank Fee Difference
+Transaction: €2500.00, partner "acme corp", date 2025-06-15
+Bill: €2503.50, partner "acme corp", date 2025-06-15
+→ MUST MATCH (exact partner + €3.50 diff ≤ €10 + same date)
+→ Set has_bank_fee: true, confidence: MEDIUM
+
+**PRIORITY 2: SUBSTRING PARTNER + SMALL AMOUNT DIFFERENCE**
+
+If you find:
+- Partner substring match (e.g., "epic" in "epic ltd")
+- Amount difference ≤ €5.00
+- Date within 30 days
+
+→ STRONG candidate for matching - MATCH IT
+→ Set has_bank_fee: true if difference > €0.00
+→ confidence: MEDIUM
+
+**PRIORITY 3: FUZZY PARTNER + VERY SMALL AMOUNT DIFFERENCE**
+
+If you find:
+- Partner fuzzy match (similar but not exact)
+- Amount difference ≤ €2.00
+- Date within 14 days
+
+→ Good candidate for matching - MATCH IT
+→ Set has_bank_fee: true if difference > €0.00
+→ confidence: LOW
+
+========================================
+PARTNER MATCHING TECHNIQUES
+========================================
+
+**Standard Partner Matching:**
+1. Exact: "epic ltd" = "epic ltd" (after normalization)
+2. Substring: "epic" in "epic ltd" OR "cyta" in "cyta"
+3. Abbreviation: "Corp" = "Corporation", "Ltd" = "Limited"
+4. Fuzzy: Similar names with variations
+   - Remove: "Ltd", "Limited", "Inc", "Corp", punctuation
+   - Compare remaining parts
+
+**Generic Partner Wildcards (Special Case):**
+
+Some transactions have generic placeholder partner names:
+
+For INVOICE_RECEIPT (revenue):
+- Generic partners: "Customer", "Client", "Payer", "Direct Credit"
+- If detected: Match on amount + date only (ignore partner name)
+- Confidence: MEDIUM
+
+For BILL_PAYMENT (expense):
+- Generic partners: "Supplier", "Vendor", "Payee", "Payment"
+- If detected: Match on amount + date only (ignore partner name)
+- Confidence: MEDIUM
+
+Example:
+- Transaction: partner "Customer" → Can match any invoice with correct amount
+- Transaction: partner "Supplier" → Can match any bill with correct amount
+
+========================================
+DECISION RULES
+========================================
+1. Check if transaction has generic partner → Apply wildcard rules
+2. Otherwise, partner must match using one of the matching techniques
+3. Amount difference must be ≤ 10.00
+4. If amount difference is 0.01-10.00, set has_bank_fee: true
+5. If amount difference is 0.00, set has_bank_fee: false
+6. Include amount_difference in match_details
+7. Provide clear reasoning mentioning amount difference and partner match type
+
+========================================
+STEP-BY-STEP MATCHING PROCESS
+========================================
+
+For EACH transaction in the input:
+
+STEP 1: Extract transaction details
+- transaction_id: Get from transaction.transaction_id (starts with TXN_)
+- amount: transaction.amount
+- partner: transaction.partner (lowercase, normalized)
+- category: transaction.category
+- date: transaction.date
+
+STEP 2: Filter candidate documents by category
+- If category = "bill_payment" → Look at bills first
+- If category = "invoice_receipt" → Look at invoices first
+
+STEP 3: For each candidate document, calculate match score
+- Partner similarity (0-100)
+- Amount difference (absolute value)
+- Date difference (days)
+
+STEP 4: Apply matching rules (PRIORITY 1, 2, 3 above)
+- If EXACT partner + amount ≤ €10 → MUST MATCH
+- If SUBSTRING partner + amount ≤ €5 → MATCH
+- If FUZZY partner + amount ≤ €2 → MATCH
+
+STEP 5: If match found, construct match object
+- transaction_id: Use exact ID from input
+- document_id: Use exact ID from candidates
+- match_type: "fuzzy"
+- has_bank_fee: true if amount difference > 0.00
+- match_details: Fill all required fields
+- confidence: Based on match quality
+
+STEP 6: If no match found, add to unmatched_transaction_ids
+
+========================================
+OUTPUT FORMAT
+========================================
 ```json
 {
   "matched": [
     {
-      "transaction_id": "1002",
+      "transaction_id": "TXN_2025_12_15_04_59_00_10",
       "document_type": "bill",
-      "document_id": "BILL_2025_002",
+      "document_id": "BILL_2025_12_15_04_51_45",
       "match_type": "fuzzy",
+      "has_bank_fee": true,
       "match_details": {
-        "partner_match": "substring",
-        "partner_similarity": 0.85,
-        "date_diff_days": 14
+        "amount_difference": "2.01",
+        "partner_match": "exact",
+        "partner_similarity": 100,
+        "date_diff_days": 0,
+        "reasoning": "Partner match: Cyta exact match. Amount within tolerance: €136.15 vs €134.14 (diff: €2.01, well within €10 fuzzy limit). Same date."
+      },
+      "confidence": "MEDIUM"
+    },
+    {
+      "transaction_id": "TXN_2025_12_15_04_59_00_11",
+      "document_type": "bill",
+      "document_id": "BILL_2025_12_15_04_53_07",
+      "match_type": "fuzzy",
+      "has_bank_fee": true,
+      "match_details": {
+        "amount_difference": "0.14",
+        "partner_match": "exact",
+        "partner_similarity": 100,
+        "date_diff_days": 0,
+        "reasoning": "Exact partner match: Epic Ltd. Amount within tolerance: €30.99 vs €31.13 (diff: €0.14, tiny difference). Same date."
+      },
+      "confidence": "MEDIUM"
+    }
+  ],
+  "unmatched_transaction_ids": ["TXN_2025_12_15_04_56_41_5", "TXN_2025_12_15_04_58_59_1"]
+}
+```
+
+========================================
+CRITICAL VALIDATION BEFORE RETURNING
+========================================
+
+Before you return your response, CHECK EVERY MATCH:
+
+1. Does transaction_id start with "TXN_"? ✓ or ✗
+2. Does document_id start with "BILL_" or "INV_"? ✓ or ✗
+3. Does transaction_id exist in the input transactions? ✓ or ✗
+4. Does document_id exist in the input candidates? ✓ or ✗
+5. Is has_bank_fee set correctly (true if diff > 0.00, false if diff = 0.00)? ✓ or ✗
+
+If ANY check fails, DO NOT include that match. Add the transaction_id to unmatched_transaction_ids instead.
+
+========================================
+EXAMPLES
+========================================
+
+Example 1: Small Difference with Exact Partner (€0.14) - MUST MATCH
+Input:
+```json
+{
+  "transaction": {
+    "transaction_id": "TXN_2025_12_15_04_59_00_11",
+    "amount": "30.99",
+    "partner": "Epic Ltd",
+    "date": "2025-06-30",
+    "category": "bill_payment"
+  },
+  "candidates": {
+    "bills": [
+      {
+        "id": "BILL_2025_12_15_04_53_07",
+        "amount": "31.13",
+        "partner": "epic ltd",
+        "date": "2025-06-30"
+      }
+    ]
+  }
+}
+```
+
+Output:
+```json
+{
+  "matched": [
+    {
+      "transaction_id": "TXN_2025_12_15_04_59_00_11",
+      "document_type": "bill",
+      "document_id": "BILL_2025_12_15_04_53_07",
+      "match_type": "fuzzy",
+      "has_bank_fee": true,
+      "match_details": {
+        "amount_difference": "0.14",
+        "partner_match": "exact",
+        "partner_similarity": 100,
+        "date_diff_days": 0,
+        "reasoning": "EXACT partner match (Epic Ltd = epic ltd). Amount within tolerance: €30.99 vs €31.13 (diff: €0.14, tiny rounding difference). Same date. Clear match."
       },
       "confidence": "MEDIUM"
     }
   ],
   "unmatched_transaction_ids": []
 }
-```"""
+```
 
+**Why this MUST match:**
+- ✅ Partner names MATCH (after normalization): "Epic Ltd" = "epic ltd"
+- ✅ Amount difference €0.14 is TINY (well within both €5 bank fee and €10 fuzzy tolerances)
+- ✅ Same date
+- ✅ Likely a rounding adjustment or small processing fee
+- ❌ No reason to reject
+
+Example 2: CRITICAL - Exact Partner with €2.01 Difference - MUST MATCH!
+Input:
+```json
+{
+  "transaction": {
+    "transaction_id": "TXN_2025_12_15_04_59_00_10",
+    "amount": "136.15",
+    "partner": "Cyta",
+    "date": "2025-06-30",
+    "category": "bill_payment"
+  },
+  "candidates": {
+    "bills": [
+      {
+        "id": "BILL_2025_12_15_04_51_45",
+        "amount": "134.14",
+        "partner": "Cyta",
+        "date": "2025-06-30"
+      }
+    ]
+  }
+}
+```
+
+Output:
+```json
+{
+  "matched": [
+    {
+      "transaction_id": "TXN_2025_12_15_04_59_00_10",
+      "document_type": "bill",
+      "document_id": "BILL_2025_12_15_04_51_45",
+      "match_type": "fuzzy",
+      "has_bank_fee": true,
+      "match_details": {
+        "amount_difference": "2.01",
+        "partner_match": "exact",
+        "partner_similarity": 100,
+        "date_diff_days": 0,
+        "reasoning": "EXACT partner match (Cyta = Cyta). Amount within tolerance: €136.15 vs €134.14 (diff: €2.01, well within €10 fuzzy limit). Same date. This is a clear match with a small bank fee or payment processing charge."
+      },
+      "confidence": "MEDIUM"
+    }
+  ],
+  "unmatched_transaction_ids": []
+}
+```
+
+**Why this MUST match:**
+- ✅ Partner names are IDENTICAL: "Cyta" = "Cyta"
+- ✅ Amount difference €2.01 is WELL WITHIN €10 fuzzy tolerance
+- ✅ Same date (2025-06-30)
+- ✅ This is a textbook case of a small payment processing fee or bank charge
+- ❌ There is NO reason to reject this match
+
+**Remember:** €2.01 is only 1.5% of the bill amount. This is a clear match with a minor fee.
+
+Example 3: Large Difference - DO NOT MATCH
+Input:
+```json
+{
+  "transaction": {
+    "transaction_id": "TXN_2025_12_15_04_59_00_12",
+    "amount": "118.89",
+    "partner": "Epic Ltd",
+    "date": "2025-06-30",
+    "category": "bill_payment"
+  },
+  "candidates": {
+    "bills": [
+      {
+        "id": "BILL_2025_12_15_04_52_29",
+        "amount": "144.43",
+        "partner": "epic ltd",
+        "date": "2025-06-30"
+      }
+    ]
+  }
+}
+```
+
+Output:
+```json
+{
+  "matched": [],
+  "unmatched_transaction_ids": ["TXN_2025_12_15_04_59_00_12"]
+}
+```
+
+**Why NOT match:**
+- ✅ Partner names match (Epic Ltd = epic ltd)
+- ❌ Amount difference €25.54 EXCEEDS €10 fuzzy tolerance
+- ✅ Same date
+- **Conclusion:** While partner matches, the amount difference is too large. This is likely a partial payment or payment for a different bill entirely. Do not match.
+"""
 
 COMBINATION_MATCH_PROMPT = """You are the Combination Match Agent - specialized in finding batch and split payment matches.
 
@@ -1822,49 +2845,6 @@ CRITICAL INSTRUCTIONS
 4. NEVER fabricate or hallucinate IDs
 5. Follow the exact output format specified below
 
-## TASK
-Assign confidence scores to validated matches.
-
-## SCORING (weighted average)
-- Amount (30%): Exact=100%, Near=90%, Diff>0=80%
-- Currency (10%): Match=100%
-- Partner (30%): Exact=100%, Substring=85%, Fuzzy=70%
-- Date (20%): 0-7d=100%, 8-30d=90%, 31-60d=80%, 61-180d=70%
-- Context (10%): Single=100%, 2docs=85%, 3+docs=75%
-
-## LEVELS
-- HIGH: 95%+ → AUTO_RECONCILE
-- MEDIUM: 75-94% → REVIEW
-- LOW: <75% → MANUAL
-
-## OUTPUT FORMAT
-`````json
-{
-  "scored_matches": [
-    {
-      "transaction_id": "1001",
-      "confidence_level": "HIGH",
-      "confidence_score": 98.5,
-      "recommendation": "AUTO_RECONCILE"
-    }
-  ],
-  "summary": {"HIGH": 5, "MEDIUM": 2, "LOW": 1}
-}
-````"""
-
-
-
-CONFIDENCE_SCORING_PROMPT = """You are the Confidence Scoring Agent.
-
-========================================
-CRITICAL INSTRUCTIONS
-========================================
-1. Return ONLY valid JSON - no markdown, no preamble, no explanation
-2. ALL required fields MUST be present
-3. Use ONLY IDs that exist in the provided input
-4. NEVER fabricate or hallucinate IDs
-5. Follow the exact output format specified below
-
 ========================================
 TASK
 ========================================
@@ -2320,9 +3300,9 @@ Return only valid matches with strong justification. It is better to leave a tra
 # =============================================================================
 
 class AgentExecutor:
-    """Executes LLM agents with retry logic and batching support."""
+    """Executes LLM agents with retry logic, batching support, and validation."""
     
-    def __init__(self, config: MatchingConfig = DEFAULT_CONFIG):
+    def __init__(self, config=None):
         self.client = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.config = config
         self.total_input_tokens = 0
@@ -2335,7 +3315,7 @@ class AgentExecutor:
         system_prompt: str,
         user_message: str
     ) -> Dict:
-        """Execute an agent with retry and temperature jitter."""
+        """Execute an agent with retry, temperature jitter, and validation."""
         for attempt in range(self.config.max_retries):
             try:
                 temperature = self.config.base_temperature + (attempt * self.config.retry_temperature_increment)
@@ -2359,12 +3339,25 @@ class AgentExecutor:
                     block.text for block in response.content if block.type == "text"
                 )
                 
+                # ✅ NEW: Log raw response for debugging
+                logger.debug(f"[{agent_name}] Raw response length: {len(result_text)} chars")
+                if len(result_text) < 500:
+                    logger.debug(f"[{agent_name}] Raw response: {result_text}")
+                elif len(result_text) < 2000:
+                    logger.debug(f"[{agent_name}] Raw response preview: {result_text[:500]}...")
+                
                 # Extract JSON
                 if result_json := self._extract_json(result_text):
-                    logger.info(f"[{agent_name}] ✓ Success")
-                    return {"success": True, "result": result_json}
-                
-                logger.warning(f"[{agent_name}] JSON extraction failed, retrying...")
+                    # ✅ NEW: Validate response structure
+                    if self._validate_agent_response(agent_name, result_json):
+                        logger.info(f"[{agent_name}] ✓ Success")
+                        return {"success": True, "result": result_json}
+                    else:
+                        logger.warning(f"[{agent_name}] Response validation failed, retrying...")
+                        # ✅ NEW: Log what was wrong
+                        logger.debug(f"[{agent_name}] Invalid response structure: {list(result_json.keys())}")
+                else:
+                    logger.warning(f"[{agent_name}] JSON extraction failed, retrying...")
                 
             except Exception as e:
                 logger.error(f"[{agent_name}] Error: {e}")
@@ -2406,6 +3399,80 @@ class AgentExecutor:
         
         return None
     
+    # ✅ NEW: Validate agent responses
+    def _validate_agent_response(self, agent_name: str, response: Dict) -> bool:
+        """
+        Validate that the agent response has the expected structure.
+        This prevents accepting incomplete or malformed responses.
+        """
+        if agent_name == "DataEnrichment":
+            # Must have enriched_transactions array
+            if "enriched_transactions" not in response:
+                logger.error("DataEnrichment response missing 'enriched_transactions' field")
+                return False
+            if not isinstance(response["enriched_transactions"], list):
+                logger.error("'enriched_transactions' must be a list")
+                return False
+            # Must have other enrichment arrays
+            required_fields = ["enriched_bills", "enriched_invoices", "enrichment_summary"]
+            for field in required_fields:
+                if field not in response:
+                    logger.warning(f"DataEnrichment response missing '{field}' field (will use default)")
+            return True
+        
+        elif agent_name == "DuplicateDetection":
+            # Must have duplicate_pairs and non_duplicate_transaction_ids
+            if "duplicate_pairs" not in response:
+                logger.error("DuplicateDetection response missing 'duplicate_pairs' field")
+                return False
+            if "non_duplicate_transaction_ids" not in response:
+                logger.error("DuplicateDetection response missing 'non_duplicate_transaction_ids' field")
+                return False
+            if not isinstance(response["duplicate_pairs"], list):
+                logger.error("'duplicate_pairs' must be a list")
+                return False
+            if not isinstance(response["non_duplicate_transaction_ids"], list):
+                logger.error("'non_duplicate_transaction_ids' must be a list")
+                return False
+            return True
+        
+        elif agent_name in ["ExactMatch", "PartnerResolution", "SuspenseResolution", "CombinationMatch"]:
+            # Must have matched and unmatched_transaction_ids
+            if "matched" not in response:
+                logger.error(f"{agent_name} response missing 'matched' field")
+                return False
+            if "unmatched_transaction_ids" not in response:
+                logger.error(f"{agent_name} response missing 'unmatched_transaction_ids' field")
+                return False
+            if not isinstance(response["matched"], list):
+                logger.error("'matched' must be a list")
+                return False
+            if not isinstance(response["unmatched_transaction_ids"], list):
+                logger.error("'unmatched_transaction_ids' must be a list")
+                return False
+            return True
+        
+        elif agent_name == "ContextAnalysis":
+            if "context_analysis" not in response:
+                logger.error("ContextAnalysis response missing 'context_analysis' field")
+                return False
+            return True
+        
+        elif agent_name == "Validation":
+            if "validated_matches" not in response:
+                logger.error("Validation response missing 'validated_matches' field")
+                return False
+            return True
+        
+        elif agent_name == "ConfidenceScoring":
+            if "scored_matches" not in response:
+                logger.error("ConfidenceScoring response missing 'scored_matches' field")
+                return False
+            return True
+        
+        # For other agents, accept any dict
+        return True
+    
     def get_stats(self) -> Dict:
         """Get execution statistics."""
         return {
@@ -2415,82 +3482,109 @@ class AgentExecutor:
             "total_tokens": self.total_input_tokens + self.total_output_tokens
         }
 
-
 # =============================================================================
 # BATCHED AGENT FUNCTIONS (FIX: Context explosion prevention)
 # =============================================================================
 
 # In run_data_enrichment function, after line ~1725
 def run_data_enrichment(executor: AgentExecutor, input_data: Dict) -> Dict:
-    user_message = f"""Enrich this data:
-
-{safe_json_dumps(input_data)}
-
-Return enriched data with all required fields."""
-
-    result = executor.execute("DataEnrichment", DATA_ENRICHMENT_PROMPT, user_message)
+    """
+    Run Data Enrichment Agent with Python tool support.
     
-    # ADD PYTHON-SIDE SUSPENSE DETECTION FALLBACK
-    if result["success"]:
-        enriched = result["result"]
-        enriched_txns = enriched.get("enriched_transactions", [])
+    Agent orchestrates the enrichment by "calling" Python tools.
+    Since we don't have real tool-calling yet, we simulate by:
+    1. Calling Python enrichment directly
+    2. Wrapping in agent-style response format
+    
+    Future: When tool calling is available, agent will actually call these tools.
+    """
+    try:
+        logger.info("Running enrichment agent with Python tools...")
         
-        # Fallback: Check each transaction for suspense indicators
-        for txn in enriched_txns:
-            # Check if LLM missed setting is_suspense
-            should_be_suspense = False
-            
-            # Check account_name
-            account = str(txn.get("account_name", "")).lower()
-            if "suspense" in account:
-                should_be_suspense = True
-            
-            # Check partner_name
-            partner = str(txn.get("partner_name", "")).lower()
-            if any(word in partner for word in ["suspense", "unknown", "unidentified", "pending"]):
-                should_be_suspense = True
-            
-            # Check category
-            category = str(txn.get("category", "")).lower()
-            if category == "suspense":
-                should_be_suspense = True
-            
-            # Check original line_items from input
-            original_txn = next(
-                (t for t in input_data.get("bank_transactions", []) 
-                 if t.get("odoo_id") == txn.get("odoo_id")),
-                None
-            )
-            if original_txn:
-                for line_item in original_txn.get("line_items", []):
-                    if "suspense" in str(line_item.get("account", "")).lower():
-                        should_be_suspense = True
-                        break
-            
-            # Apply correction if needed
-            if should_be_suspense and not txn.get("is_suspense"):
-                logger.warning(f"CORRECTING: Transaction {txn.get('transaction_id')} should be suspense but was not marked")
-                txn["is_suspense"] = True
-                if txn.get("category") != "suspense":
-                    txn["category"] = "suspense"
+        # SIMULATE TOOL CALLING:
+        # In real tool-calling, the agent would request tool calls
+        # For now, we call Python directly and format as if agent did it
         
-        # LOG suspense transactions
-        logger.info("=" * 70)
-        logger.info("DATA ENRICHMENT - SUSPENSE CHECK:")
+        enriched_txns = []
         suspense_count = 0
-        for txn in enriched_txns:
-            if txn.get("is_suspense") is True:
+        internal_transfer_count = 0
+        
+        # "Agent calls enrich_transaction_python for each transaction"
+        for txn in input_data.get("bank_transactions", []):
+            enriched = enrich_transaction_python(txn)
+            enriched_txns.append(enriched)
+            
+            if enriched["is_suspense"]:
                 suspense_count += 1
-                logger.info(f"  ✓ TXN {txn.get('transaction_id')} MARKED AS SUSPENSE:")
-                logger.info(f"      category: {txn.get('category')}")
-                logger.info(f"      is_suspense: {txn.get('is_suspense')} (type: {type(txn.get('is_suspense'))})")
-                logger.info(f"      account_name: {txn.get('account_name')}")
-                logger.info(f"      partner: {txn.get('partner_name')}")
-        logger.info(f"  TOTAL SUSPENSE: {suspense_count}")
+            if enriched["is_internal_transfer"]:
+                internal_transfer_count += 1
+        
+        # "Agent calls enrich_document_python for each document"
+        enriched_bills = [
+            enrich_document_python(doc, "bill") 
+            for doc in input_data.get("bills", [])
+        ]
+        
+        enriched_invoices = [
+            enrich_document_python(doc, "invoice")
+            for doc in input_data.get("invoices", [])
+        ]
+        
+        enriched_credit_notes = [
+            enrich_document_python(doc, "credit_note")
+            for doc in input_data.get("credit_notes", [])
+        ]
+        
+        enriched_payroll = [
+            enrich_document_python(doc, "payroll")
+            for doc in input_data.get("payroll_transactions", [])
+        ]
+        
+        enriched_shares = [
+            enrich_document_python(doc, "share")
+            for doc in input_data.get("share_transactions", [])
+        ]
+        
+        # Format as agent response
+        result = {
+            "enriched_transactions": enriched_txns,
+            "enriched_bills": enriched_bills,
+            "enriched_invoices": enriched_invoices,
+            "enriched_credit_notes": enriched_credit_notes,
+            "enriched_payroll": enriched_payroll,
+            "enriched_shares": enriched_shares,
+            "enrichment_summary": {
+                "transactions_processed": len(enriched_txns),
+                "suspense_count": suspense_count,
+                "internal_transfer_count": internal_transfer_count
+            }
+        }
+        
+        # Validate
+        input_txn_count = len(input_data.get("bank_transactions", []))
+        if input_txn_count > 0 and len(enriched_txns) == 0:
+            return {"success": False, "error": "Enrichment failed - 0 transactions processed"}
+        
+        # Log summary
         logger.info("=" * 70)
-    
-    return result
-
+        logger.info("DATA ENRICHMENT - SUMMARY:")
+        logger.info(f"  Input transactions: {input_txn_count}")
+        logger.info(f"  Enriched transactions: {len(enriched_txns)}")
+        logger.info(f"  Suspense: {suspense_count}, Internal transfers: {internal_transfer_count}")
+        logger.info("=" * 70)
+        
+        if suspense_count > 0:
+            logger.info("SUSPENSE TRANSACTIONS:")
+            for txn in enriched_txns:
+                if txn.get("is_suspense"):
+                    logger.info(f"  ✓ {txn['transaction_id']}: {txn['partner_name']}")
+            logger.info("=" * 70)
+        
+        return {"success": True, "result": result}
+        
+    except Exception as e:
+        logger.error(f"Enrichment error: {e}")
+        return {"success": False, "error": str(e)}
 
 def run_duplicate_detection(executor: AgentExecutor, transactions: List[Dict]) -> Dict:
     """Run Duplicate Detection Agent."""
@@ -2507,15 +3601,20 @@ def run_exact_match_batched(
     executor: AgentExecutor,
     transactions: List[Dict],
     documents: Dict,
-    config: MatchingConfig = DEFAULT_CONFIG
+    config: MatchingConfig = DEFAULT_CONFIG,
+    state: MatchingState = None  # ADDED: state parameter for tracking
 ) -> Dict:
     """
     Run Exact Match Agent with BATCHED processing.
     Processes transactions in small batches to prevent context explosion.
+    FIXED: Now tracks matched documents across batches to prevent duplicate matching.
     """
     all_matched = []
     all_unmatched_ids = []
     batch_size = config.batch_size
+    
+    # ADDED: Track matched documents across batches
+    matched_doc_ids = {k: set() for k in ['bill', 'invoice', 'credit_note', 'payroll', 'share']}
     
     logger.info(f"Processing {len(transactions)} transactions in batches of {batch_size}")
     
@@ -2526,11 +3625,21 @@ def run_exact_match_batched(
         
         logger.info(f"  Batch {batch_num}/{total_batches}: {len(batch)} transactions")
         
-        # Prepare batch data
+        # Prepare batch data - FILTER OUT ALREADY MATCHED DOCUMENTS
         batch_data = []
         for txn in batch:
             filtered = filter_candidate_documents(txn, documents, config)
-            minified_docs = minify_documents_dict(filtered, config.max_candidates_per_txn)
+            
+            # ADDED: REMOVE ALREADY MATCHED DOCUMENTS FROM CANDIDATES
+            filtered_available = {}
+            for doc_type, docs_list in filtered.items():
+                doc_type_key = doc_type.rstrip('s') if doc_type.endswith('s') else doc_type
+                filtered_available[doc_type] = [
+                    doc for doc in docs_list
+                    if str(doc.get(f"{doc_type_key}_id") or doc.get("id")) not in matched_doc_ids.get(doc_type_key, set())
+                ]
+            
+            minified_docs = minify_documents_dict(filtered_available, config.max_candidates_per_txn)
             
             batch_data.append({
                 "transaction": minify_transaction(txn),
@@ -2546,8 +3655,20 @@ Return matches and unmatched IDs."""
         result = executor.execute("ExactMatch", EXACT_MATCH_PROMPT, user_message)
         
         if result["success"]:
-            all_matched.extend(result["result"].get("matched", []))
+            batch_matches = result["result"].get("matched", [])
+            all_matched.extend(batch_matches)
             all_unmatched_ids.extend(result["result"].get("unmatched_transaction_ids", []))
+            
+            # ADDED: UPDATE MATCHED DOCUMENT IDS FOR NEXT BATCH
+            for match in batch_matches:
+                doc_type = (match.get("document_type") or "bill").lower()
+                doc_type_key = doc_type.rstrip('s') if doc_type.endswith('s') else doc_type
+                if doc_type_key not in matched_doc_ids:
+                    doc_type_key = 'bill'
+                
+                if doc_id := match.get("document_id"):
+                    matched_doc_ids[doc_type_key].add(str(doc_id))
+                    logger.debug(f"  Marked {doc_type}:{doc_id} as matched in batch {batch_num}")
         else:
             # On failure, mark all batch transactions as unmatched
             all_unmatched_ids.extend([str(t.get("transaction_id")) for t in batch])
@@ -3043,7 +4164,7 @@ def orchestrate_matching(
         # STEP 3: Exact Match (BATCHED)
         # =====================================================================
         logger.info("\n[STEP 3/9] Exact Match (Batched)")
-        exact_result = run_exact_match_batched(executor, non_dup_txns, all_docs, config)
+        exact_result = run_exact_match_batched(executor, non_dup_txns, all_docs, config, state)
         
         if exact_result["success"]:
             raw_exact = exact_result["result"].get("matched", [])

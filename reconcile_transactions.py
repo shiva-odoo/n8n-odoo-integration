@@ -82,9 +82,20 @@ def reconcile_matched_transactions(data: Dict[str, Any]) -> Dict[str, Any]:
         matched_transactions = data.get('matched_transactions', [])
         
         if not matched_transactions:
+            log_debug("No matched transactions found - returning success with zero reconciliations")
             return {
-                'success': False,
-                'error': 'No matched transactions provided',
+                'success': True,
+                'message': 'No matched transactions to reconcile',
+                'total_matches': 0,
+                'reconciled': 0,
+                'failed': 0,
+                'skipped': 0,
+                'details': [],
+                'reconciled_transactions': [],
+                'reconciled_bills': [],
+                'reconciled_invoices': [],
+                'reconciled_share_documents': [],
+                'reconciled_payroll_documents': [],
                 'debug_log': DEBUG_LOG
             }
         
@@ -1226,8 +1237,18 @@ def main(data: Any) -> Dict[str, Any]:
         if isinstance(data, list):
             if len(data) == 0:
                 return {
-                    'success': False,
-                    'error': 'Empty array provided'
+                    'success': True,
+                    'message': 'Empty input - no transactions to reconcile',
+                    'total_matches': 0,
+                    'reconciled': 0,
+                    'failed': 0,
+                    'skipped': 0,
+                    'details': [],
+                    'reconciled_transactions': [],
+                    'reconciled_bills': [],
+                    'reconciled_invoices': [],
+                    'reconciled_share_documents': [],
+                    'reconciled_payroll_documents': []
                 }
             
             # Take first element
@@ -1238,8 +1259,18 @@ def main(data: Any) -> Dict[str, Any]:
                     normalized_data = first_item
                 else:
                     return {
-                        'success': False,
-                        'error': 'No matched_transactions found in input'
+                        'success': True,
+                        'message': 'No matched_transactions field in input',
+                        'total_matches': 0,
+                        'reconciled': 0,
+                        'failed': 0,
+                        'skipped': 0,
+                        'details': [],
+                        'reconciled_transactions': [],
+                        'reconciled_bills': [],
+                        'reconciled_invoices': [],
+                        'reconciled_share_documents': [],
+                        'reconciled_payroll_documents': []
                     }
             else:
                 return {
@@ -1259,25 +1290,38 @@ def main(data: Any) -> Dict[str, Any]:
                     normalized_data = nested
                 else:
                     return {
-                        'success': False,
-                        'error': 'No matched_transactions found in nested data'
+                        'success': True,
+                        'message': 'No matched_transactions in nested data',
+                        'total_matches': 0,
+                        'reconciled': 0,
+                        'failed': 0,
+                        'skipped': 0,
+                        'details': [],
+                        'reconciled_transactions': [],
+                        'reconciled_bills': [],
+                        'reconciled_invoices': [],
+                        'reconciled_share_documents': [],
+                        'reconciled_payroll_documents': []
                     }
             else:
                 return {
-                    'success': False,
-                    'error': 'No matched_transactions found in input'
+                    'success': True,
+                    'message': 'No matched_transactions field in input',
+                    'total_matches': 0,
+                    'reconciled': 0,
+                    'failed': 0,
+                    'skipped': 0,
+                    'details': [],
+                    'reconciled_transactions': [],
+                    'reconciled_bills': [],
+                    'reconciled_invoices': [],
+                    'reconciled_share_documents': [],
+                    'reconciled_payroll_documents': []
                 }
         else:
             return {
                 'success': False,
                 'error': f'Invalid input type: {type(data).__name__}'
-            }
-        
-        # Validate we have matched_transactions
-        if not normalized_data or not normalized_data.get('matched_transactions'):
-            return {
-                'success': False,
-                'error': 'No matched transactions to reconcile'
             }
         
         # Call the actual reconciliation function
