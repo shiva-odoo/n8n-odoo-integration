@@ -82,10 +82,7 @@ def main(data):
 
     # Check if the input is empty OR just a hyphen
     if vat_input and vat_input != '-':
-        # If VAT is provided and it's not a hyphen, process it
-        if vat_input.startswith('CY'):
-            vat_input = vat_input[2:]
-            print(f"Normalized VAT: removed 'CY' prefix, using: {vat_input}")
+        # Use the VAT as-is (no prefix manipulation)
         data['vat'] = vat_input
     else:
         # If no VAT is provided, it's just whitespace, OR it's a hyphen, set it to '/'
@@ -187,7 +184,8 @@ def main(data):
         company_id = models.execute_kw(
             db, uid, password,
             'res.company', 'create',
-            [company_data]
+            [company_data],
+            {'context': {'no_vat_validation': True}}
         )
 
         if not company_id:
